@@ -1,0 +1,24 @@
+name: topoflow
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - pip
+  - python=3.10
+  - pytorch-cuda=11.8
+  - pytorch=2.5.1
+  - conda-forge::pre_commit
+  - anaconda::ipykernel
+  - numpy
+  - scikit-learn
+  - matplotlib
+  - tqdm
+  - mordred
+  - torchmetrics
+  - conda-forge::pytorch-lightning
+  - lightning
+  - pytorch_geometric
+  - seaborn
+prefix: /home/marco/miniforge3/envs/topoflow

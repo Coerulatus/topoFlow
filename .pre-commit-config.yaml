@@ -1,0 +1,9 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 25.1.0  # Check https://github.com/psf/black/tags for latest
+    hooks:
+      - id: black
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.3  # Check latest on GitHub
+    hooks:
+      - id: ruff

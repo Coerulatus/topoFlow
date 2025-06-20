@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "topoflow"
+version = "0.1.0"
+description = "Topological flow models."
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name="Marco Montagna", email="marco.montagna@uniroma1.it" }]
+dependencies = [
+    "numpy",
+    "torch",
+    "matplotlib"
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "pre-commit",
+    "pytest",
+    "ruff",
+    "pydocstyle"
+]
+
+[tool.setuptools]
+packages = ["topoflow"]
+
+[tool.ruff]
+# Base configuration for Ruff
+line-length = 88 # Common choice, aligned with Black
+
+[tool.ruff.lint]
+# Enable the 'D' (pydocstyle) rules
+select = ["D"]
+# You can also add other rule families you want to enable, e.g.:
+# select = ["E", "F", "W", "I", "D"] # E=pycodestyle errors, F=pyflakes, W=pycodestyle warnings, I=isort
+
+[tool.ruff.lint.pydocstyle]
+# Specify the docstring convention here
+convention = "google" # 'google', 'numpy', or 'pep257'
