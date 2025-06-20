@@ -17,8 +17,8 @@ dependencies:
   - tqdm
   - mordred
   - torchmetrics
-  - conda-forge::pytorch-lightning
   - lightning
   - pytorch_geometric
   - seaborn
-prefix: /home/marco/miniforge3/envs/topoflow
+  - mlflow
+  - torchmetrics

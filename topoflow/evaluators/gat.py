@@ -3,8 +3,8 @@
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv, global_mean_pool
-from pytorch_lightning import LightningModule
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from lightning.pytorch import LightningModule
+from torchmetrics.functional import mean_squared_error, mean_absolute_error
 
 
 class GAT(torch.nn.Module):
@@ -125,8 +125,18 @@ class GATEvaluator(LightningModule):
         # Training hyperparameters
         self.lr = lr
         self.monitor_metric = monitor_metric
-        if optimizer is not None:
-            self.optimizer = optimizer(self.parameters(), lr=self.lr)
+        if optimizer is None:
+            self.optimizer = torch.optim.Adam(
+                self.parameters(),
+                lr=lr,
+                weight_decay=1e-5,
+            )
+        else:
+            self.optimizer = optimizer(
+                self.parameters(),
+                lr=lr,
+                weight_decay=1e-5,
+            )
         self.save_hyperparameters(ignore=["optimizer"])
 
     def forward(self, x, edge_index, edge_attr, batch):
@@ -137,6 +147,8 @@ class GATEvaluator(LightningModule):
 
     def _compute_loss_and_metric(self, batch, stage):
         """Common logic for training, validation, and test steps."""
+        batch_size = batch.idx.shape[0]
+
         x, edge_index, edge_attr, batch_index, y = (
             batch.x,
             batch.edge_index,
@@ -160,15 +172,21 @@ class GATEvaluator(LightningModule):
             else mean_absolute_error(y_hat, y)
         )
 
-        if stage == "val":
-            stage = "val_monitor"
-        self.log(f"{stage}/loss", loss, prog_bar=True, on_epoch=True, sync_dist=True)
+        self.log(
+            f"{stage}/loss",
+            loss,
+            prog_bar=True,
+            on_epoch=True,
+            sync_dist=True,
+            batch_size=batch_size,
+        )
         self.log(
             f"{stage}/{self.monitor_metric}",
             metric,
             prog_bar=True,
             on_epoch=True,
             sync_dist=True,
+            batch_size=batch_size,
         )
         return loss
 

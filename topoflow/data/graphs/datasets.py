@@ -9,13 +9,11 @@ from tqdm import tqdm
 
 # Import RDKit modules
 from rdkit import Chem
-from rdkit.Chem import Descriptors
-from rdkit.Chem import QED
 
-# For Synthetic Accessibility Score (SAS), it's in rdkit.Chem.rdSAScore
-# Ensure you have rdkit-pypi installed, which includes this contrib module.
-sys.path.append(os.path.join(os.environ["CONDA_PREFIX"], "share", "RDKit", "Contrib"))
-from SA_Score import sascorer
+# from rdkit.Chem import Descriptors
+# from rdkit.Chem import QED
+
+from topoflow.utils.metrics import qed_scorer, logp_scorer, sas_scorer
 
 
 class QM9WithRDKitMetrics(InMemoryDataset):
@@ -28,9 +26,14 @@ class QM9WithRDKitMetrics(InMemoryDataset):
         """
         self.original_qm9_root = os.path.join(root, "QM9_original")
         self.normalize = normalize
-        self.qed_min, self.qed_max = 0.0, 1.0
-        self.logp_min, self.logp_max = -6.0, 6.0
-        self.sas_min, self.sas_max = 1.0, 10.0
+        qed_min, qed_max = 0.0, 1.0
+        logp_min, logp_max = -6.0, 6.0
+        sas_min, sas_max = 1.0, 10.0
+        self.norm_params = {
+            "qed": (qed_min, qed_max),
+            "logp": (logp_min, logp_max),
+            "sas": (sas_min, sas_max),
+        }
         super().__init__(root, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
@@ -73,33 +76,34 @@ class QM9WithRDKitMetrics(InMemoryDataset):
 
             # Calculate RDKit Descriptors
             # 1. Quantitative Estimation of Drug-likeness (QED)
-            qed_score = torch.tensor([QED.default(mol)], dtype=torch.float)
+            qed_score = torch.tensor([qed_scorer(mol)], dtype=torch.float)
 
             # 2. LogP (Partition Coefficient, related to solubility/lipophilicity)
-            logp_score = torch.tensor([Descriptors.MolLogP(mol)], dtype=torch.float)
+            logp_score = torch.tensor([logp_scorer(mol)], dtype=torch.float)
 
             # 3. Synthetic Accessibility Score (SAS)
             # SAS score typically ranges from 1 (easy to synthesize) to 10 (hard to synthesize)
-            sas_score = torch.tensor([sascorer.calculateScore(mol)], dtype=torch.float)
+            sas_score = torch.tensor([sas_scorer(mol)], dtype=torch.float)
 
             if self.normalize:
-                if qed_score < self.qed_min or qed_score > self.qed_max:
+                qed_min, qed_max = self.norm_params["qed"]
+                logp_min, logp_max = self.norm_params["logp"]
+                sas_min, sas_max = self.norm_params["sas"]
+                if qed_score < qed_min or qed_score > qed_max:
                     raise ValueError(
-                        f"QED score {qed_score.item()} out of bounds [{self.qed_min}, {self.qed_max}]"
+                        f"QED score {qed_score.item()} out of bounds [{qed_min}, {qed_max}]"
                     )
-                if logp_score < self.logp_min or logp_score > self.logp_max:
+                if logp_score < logp_min or logp_score > logp_max:
                     raise ValueError(
-                        f"LogP score {logp_score.item()} out of bounds [{self.logp_min}, {self.logp_max}]"
+                        f"LogP score {logp_score.item()} out of bounds [{logp_min}, {logp_max}]"
                     )
-                if sas_score < self.sas_min or sas_score > self.sas_max:
+                if sas_score < sas_min or sas_score > sas_max:
                     raise ValueError(
-                        f"SAS score {sas_score.item()} out of bounds [{self.sas_min}, {self.sas_max}]"
+                        f"SAS score {sas_score.item()} out of bounds [{sas_min}, {sas_max}]"
                     )
-                qed_score = (qed_score - self.qed_min) / (self.qed_max - self.qed_min)
-                logp_score = (logp_score - self.logp_min) / (
-                    self.logp_max - self.logp_min
-                )
-                sas_score = (sas_score - self.sas_min) / (self.sas_max - self.sas_min)
+                qed_score = (qed_score - qed_min) / (qed_max - qed_min)
+                logp_score = (logp_score - logp_min) / (logp_max - logp_min)
+                sas_score = (sas_score - sas_min) / (sas_max - sas_min)
 
             new_y = torch.cat([qed_score, logp_score, sas_score], dim=0)
             data.y = new_y
