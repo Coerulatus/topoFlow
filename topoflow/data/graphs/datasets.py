@@ -19,7 +19,9 @@ from topoflow.utils.metrics import qed_scorer, logp_scorer, sas_scorer
 class QM9WithRDKitMetrics(InMemoryDataset):
     """A custom PyTorch Geometric dataset that extends the QM9 dataset to include RDKit-calculated properties."""
 
-    def __init__(self, root, transform=None, pre_transform=None, normalize=True):
+    def __init__(
+        self, root, transform=None, pre_transform=None, normalize=True, fraction=1.0
+    ):
         """A custom PyTorch Geometric dataset that extends QM9.
 
         This class adds RDKit-calculated molecular properties (QED, SAS, LogP) as new attributes to each Data object.
@@ -34,6 +36,7 @@ class QM9WithRDKitMetrics(InMemoryDataset):
             "logp": (logp_min, logp_max),
             "sas": (sas_min, sas_max),
         }
+        self.fraction = fraction
         super().__init__(root, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
@@ -54,6 +57,10 @@ class QM9WithRDKitMetrics(InMemoryDataset):
     def process(self):
         """Process the original QM9 dataset and calculate RDKit metrics."""
         original_dataset = QM9(self.original_qm9_root)
+        if self.fraction < 1.0:
+            # Sample a fraction of the dataset
+            num_samples = int(len(original_dataset) * self.fraction)
+            original_dataset = original_dataset[:num_samples]
 
         data_list = []
         # Iterate through each molecule in the original QM9 dataset

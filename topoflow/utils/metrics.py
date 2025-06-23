@@ -5,36 +5,8 @@ import os
 from rdkit.Chem import QED, Descriptors
 import torch
 
-try:
-    rdkit_contrib_path = os.path.join(
-        os.environ["CONDA_PREFIX"], "share", "RDKit", "Contrib"
-    )
-    if rdkit_contrib_path not in sys.path:
-        sys.path.append(rdkit_contrib_path)
-    from SA_Score import sascorer
-except KeyError:
-    print(
-        "WARNING: CONDA_PREFIX environment variable not set. Attempting common RDKit Contrib path fallback for SA_Score."
-    )
-    # Common fallback path for RDKit Contrib if CONDA_PREFIX isn't set.
-    # You may need to inspect your RDKit installation to find the correct path.
-    # E.g., on Linux/macOS: /path/to/your/conda/env/lib/pythonX.Y/site-packages/rdkit/Chem/rdSAScore.py
-    # or /opt/conda/envs/your_env_name/share/RDKit/Contrib
-    fallback_path_guess = os.path.join(sys.prefix, "share", "RDKit", "Contrib")
-    if fallback_path_guess not in sys.path:
-        sys.path.append(fallback_path_guess)
-    try:
-        from SA_Score import sascorer
-    except ImportError:
-        print(
-            "ERROR: Could not import SA_Score. Make sure RDKit is installed and SA_Score.py is accessible."
-        )
-        sascorer = None  # Set to None to handle gracefully if import fails
-except ImportError:
-    print(
-        "ERROR: Could not import SA_Score. Make sure RDKit is installed and SA_Score.py is accessible."
-    )
-    sascorer = None  # Set to None to handle gracefully if import fails
+sys.path.append(os.path.join(os.environ["CONDA_PREFIX"], "share", "RDKit", "Contrib"))
+from SA_Score import sascorer
 
 
 class Metric(torch.nn.Module):

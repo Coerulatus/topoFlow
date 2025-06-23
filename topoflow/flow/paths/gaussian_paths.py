@@ -1,0 +1,116 @@
+"""Gaussian Conditional Probability Path."""
+
+import torch
+
+from topoflow.flow.paths.abstract_paths import ConditionalProbabilityPath
+from topoflow.flow.utils import IsotropicGaussian
+
+
+class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
+    """Implements the conditional probability path for a Gaussian distribution.
+
+    This class defines the specific functions required for a conditional
+    probability path where the underlying distributions are Gaussian, enabling
+    the calculation of samples, vector fields, and scores.
+
+    Attributes:
+        alpha (callable): Function defining the time-dependent scaling of the
+            conditioning variable.
+        beta (callable): Function defining the time-dependent scaling of the
+            noise.
+    """
+
+    def __init__(self, p_data, alpha, beta, device="cpu", target_dim=None):
+        """Initializes the GaussianConditionalProbabilityPath.
+
+        Args:
+            p_data: The data distribution, expected to be a Gaussian.
+            alpha: Function that defines the time-dependent scaling of the
+                conditioning variable.
+            beta: Function that defines the time-dependent scaling of the noise.
+            device: The device to perform computations on (e.g., 'cpu' or 'cuda').
+                Defaults to 'cpu'.
+            target_dim: The target dimension of the data. If None, it's inferred
+                from `p_data.dim`. Defaults to None.
+        """
+        if target_dim is None:
+            target_dim = p_data.dim
+        p_simple = IsotropicGaussian(target_dim, 1.0)
+        super().__init__(p_simple, p_data, device)
+        self.alpha = alpha
+        # Note: Directly assigning a 'device' attribute to the callable might
+        # not be standard practice for all callables. Ensure `alpha` and `beta`
+        # objects are designed to handle this or pass device explicitly to their
+        # calls if needed.
+        self.alpha.device = device
+        self.beta = beta
+        self.beta.device = device
+
+    def sample_conditioning_variable(self, batch_size: int):
+        """Samples the conditioning variable `z` and its optional labels `y`.
+
+        Args:
+            batch_size: The number of samples to generate.
+
+        Returns:
+            A tuple containing:
+                - torch.Tensor: Samples from p(z). [batch_size, *dims]
+                - torch.Tensor or None: Labels for the samples. [batch_size, label_dim].
+                    Returns None if no labels are associated with the data.
+        """
+        z, y = self.p_data.sample(batch_size)
+        z = z.to(self.device)
+        if y is not None:
+            y = y.to(self.device)
+        return z, y
+
+    def sample_conditional_path(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Samples from the conditional distribution p_t(x|z).
+
+        Args:
+            z: Conditioning variable. [batch_size, *dims]
+            t: Time at which to sample the conditional distribution. [batch_size, 1]
+
+        Returns:
+            Samples `x` from p_t(x|z). [batch_size, *dims]
+        """
+        x = self.alpha(t) * z + self.beta(t) * torch.randn_like(z)
+        return x.to(self.device)
+
+    def conditional_vector_field(
+        self, x: torch.Tensor, z: torch.Tensor, t: torch.Tensor
+    ) -> torch.Tensor:
+        """Evaluates the conditional vector field u_t(x|z).
+
+        Args:
+            x: Sample. [batch_size, *dims]
+            z: Conditioning variable. [batch_size, *dims]
+            t: Time. [batch_size, 1]
+
+        Returns:
+            The conditional vector field. [batch_size, *dims]
+        """
+        alpha_t = self.alpha(t)
+        beta_t = self.beta(t)
+        dt_alpha_t = self.alpha.dt(t)
+        dt_beta_t = self.beta.dt(t)
+        u = (dt_alpha_t - dt_beta_t / beta_t * alpha_t) * z + dt_beta_t / beta_t * x
+        return u.to(self.device)
+
+    def conditional_score(
+        self, x: torch.Tensor, z: torch.Tensor, t: torch.Tensor
+    ) -> torch.Tensor:
+        """Evaluates the conditional score function of p_t(x|z).
+
+        Args:
+            x: Sample. [batch_size, *dims]
+            z: Conditioning variable. [batch_size, *dims]
+            t: Time. [batch_size, 1]
+
+        Returns:
+            The conditional score function. [batch_size, *dims]
+        """
+        alpha_t = self.alpha(t)
+        beta_t = self.beta(t)
+        s = (z * alpha_t - x) / beta_t**2
+        return s.to(self.device)
