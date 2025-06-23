@@ -203,3 +203,4 @@ __marimo__/
 data/
 checkpoints/
 mlruns/
+results/

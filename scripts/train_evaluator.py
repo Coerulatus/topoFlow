@@ -1,6 +1,7 @@
 """Train an evaluator for the QM9 dataset using PyTorch Geometric."""
 
-# Ensure topoflow is importable, assuming it's in your Python path
+import itertools
+
 from topoflow.data.graphs import QM9WithRDKitMetrics
 from topoflow.data.graphs import MolecularDataModule
 from topoflow.evaluators import GATEvaluator
@@ -12,16 +13,12 @@ import lightning.pytorch as pl
 from pytorch_lightning.loggers import MLFlowLogger
 
 
-# --- Global Dataset Loading (Loaded once) ---
-data_path = "./data/QM9_RDKit"
-dataset = QM9WithRDKitMetrics(root=data_path)
+def run_experiment(hparams, dataset):
+    """Run a training experiment with the given hyperparameters."""
+    seed = hparams["random_seed"]
+    lr = hparams["lr"]
+    hidden_channels = hparams["hidden_channels"]
 
-# --- Define Random Seeds for Experimentation ---
-# This list will determine how many independent training runs are performed.
-random_seeds = [1, 3, 5, 7, 9]  # Example seeds. Add or remove as needed.
-
-# --- Loop Through Each Random Seed ---
-for seed in random_seeds:
     print(f"\n{'='*50}")
     print(f"--- Starting Training Run with SEED: {seed} ---")
     print(f"{'='*50}\n")
@@ -45,8 +42,10 @@ for seed in random_seeds:
         num_layers=3,
         heads=4,
         dropout=0.5,
-        lr=2e-4,
+        lr=1e-4,
         monitor_metric="mse",
+        y_cols=["qed_mse", "logp_mse", "sascore_mse"],
+        norm_params=dataset.norm_params,
     )
 
     callbacks = [
@@ -59,19 +58,19 @@ for seed in random_seeds:
         ),
         pl.callbacks.EarlyStopping(
             monitor="val/mse",
-            patience=10,
+            patience=20,
             mode="min",
         ),
     ]
 
     mlflow_logger = MLFlowLogger(
-        experiment_name="gat_evaluator_experiment",
+        experiment_name=hparams["experiment_name"],
         tracking_uri="file:./mlruns",
-        run_name=f"Run_Seed_{seed}",
+        run_name=f"run_seed_{seed}",
     )
 
     trainer = pl.Trainer(
-        max_epochs=100,
+        max_epochs=200,
         accelerator="auto",
         devices=1,
         logger=mlflow_logger,
@@ -97,12 +96,38 @@ for seed in random_seeds:
         f"Results for this run are logged in MLflow UI under Experiment 'gat_evaluator_experiment', Run 'Run_Seed_{seed}'"
     )
 
-print(f"\n\n{'='*50}")
-print("ALL TRAINING RUNS COMPLETE!")
-print(
-    "To view your results, navigate to the directory containing './mlruns' (or your specified tracking_uri)"
-)
-print(
-    "and run: `mlflow ui` in your terminal. Then open http://localhost:5000 in your browser."
-)
-print(f"{'='*50}")
+
+if __name__ == "__main__":
+    data_path = "./data/QM9_RDKit"
+    dataset = QM9WithRDKitMetrics(root=data_path)
+
+    random_seeds = [1, 3, 5, 7, 9]
+    lrs = [2e-3, 1e-3, 5e-4]
+    hidden_channels = [64, 128, 256]
+
+    param_grid = {
+        "random_seed": random_seeds,
+        "lr": lrs,
+        "hidden_channels": hidden_channels,
+    }
+    keys = param_grid.keys()
+    combinations = itertools.product(*param_grid.values())
+
+    for i, combo in enumerate(combinations):
+        hparams = dict(zip(keys, combo))
+        hparams["experiment_name"] = f"gat_evaluator_experiment2"
+        print(f"\n\n{'='*50}")
+        print(f"--- Starting Experiment {i+1} with Hyperparameters: {hparams} ---")
+        print(f"{'='*50}\n")
+
+        run_experiment(hparams, dataset)
+
+    print(f"\n\n{'='*50}")
+    print("ALL TRAINING RUNS COMPLETE!")
+    print(
+        "To view your results, navigate to the directory containing './mlruns' (or your specified tracking_uri)"
+    )
+    print(
+        "and run: `mlflow ui` in your terminal. Then open http://localhost:5000 in your browser."
+    )
+    print(f"{'='*50}")

@@ -93,6 +93,8 @@ class GATEvaluator(LightningModule):
         dropout=0.6,
         lr=1e-3,
         monitor_metric="mae",
+        y_cols=None,
+        norm_params=None,
         optimizer=None,
     ):
         """Initialize the GATEvaluator.
@@ -107,6 +109,8 @@ class GATEvaluator(LightningModule):
             dropout (float): Dropout rate for GAT layers.
             lr (float): Learning rate for the optimizer.
             monitor_metric (str): Metric to monitor for validation and test steps.
+            y_cols (list, optional): List of column names for labels.
+            norm_params (dict, optional): Normalization parameters used for y.
             optimizer (callable): Optimizer class to use for training.
         """
         super().__init__()
@@ -137,6 +141,22 @@ class GATEvaluator(LightningModule):
                 lr=lr,
                 weight_decay=1e-5,
             )
+        self.y_cols = (
+            y_cols if y_cols is not None else [f"y_{i}" for i in range(out_channels)]
+        )
+        self.norm_params = [[] for _ in self.y_cols]
+        found_keys = 0
+        for key in norm_params:
+            for i, col in enumerate(self.y_cols):
+                if key in col:
+                    self.norm_params[i] = norm_params[key]
+                    found_keys += 1
+        assert found_keys == len(
+            self.y_cols
+        ), f"Expected {len(self.y_cols)} normalization parameters, but found {found_keys}. \
+                Please ensure that y_cols contain the keys in norm_params."
+        self.norm_params = torch.tensor(self.norm_params, dtype=torch.float32)
+
         self.save_hyperparameters(ignore=["optimizer"])
 
     def forward(self, x, edge_index, edge_attr, batch):
@@ -188,6 +208,28 @@ class GATEvaluator(LightningModule):
             sync_dist=True,
             batch_size=batch_size,
         )
+        if stage == "val":
+
+            def unnormalize(y, i):
+                """Unnormalize the output using the provided normalization parameters."""
+                return (
+                    y * (self.norm_params[i, 1] - self.norm_params[i, 0])
+                    + self.norm_params[i, 0]
+                )
+
+            metric_func = (
+                mean_squared_error
+                if self.monitor_metric == "mse"
+                else mean_absolute_error
+            )
+            metrics = {
+                y_col: metric_func(unnormalize(y_hat[:, i], i), unnormalize(y[:, i], i))
+                for i, y_col in enumerate(self.y_cols)
+            }
+            self.log_dict(
+                {f"{stage}/{y_col}": metric for y_col, metric in metrics.items()},
+                batch_size=batch_size,
+            )
         return loss
 
     def compute_score(self, batch):
