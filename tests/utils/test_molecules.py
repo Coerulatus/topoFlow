@@ -3,7 +3,7 @@
 import unittest
 from rdkit import Chem
 from tests.conftest import get_toy_molecule
-from topoflow.utils.molecules import make_mol_openbabel
+from topoflow.utils.molecules import make_mol_openbabel, rdmol_to_smiles
 
 
 class TestMolecules(unittest.TestCase):
@@ -44,3 +44,9 @@ class TestMolecules(unittest.TestCase):
 
         Chem.SanitizeMol(mol)  # Force sanitization for better perception
         print(f"Benzene aromaticity: {mol.GetAtomWithIdx(0).GetIsAromatic()}")
+
+    def test_rdmol_to_smiles(self):
+        """Test the conversion of RDKit molecule to SMILES."""
+        mol = self.benzene_molecule["rdkit_mol"]
+        smiles = rdmol_to_smiles(mol)
+        self.assertEqual(smiles, "c1ccccc1")

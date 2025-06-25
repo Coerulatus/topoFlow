@@ -23,3 +23,6 @@ dependencies:
   - mlflow
   - torchmetrics
   - torchdiffeq
+  - biopython
+  - imageio
+  - pymol-open-source

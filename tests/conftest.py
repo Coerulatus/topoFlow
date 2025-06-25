@@ -3,6 +3,8 @@
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
+import torch
+import torch_geometric
 
 
 def get_toy_molecule(molecule_name: str) -> dict:
@@ -47,11 +49,14 @@ def get_toy_molecule(molecule_name: str) -> dict:
                 type_counter += 1
             atom_types.append([k for k, v in atom_decoder.items() if v == symbol][0])
 
+        pyg_mol = torch_geometric.utils.smiles.from_rdmol(mol)
+
         return {
             "rdkit_mol": mol,
             "positions": positions_rdkit,
             "atom_types": atom_types,
             "atom_decoder": atom_decoder,
+            "pyg_mol": pyg_mol,
         }
 
     elif molecule_name.lower() == "benzene":
@@ -77,19 +82,34 @@ def get_toy_molecule(molecule_name: str) -> dict:
                 type_counter += 1
             atom_types.append([k for k, v in atom_decoder.items() if v == symbol][0])
 
+        pyg_mol = torch_geometric.utils.smiles.from_rdmol(mol)
+
         return {
             "rdkit_mol": mol,
             "positions": positions_rdkit,
             "atom_types": atom_types,
             "atom_decoder": atom_decoder,
+            "pyg_mol": pyg_mol,
         }
+
     elif molecule_name.lower() == "invalid":
         # Example of an invalid molecule (not a real chemical structure)
+        x = torch.tensor([[0]], dtype=torch.long)
+        edge_index = torch.empty((2, 0), dtype=torch.long)  # No edges
+        edge_attr = torch.empty((0, 1), dtype=torch.float)  # No edge attributes
+        y = torch.tensor([0], dtype=torch.long)
+        pos = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float)  # Single atom position
+
+        pyg_mol = torch_geometric.data.Data(
+            x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, pos=pos
+        )
+
         return {
             "rdkit_mol": None,
             "positions": np.array([[0, 0, 0]]),
             "atom_types": [0],
             "atom_decoder": {0: "X"},  # Placeholder for an invalid atom
+            "pyg_mol": pyg_mol,
         }
     else:
         raise ValueError(

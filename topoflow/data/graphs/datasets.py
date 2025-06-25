@@ -1,19 +1,26 @@
 """QM9 dataset with RDKit-calculated molecular properties (QED, SAS, LogP)."""
 
-import sys
 import os
+from pathlib import Path
 import torch
 from torch_geometric.datasets import QM9
-from torch_geometric.data import InMemoryDataset, Data
+from torch_geometric.data import InMemoryDataset
 from tqdm import tqdm
-
-# Import RDKit modules
 from rdkit import Chem
-
-# from rdkit.Chem import Descriptors
-# from rdkit.Chem import QED
+from scipy.ndimage import gaussian_filter
+import numpy as np
+from torch_geometric.data import Data
+import random
+import shutil
+from time import time
 
 from topoflow.utils.metrics import qed_scorer, logp_scorer, sas_scorer
+from topoflow.data.graphs.utils import (
+    download_crossdocked,
+    process_ligand_and_pocket,
+    saveall,
+)
+import topoflow.utils.constants as constants
 
 
 class QM9WithRDKitMetrics(InMemoryDataset):
@@ -131,34 +138,338 @@ class QM9WithRDKitMetrics(InMemoryDataset):
         torch.save((data, slices), self.processed_paths[0])
 
 
-# --- How to use the function ---
-if __name__ == "__main__":
-    # Define the root directory for storing the dataset
-    # This will create 'data/QM9_RDKit' for the new dataset
-    # and 'data/QM9_original' for the base QM9 dataset if not present
-    dataset_root = "data/QM9_RDKit"
+class CrossDocked(InMemoryDataset):
+    """Cross-docked dataset with RDKit-calculated molecular properties."""
 
-    print(
-        f"Processing QM9 dataset and calculating RDKit metrics. This may take a while..."
-    )
-    print(
-        f"Original QM9 dataset will be downloaded to: {os.path.join(dataset_root, 'QM9_original')}"
-    )
-    print(
-        f"Processed dataset with RDKit metrics will be saved to: {os.path.join(dataset_root, 'processed', 'qm9_rdkit_metrics.pt')}"
-    )
+    def __init__(
+        self,
+        root: str,
+        split: str,
+        transform=None,
+        pre_transform=None,
+        normalize: bool = True,
+        outdir: str = None,
+        ca_only: bool = False,
+        distance_cutoff: float = 8.0,
+        random_seed: int = 42,
+    ):
+        """Initialize the CrossDocked dataset.
 
-    # Initialize the custom dataset. This will trigger the download and process methods.
-    dataset = QM9WithRDKitMetrics(root=dataset_root)
+        Args:
+            root (str): Root directory where the dataset is stored.
+            split (str): The dataset split to use ('train', 'val', 'test').
+            transform (callable, optional): A function/transform that takes in a Data object and
+                returns a transformed version. The data object will be transformed before every access.
+            pre_transform (callable, optional): A function/transform that takes in a Data object and
+                returns a transformed version. The data object will be transformed before being saved to disk.
+            normalize (bool): Whether to normalize the molecular properties (QED, SAS, LogP).
+            outdir (str, optional): Directory to save processed data. If None, uses the default processed directory.
+            ca_only (bool): If True, only process C-alpha atoms in the protein pockets.
+            distance_cutoff (float): Distance cutoff for processing ligand-pocket interactions.
+            random_seed (int): Random seed for reproducibility.
+        """
+        self.split = split
+        self.normalize = normalize
+        self.outdir = outdir
+        self.ca_only = ca_only
+        self.distance_cutoff = distance_cutoff
+        self.random_seed = random_seed
 
-    print("\nDataset processing complete!")
-    print(f"Number of molecules in the dataset: {len(dataset)}")
+        super().__init__(root, transform, pre_transform)
+        self.load()
 
-    # Example: Accessing properties of the first molecule
-    first_molecule = dataset[0]
-    print("\nExample for the first molecule:")
-    print(f"Original QM9 targets (data.y): {first_molecule.y}")
-    print(f"SMILES: {first_molecule.smiles}")
-    print(f"QED Score: {first_molecule.y[0].item()}")
-    print(f"LogP Score: {first_molecule.y[1].item()}")
-    print(f"SAS Score: {first_molecule.y[2].item()}")
+    @property
+    def raw_file_names(self):
+        """Return the raw file names for the CrossDocked dataset."""
+        return ["crossdocked_pocket10", "split_by_name.pt"]
+
+    @property
+    def processed_file_names(self):
+        """Return the filename for the processed dataset."""
+        return f"{self.split}_crossdocked_pyg.pt"
+
+    def download(self):
+        """Download the raw CrossDocked dataset files."""
+        if not os.path.exists(str(self.raw_dir)):
+            os.makedirs(str(self.raw_dir))
+
+        download_crossdocked(
+            basedir=str(self.raw_dir),
+            outdir=str(self.processed_dir),
+            ca_only=self.ca_only,
+            dist_cutoff=self.distance_cutoff,
+            random_seed=self.random_seed,
+        )
+        print("Raw data download and initial NPZ processing complete.")
+
+    def process(self):
+        """Process the raw data into PyTorch Geometric Data objects.
+
+        Processes the raw data (NPZ files created by download_crossdocked)
+        into a single PyTorch Geometric Data object with slices for the
+        specific split requested during initialization.
+        """
+        dataset_info = constants.dataset_params["crossdock_full"]
+        amino_acid_dict = dataset_info["aa_encoder"]
+        atom_dict = dataset_info["atom_encoder"]
+        atom_decoder = dataset_info["atom_decoder"]
+        if self.processed_dir is None:
+            suffix = (
+                "_crossdock" if "H" in atom_dict else "_crossdock_noH"
+            )  # This checks if H is in atom_dict keys
+            suffix += "_full_temp"
+            processed_dir = Path(self.raw_dir, f"processed{suffix}")
+        else:
+            processed_dir = self.processed_dir
+
+        if not os.path.exists(processed_dir):
+            os.makedirs(processed_dir, exist_ok=True)
+        print(f"Processed data will be saved to: {processed_dir}")
+
+        datadir = Path(self.raw_dir, "crossdocked_pocket10/")
+
+        split_path = Path(self.raw_dir, "split_by_name.pt")
+        print(f"Loading data split from: {split_path}")
+        data_split = torch.load(split_path, weights_only=False)
+        print(f"Data split loaded successfully. Keys: {list(data_split.keys())}")
+
+        # TODO: Remove this when loading whole dataset
+        data_split["train"] = data_split["train"][:1000]
+
+        # There is no validation set, copy 300 training examples (the validation set
+        # is not very important in this application)
+        data_split["val"] = random.sample(data_split["train"], 300)
+
+        n_train_before = len(data_split["train"])
+        n_val_before = len(data_split["val"])
+        n_test_before = len(data_split["test"])
+
+        failed_save = []
+        n_samples_after = {}
+
+        for split in data_split.keys():
+            print(f"\nProcessing '{split}' split...")
+            lig_coords_list = []
+            lig_one_hot_list = []
+            lig_mask_list = []
+            pocket_coords_list = []
+            pocket_one_hot_list = []
+            pocket_mask_list = []
+            pdb_and_mol_ids_list = []
+            count = 0
+
+            pdb_sdf_split_dir = os.path.join(processed_dir, split)
+            os.makedirs(pdb_sdf_split_dir, exist_ok=True)
+
+            tic = time()
+            num_failed = 0
+            pbar = tqdm(data_split[split])
+            pbar.set_description(f"#failed: {num_failed}")
+
+            for pocket_fn_rel, ligand_fn_rel in pbar:
+                sdffile = datadir / ligand_fn_rel
+                pdbfile = datadir / pocket_fn_rel
+
+                if not pdbfile.exists():
+                    num_failed += 1
+                    failed_save.append((pocket_fn_rel, ligand_fn_rel, "PDB not found"))
+                    pbar.set_description(f"#failed: {num_failed}")
+                    continue
+                if not sdffile.exists():
+                    num_failed += 1
+                    failed_save.append((pocket_fn_rel, ligand_fn_rel, "SDF not found"))
+                    pbar.set_description(f"#failed: {num_failed}")
+                    continue
+
+                try:
+                    ligand_data, pocket_data = process_ligand_and_pocket(
+                        pdbfile,
+                        sdffile,
+                        atom_dict=atom_dict,
+                        dist_cutoff=self.distance_cutoff,
+                        ca_only=False,
+                        amino_acid_dict=amino_acid_dict,
+                    )
+
+                    if ligand_data is None or pocket_data is None:
+                        num_failed += 1
+                        failed_save.append(
+                            (pocket_fn_rel, ligand_fn_rel, "Processing returned None")
+                        )
+                        pbar.set_description(f"#failed: {num_failed}")
+                        continue
+
+                except (
+                    KeyError,
+                    AssertionError,
+                    FileNotFoundError,
+                    IndexError,
+                    ValueError,
+                ) as e:
+                    print(
+                        f"Error processing {pocket_fn_rel}, {ligand_fn_rel}: {type(e).__name__} {e}"
+                    )
+                    num_failed += 1
+                    failed_save.append((pocket_fn_rel, ligand_fn_rel, str(e)))
+                    pbar.set_description(f"#failed: {num_failed}")
+                    continue
+                except Exception as e:  # Catch any other unexpected errors
+                    print(
+                        f"Unhandled error processing {pocket_fn_rel}, {ligand_fn_rel}: {type(e).__name__} {e}"
+                    )
+                    num_failed += 1
+                    failed_save.append((pocket_fn_rel, ligand_fn_rel, str(e)))
+                    pbar.set_description(f"#failed: {num_failed}")
+                    continue
+
+                pdb_and_mol_ids_list.append(f"{pocket_fn_rel}_{ligand_fn_rel}")
+                lig_coords_list.append(ligand_data["lig_coords"])
+                lig_one_hot_list.append(ligand_data["lig_one_hot"])
+                lig_mask_list.append(count * np.ones(len(ligand_data["lig_coords"])))
+                pocket_coords_list.append(pocket_data["pocket_coords"])
+                pocket_one_hot_list.append(pocket_data["pocket_one_hot"])
+                pocket_mask_list.append(
+                    count * np.ones(len(pocket_data["pocket_coords"]))
+                )
+                count += 1
+
+                if split in {"val", "test"}:
+                    new_rec_name = Path(pdbfile).stem.replace("_", "-")
+                    pdb_file_out = Path(pdb_sdf_split_dir, f"{new_rec_name}.pdb")
+                    shutil.copy(pdbfile, pdb_file_out)
+
+                    new_lig_name = (
+                        new_rec_name + "_" + Path(sdffile).stem.replace("_", "-")
+                    )
+                    sdf_file_out = Path(pdb_sdf_split_dir, f"{new_lig_name}.sdf")
+                    shutil.copy(sdffile, sdf_file_out)
+
+                    with open(Path(pdb_sdf_split_dir, f"{new_lig_name}.txt"), "w") as f:
+                        f.write(" ".join(pocket_data["pocket_ids"]))
+
+            if lig_coords_list:
+                lig_coords = np.concatenate(lig_coords_list, axis=0)
+                lig_one_hot = np.concatenate(lig_one_hot_list, axis=0)
+                lig_mask = np.concatenate(lig_mask_list, axis=0)
+                pocket_coords = np.concatenate(pocket_coords_list, axis=0)
+                pocket_one_hot = np.concatenate(pocket_one_hot_list, axis=0)
+                pocket_mask = np.concatenate(pocket_mask_list, axis=0)
+                target_file = os.path.join(processed_dir, f"{split}.npz")
+                saveall(
+                    target_file,
+                    pdb_and_mol_ids_list,
+                    lig_coords,
+                    lig_one_hot,
+                    lig_mask,
+                    pocket_coords,
+                    pocket_one_hot,
+                    pocket_mask,
+                )
+            else:
+                print(
+                    f"No valid samples processed for {split} split. Skipping .npz save."
+                )
+
+            n_samples_after[split] = len(pdb_and_mol_ids_list)
+            print(f"Processing {split} set took {(time() - tic) / 60.0:.2f} minutes")
+            print(f"Failed samples in {split} split: {num_failed}")
+
+        if failed_save:
+            print("\n--- Summary of Failed Samples ---")
+            for entry in failed_save:
+                print(f"Failed: PDB/SDF: {entry[0]}, {entry[1]} - Reason: {entry[2]}")
+        else:
+            print("\nAll samples processed successfully (no failures recorded).")
+
+        data_list = []
+
+        split_name = self.split
+
+        split_npz_path = os.path.join(self.processed_dir, f"{split_name}.npz")
+
+        if not os.path.exists(split_npz_path):
+            raise FileNotFoundError(
+                f"Processed NPZ file for split '{split_name}' not found at {split_npz_path}. "
+                "Please ensure `download()` method (which calls `download_crossdocked`) "
+                "completed successfully and generated this file."
+            )
+
+        print(f"Loading data from {split_npz_path} for split '{split_name}'...")
+        loaded_data = np.load(split_npz_path, allow_pickle=True)
+
+        names = loaded_data["names"]
+        lig_coords_all = loaded_data["lig_coords"]
+        lig_one_hot_all = loaded_data["lig_one_hot"]
+        lig_mask_all = loaded_data["lig_mask"]
+        pocket_coords_all = loaded_data["pocket_coords"]
+        pocket_one_hot_all = loaded_data["pocket_one_hot"]
+        pocket_mask_all = loaded_data["pocket_mask"]
+
+        unique_sample_ids = np.unique(lig_mask_all)
+
+        if len(names) != len(unique_sample_ids):
+            print(
+                f"Warning: Mismatch between number of names ({len(names)}) and unique sample IDs ({len(unique_sample_ids)}) in {split_name}.npz. This might indicate corrupt data."
+            )
+
+        print(
+            f"Reconstructing {len(unique_sample_ids)} samples from {split_name}.npz..."
+        )
+        for i, sample_idx in enumerate(unique_sample_ids):
+            lig_indices = lig_mask_all == sample_idx
+            pocket_indices = pocket_mask_all == sample_idx
+
+            if lig_indices.sum() == 0 or pocket_indices.sum() == 0:
+                print(
+                    f"Warning: No ligand or pocket data found for sample_idx {sample_idx} in {split_name}.npz. Skipping."
+                )
+                continue
+
+            lig_coords = torch.from_numpy(lig_coords_all[lig_indices]).float()
+            lig_one_hot = torch.from_numpy(lig_one_hot_all[lig_indices]).float()
+            batch_lig = torch.zeros(lig_coords.size(0), dtype=torch.long)
+
+            pocket_coords = torch.from_numpy(pocket_coords_all[pocket_indices]).float()
+            pocket_one_hot = torch.from_numpy(
+                pocket_one_hot_all[pocket_indices]
+            ).float()
+            batch_pocket = torch.zeros(pocket_coords.size(0), dtype=torch.long)
+
+            data = Data(
+                x_lig=lig_one_hot,
+                pos_lig=lig_coords,
+                batch_lig=batch_lig,
+                x_pocket=pocket_one_hot,
+                pos_pocket=pocket_coords,
+                batch_pocket=batch_pocket,
+            )
+            data_list.append(data)
+        print(
+            f"Finished reconstructing samples for '{split_name}'. Total samples for this split: {len(data_list)}"
+        )
+
+        if not data_list:
+            print(
+                f"No valid data samples were processed for split '{split_name}'. Initializing as empty dataset."
+            )
+            self.data = Data()
+            self.slices = {}
+            return
+
+        print(
+            f"Collating {len(data_list)} individual Data objects for split '{split_name}'..."
+        )
+        data, slices = self.collate(data_list)
+
+        print(f"Saving collated data to {self.processed_paths[0]}...")
+        torch.save((data, slices), self.processed_paths[0])
+        print("Processed dataset saved successfully.")
+
+    def load(self):
+        """Load the processed dataset."""
+        if not os.path.exists(self.processed_paths[0]):
+            raise FileNotFoundError(
+                f"Processed dataset not found at {self.processed_paths[0]}. Please run process() first."
+            )
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
+        print(f"Loaded dataset from {self.processed_paths[0]}.")

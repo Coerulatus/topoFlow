@@ -1,6 +1,5 @@
 """Test suite for the QM9 dataset with RDKit-calculated metrics."""
 
-import tempfile
 import torch
 import unittest
 
@@ -13,10 +12,8 @@ class TestQM9DataModule(unittest.TestCase):
 
     def setUp(self):
         """Set up the data module for testing."""
-        tmp_path = tempfile.TemporaryDirectory()
-        self.dataset = QM9WithRDKitMetrics(
-            root=tmp_path.name, normalize=True, fraction=0.01
-        )
+        root = "data/QM9_RDKit"
+        self.dataset = QM9WithRDKitMetrics(root=root, normalize=True)
         self.data_module = MolecularDataModule(
             self.dataset, batch_size=32, num_workers=0
         )

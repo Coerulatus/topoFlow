@@ -4,7 +4,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
-from topoflow.flow.models.unet import MNISTUNet
+from topoflow.flow.vector_field_models.unet import MNISTUNet
 
 
 class AutoEncoder(pl.LightningModule):
