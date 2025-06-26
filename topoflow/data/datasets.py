@@ -10,15 +10,17 @@ from rdkit import Chem
 from scipy.ndimage import gaussian_filter
 import numpy as np
 from torch_geometric.data import Data
+from torch_geometric.loader import DataLoader
 import random
 import shutil
 from time import time
 
 from topoflow.utils.metrics import qed_scorer, logp_scorer, sas_scorer
-from topoflow.data.graphs.utils import (
+from topoflow.data.utils import (
     download_crossdocked,
     process_ligand_and_pocket,
     saveall,
+    Sampleable,
 )
 import topoflow.utils.constants as constants
 
@@ -436,11 +438,11 @@ class CrossDocked(InMemoryDataset):
             batch_pocket = torch.zeros(pocket_coords.size(0), dtype=torch.long)
 
             data = Data(
-                x_lig=lig_one_hot,
-                pos_lig=lig_coords,
+                h_lig=lig_one_hot,
+                x_lig=lig_coords,
                 batch_lig=batch_lig,
-                x_pocket=pocket_one_hot,
-                pos_pocket=pocket_coords,
+                h_pocket=pocket_one_hot,
+                x_pocket=pocket_coords,
                 batch_pocket=batch_pocket,
             )
             data_list.append(data)

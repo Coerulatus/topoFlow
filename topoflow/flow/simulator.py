@@ -193,17 +193,16 @@ class TorchDiffEqSimulator(Simulator):
         self,
         x: torch.Tensor,
         ts: torch.Tensor,
-        y: torch.Tensor = None,
-        guidance_scale: float = 0.0,
+        batch_lig: torch.Tensor,
+        batch_pocket: torch.Tensor,
     ) -> torch.Tensor:
         """Simulates the dynamics over a sequence of time steps.
 
         Args:
             x: Initial state of the system. [batch_size, *dims]
             ts: Sequence of time steps. [batch_size, time_steps]
-            y: Conditioning variable. (Label for guided data) [batch_size, 1].
-                Defaults to None.
-            guidance_scale: Scale for guidance. Defaults to 0.0.
+            batch_lig: The ligands associated with the samples. [batch_size, *dims]
+            batch_pocket: The pockets associated with the samples. [batch_size, *dims]
 
         Returns:
             State at final time step.
@@ -212,51 +211,40 @@ class TorchDiffEqSimulator(Simulator):
             t = torch.tensor([ts[0], ts[-1]], device=ts.device)
         else:
             t = ts[:]
-        ode_func = lambda t, x: self.ode.drift_coefficient(x, t, y, guidance_scale)
+        ode_func = lambda t, x: self.ode.drift_coefficient(x, t)
         sol = odeint(ode_func, x, t, method=self.solver)
         return sol.transpose(0, 1)
 
-    @torch.no_grad()
-    def simulate_trajectory(
-        self,
-        x: torch.Tensor,
-        ts: torch.Tensor,
-        y: torch.Tensor = None,
-        guidance_scale: float = 0.0,
-    ) -> torch.Tensor:
-        """Simulates the dynamics over a sequence of time steps.
+    # @torch.no_grad()
+    # def simulate_trajectory(
+    #     self,
+    #     x: torch.Tensor,
+    #     ts: torch.Tensor
+    # ) -> torch.Tensor:
+    #     """Simulates the dynamics over a sequence of time steps.
 
-        Args:
-            x: Initial state of the system. [batch_size, dim]
-            ts: Sequence of time steps. [batch_size, time_steps]
-            y: Conditioning variable. (Label for guided data) [batch_size, 1].
-                Defaults to None.
-            guidance_scale: Scale for guidance. Defaults to 0.0.
+    #     Args:
+    #         x: Initial state of the system. [batch_size, dim]
+    #         ts: Sequence of time steps. [batch_size, time_steps]
 
-        Returns:
-            Simulated states at each time step.
-        """
-        if self.solver == "dopri5":
-            t = torch.tensor(
-                [ts[0], ts[-1]], device=ts.device
-            )  # Added device for consistency
-        else:
-            t = ts[:]
-        ode_func = lambda t, x: self.ode.drift_coefficient(x, t, y, guidance_scale)
-        sol = odeint(ode_func, x, t, method=self.solver)
-        return sol.transpose(0, 1)
+    #     Returns:
+    #         Simulated states at each time step.
+    #     """
+    #     if self.solver == "dopri5":
+    #         t = torch.tensor(
+    #             [ts[0], ts[-1]], device=ts.device
+    #         )  # Added device for consistency
+    #     else:
+    #         t = ts[:]
+    #     ode_func = lambda t, x: self.ode.drift_coefficient(x, t)
+    #     sol = odeint(ode_func, x, t, method=self.solver)
+    #     return sol.transpose(0, 1)
 
     def step(self, xt, t, dt):
         """Step method for TorchDiffEqSimulator."""
         pass
 
-    def integration_error(
-        self,
-        x: torch.Tensor,
-        ts: torch.Tensor,
-        y: torch.Tensor = None,
-        guidance_scale: float = 0.0,
-    ):
+    def integration_error(self, x: torch.Tensor, ts: torch.Tensor):
         """Computes the integration error over a sequence of time steps.
 
         Args:
@@ -272,7 +260,7 @@ class TorchDiffEqSimulator(Simulator):
                 - float: Time taken for DOPRI5 integration.
                 - float: Time taken for RK4 integration.
         """
-        ode_func = lambda t, x: self.ode.drift_coefficient(x, t, y, guidance_scale)
+        ode_func = lambda t, x: self.ode.drift_coefficient(x, t)
 
         time_start = time.time()
         sol_dopri = odeint(ode_func, x, ts, method="dopri5")

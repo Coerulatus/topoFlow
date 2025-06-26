@@ -1,5 +1,6 @@
 """Utility functions for processing PDB and SDF files into graph representations."""
 
+from abc import ABC, abstractmethod
 from pathlib import Path
 from time import time
 import shutil
@@ -18,10 +19,80 @@ from rdkit import Chem
 from scipy.ndimage import gaussian_filter
 
 import torch
+from torch.utils.data import DataLoader
+import lightning.pytorch as pl
 
 import topoflow.utils.constants as constants
 from topoflow.utils.constants import covalent_radii, dataset_params
 from topoflow.utils.molecules import make_mol_openbabel, rdmol_to_smiles
+
+
+class MockDataset(torch.utils.data.Dataset):
+    """A mock dataset to be used with lightning."""
+
+    def __init__(self, length):
+        """Initialize a mock dataset with a specified length."""
+        self.data = torch.ones(length)
+
+    def __len__(self):
+        """Return the length of the dataset."""
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        """Get item by index."""
+        return self.data[idx]
+
+
+class MockDatamodule(pl.LightningDataModule):
+    """A mock datamodule to be used with lightning trainer."""
+
+    def __init__(self, train_length, val_length=0, test_length=0, batch_size: int = 64):
+        """Initialize the mock datamodule."""
+        super().__init__()
+        self.train_length = train_length
+        self.val_length = val_length
+        self.test_length = test_length
+        self.batch_size = batch_size
+
+    def train_dataloader(self):
+        """Returns a DataLoader for the training dataset."""
+        return DataLoader(
+            MockDataset(self.train_length), batch_size=self.batch_size, shuffle=True
+        )
+
+    def val_dataloader(self):
+        """Returns a DataLoader for the validation dataset."""
+        return DataLoader(
+            MockDataset(self.val_length), batch_size=self.batch_size, shuffle=False
+        )
+
+    def test_dataloader(self):
+        """Returns a DataLoader for the test dataset."""
+        return DataLoader(
+            MockDataset(self.test_length), batch_size=self.batch_size, shuffle=False
+        )
+
+
+class Sampleable(ABC):
+    """Abstract class for sampleable distributions."""
+
+    @property
+    @abstractmethod
+    def dim(self):
+        """Dimensionality of the distribution."""
+        pass
+
+    @abstractmethod
+    def sample(self, num_samples):
+        """Sample from the distribution.
+
+        Args:
+            num_samples (int): Number of samples to draw from the distribution.
+
+        Returns:
+            torch.Tensor: Samples from the distribution.
+        """
+        pass
 
 
 def three_to_one(resname):

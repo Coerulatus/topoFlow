@@ -3,8 +3,8 @@
 import torch
 import unittest
 
-from topoflow.data.graphs import MolecularDataModule
-from topoflow.data.graphs import QM9WithRDKitMetrics
+from topoflow.data import MolecularDataModule
+from topoflow.data import QM9WithRDKitMetrics
 
 
 class TestQM9DataModule(unittest.TestCase):

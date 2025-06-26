@@ -65,16 +65,25 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         x = self.sample_conditional_path(z, t)
         return x.to(self.device)
 
-    def sample_time(self, batch_size: int) -> torch.Tensor:
+    def sample_time(
+        self, batch_size: int, batch_lig=None, batch_pocket=None
+    ) -> torch.Tensor:
         """Samples time `t` uniformly from [0, 1).
 
         Args:
             batch_size: Number of time samples to generate.
+            batch_lig: Optional tensor indicating the samples associated with the ligands.
+            batch_pocket: Optional tensor indicating the samples associated with the pockets.
 
         Returns:
             Samples from a uniform distribution U[0,1). [batch_size, *1s]
         """
-        return torch.rand(batch_size, device=self.device).view(self.t_target_shape)
+        t = torch.rand(batch_size, device=self.device).view(self.t_target_shape)
+        if batch_lig is None and batch_pocket is None:
+            return t, None
+        batch_all = torch.cat([batch_lig, batch_pocket], dim=0)
+        t_batched = t[batch_all]
+        return t, t_batched
 
     def sample_simple_distribution(self, batch_size: int):
         """Samples from the simple distribution `p_simple`.
@@ -88,13 +97,14 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
                 - torch.Tensor or None: Labels for the samples. [batch_size, label_dim].
                     Returns None if no labels are associated with the simple distribution.
         """
-        # Note: The `.to(self.device)` here should be applied to the output
-        # of `self.p_simple.sample(batch_size)` which returns a tuple.
-        # It's better to explicitly move `z` and `y` to device after unpacking.
-        z, y = self.p_simple.sample(batch_size)
-        z = z.to(self.device)
-        if y is not None:
-            y = y.to(self.device)
+        if hasattr(self, "nodes_distribution") and self.nodes_distribution is not None:
+            num_nodes_lig, num_nodes_pocket = self.nodes_distribution.sample(batch_size)
+            z, y = self.p_simple.sample(num_nodes_lig + num_nodes_pocket)
+        else:
+            z, y = self.p_simple.sample(batch_size)
+            z = z.to(self.device)
+            if y is not None:
+                y = y.to(self.device)
         return z, y
 
     @abstractmethod

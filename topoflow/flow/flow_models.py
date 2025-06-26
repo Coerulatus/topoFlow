@@ -1,7 +1,7 @@
 """Flow-based generative models."""
 
 import numpy as np
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
@@ -22,11 +22,8 @@ class FlowModel(pl.LightningModule):
         vector_field_model,
         path,
         n_val_samples=0,
-        eta=0,
-        val_y_target=None,
-        val_guidance_scale=0.0,
         device="cpu",
-        conditioned=True,
+        lr=1e-3,
     ):
         """Initializes the FlowModel.
 
@@ -36,14 +33,8 @@ class FlowModel(pl.LightningModule):
                 sampling and conditional vector fields.
             n_val_samples: Number of samples to generate during validation for visualization.
                 Defaults to 0.
-            eta: Probability of replacing the true conditioning label with an
-                unguided label during training for classifier-free guidance. Defaults to 0.
-            val_y_target: The target conditioning variable for validation samples. Can be
-                an int, a torch.Tensor, or None. Defaults to None.
-            val_guidance_scale: The guidance scale to use during validation sampling.
-                Defaults to 0.0.
             device: The device on which to run computations ('cpu' or 'cuda'). Defaults to 'cpu'.
-            conditioned: A boolean indicating whether the model uses conditioning. Defaults to True.
+            lr: Learning rate for the optimizer. Defaults to 1e-3.
         """
         super().__init__()
         self.vector_field_model = vector_field_model
@@ -54,21 +45,12 @@ class FlowModel(pl.LightningModule):
         else:
             self.unguided_label = None
         self.val_samples = []
-        self.val_guidance_scale = val_guidance_scale
-        self.val_y_target = val_y_target
-        if (
-            isinstance(self.val_y_target, torch.Tensor)
-            and self.val_y_target.shape[0] != 1
-        ):
-            self.n_val_samples = self.val_y_target.shape[0]
-        else:
-            self.n_val_samples = n_val_samples
-        self.eta = eta
+        self.n_val_samples = n_val_samples
         self.loss_function = torch.nn.MSELoss()
         self.train_loss = []
-        self.conditioned = conditioned
+        self.lr = lr
 
-    def forward(self, batch, training=False):
+    def forward(self, batch):
         """Forward pass for the FlowModel.
 
         Samples from the path, computes the reference vector field, and predicts
@@ -76,7 +58,6 @@ class FlowModel(pl.LightningModule):
 
         Args:
             batch: The input batch of data.
-            training: A boolean indicating if the model is in training mode. Defaults to False.
 
         Returns:
             A tuple containing:
@@ -84,20 +65,11 @@ class FlowModel(pl.LightningModule):
                 - u_t_ref: The reference vector field from the path.
         """
         batch_size = batch.shape[0]
-        z, y = self.path.sample_conditioning_variable(batch_size)
-        if not self.conditioned:
-            y = None
-        t = self.path.sample_time(batch_size)
-        x = self.path.sample_conditional_path(z, t)
-        u_t_ref = self.path.conditional_vector_field(x, z, t)
-
-        if self.eta > 0 and training and y is not None:
-            unguided_idxs = torch.where(
-                torch.rand_like(y, dtype=torch.float) < self.eta
-            )[0]
-            y[unguided_idxs] = self.unguided_label
-
-        u_t_theta = self.vector_field_model(x, t, y)
+        z, batch_lig, batch_pocket = self.path.sample_conditioning_variable(batch_size)
+        t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
+        x = self.path.sample_conditional_path(z, t_batched)
+        u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
+        u_t_theta = self.vector_field_model(x, t, batch_lig, batch_pocket)
         return u_t_theta, u_t_ref
 
     def training_step(self, batch, batch_idx):
@@ -137,17 +109,7 @@ class FlowModel(pl.LightningModule):
 
         self.log("val_loss", loss, on_epoch=True, prog_bar=False)
         if self.n_val_samples > 0 and batch_idx == 0:
-            if self.val_y_target is None or not self.conditioned:
-                y = None
-            elif isinstance(self.val_y_target, torch.Tensor):
-                y = self.val_y_target.to(u_t_ref.device)
-            elif isinstance(self.val_y_target, int):
-                y = torch.tensor(self.val_y_target, dtype=torch.int).to(u_t_ref.device)
-            self.val_samples.append(
-                self.sample(
-                    self.n_val_samples, y=y, guidance_scale=self.val_guidance_scale
-                ).cpu()
-            )
+            self.val_samples.append(self.sample(self.n_val_samples).cpu())
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -168,7 +130,7 @@ class FlowModel(pl.LightningModule):
         self.log("test_loss", loss)
         return loss
 
-    def drift_coefficient(self, x, t, y=None, guidance_scale=0.0):
+    def drift_coefficient(self, x, t, batch_lig, batch_pocket):
         """Computes the drift coefficient (vector field) at time t.
 
         Applies classifier-free guidance if `guidance_scale` is greater than 0
@@ -177,8 +139,10 @@ class FlowModel(pl.LightningModule):
         Args:
             x: Input tensor. Shape: [batch_size, *dims].
             t: Time at which to compute the drift coefficient. Shape: [batch_size, 1].
-            y: Conditioning variable. Shape: [batch_size, 1]. Defaults to None.
-            guidance_scale: Scale for guidance. Defaults to 0.0.
+            batch_lig: Tensor containing ligands associated with the samples.
+                Shape: [batch_size, *dims].
+            batch_pocket: Tensor containing pockets associated with the samples.
+                Shape: [batch_size, *dims].
 
         Returns:
             The drift coefficient. Shape: [batch_size, *dims].
@@ -186,33 +150,16 @@ class FlowModel(pl.LightningModule):
         Raises:
             ValueError: If `unguided_label` is not provided when `guidance_scale` > 0.
         """
-        if guidance_scale > 0 and self.unguided_label is None and self.conditioned:
-            raise ValueError(
-                "Unguided label must be provided when guidance scale is greater than 0."
-            )
-        if self.conditioned and y is None:
-            y = torch.ones(x.shape[0], dtype=torch.int) * self.unguided_label
-        guided_vector_field = self.vector_field_model(x, t, y)
-        if guidance_scale > 0 and self.conditioned:
-            unguided_y = torch.ones_like(y) * self.unguided_label
-            unguided_vector_field = self.vector_field_model(x, t, unguided_y)
-            result = (
-                guidance_scale * guided_vector_field
-                + (1 - guidance_scale) * unguided_vector_field
-            )
-        else:
-            result = guided_vector_field
-        return result
+        guided_vector_field = self.vector_field_model(x, t, batch_lig, batch_pocket)
+        return guided_vector_field
 
     @torch.no_grad()
-    def sample(self, n_samples, n_steps=20, y=None, guidance_scale=0.0):
+    def sample(self, n_samples, n_steps=20):
         """Samples data by simulating the learned flow from the simple distribution.
 
         Args:
             n_samples: Number of samples to generate.
             n_steps: Number of integration steps for the simulator. Defaults to 20.
-            y: Conditioning variable for the samples. Defaults to None.
-            guidance_scale: Guidance scale for sampling. Defaults to 0.0.
 
         Returns:
             The generated samples after simulating the flow.
@@ -220,9 +167,7 @@ class FlowModel(pl.LightningModule):
         simulator = TorchDiffEqSimulator(self, solver="rk4")
         starting_points = self.path.p_simple.sample(n_samples)[0]
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
-        output = simulator.simulate(
-            starting_points, t_eval, y=y, guidance_scale=guidance_scale
-        )
+        output = simulator.simulate(starting_points, t_eval)
         return output[:, -1]
 
     def configure_optimizers(self):
@@ -231,11 +176,8 @@ class FlowModel(pl.LightningModule):
         Returns:
             A tuple containing a list of optimizers and a list of schedulers.
         """
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=3, eta_min=1e-6
-        )
-        return [optimizer], [scheduler]
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        return [optimizer]
 
 
 class LatentFlowModel(FlowModel):

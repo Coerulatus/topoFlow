@@ -26,3 +26,4 @@ dependencies:
   - biopython
   - imageio
   - pymol-open-source
+  - pytest-cov

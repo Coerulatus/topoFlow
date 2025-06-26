@@ -3,8 +3,8 @@
 import unittest
 import torch
 
-from topoflow.data.graphs.datasets import CrossDocked
-from topoflow.data.graphs.datamodule import MolecularDataModule
+from topoflow.data.datasets import CrossDocked
+from topoflow.data.datamodule import MolecularDataModule
 
 
 class TestCrossDockedDataset(unittest.TestCase):

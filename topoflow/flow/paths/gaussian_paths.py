@@ -3,7 +3,7 @@
 import torch
 
 from topoflow.flow.paths.abstract_paths import ConditionalProbabilityPath
-from topoflow.flow.utils import IsotropicGaussian
+from topoflow.flow.utils import IsotropicGaussian, DistributionNodes
 
 
 class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
@@ -20,7 +20,9 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
             noise.
     """
 
-    def __init__(self, p_data, alpha, beta, device="cpu", target_dim=None):
+    def __init__(
+        self, p_data, alpha, beta, device="cpu", target_dim=None, histogram=None
+    ):
         """Initializes the GaussianConditionalProbabilityPath.
 
         Args:
@@ -32,6 +34,7 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
                 Defaults to 'cpu'.
             target_dim: The target dimension of the data. If None, it's inferred
                 from `p_data.dim`. Defaults to None.
+            histogram: Optional histogram with number of nodes for ligand and pockets.
         """
         if target_dim is None:
             target_dim = p_data.dim
@@ -45,24 +48,31 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
         self.alpha.device = device
         self.beta = beta
         self.beta.device = device
+        if histogram is not None:
+            self.nodes_distribution = DistributionNodes(histogram)
+        else:
+            self.nodes_distribution = None
 
     def sample_conditioning_variable(self, batch_size: int):
-        """Samples the conditioning variable `z` and its optional labels `y`.
+        """Samples the conditioning variable `z`.
 
         Args:
             batch_size: The number of samples to generate.
 
         Returns:
             A tuple containing:
-                - torch.Tensor: Samples from p(z). [batch_size, *dims]
-                - torch.Tensor or None: Labels for the samples. [batch_size, label_dim].
-                    Returns None if no labels are associated with the data.
+                - `z`: The conditioning variable sampled from the data distribution.
+                  [n_atoms, *dims]
+                - `batch_lig`: The ligands associated with the samples.
+                  [n_atoms, *dims]
+                - `batch_pocket`: The pockets associated with the samples.
+                  [n_atoms, *dims]
         """
-        z, y = self.p_data.sample(batch_size)
+        z, batch_lig, batch_pocket = self.p_data.sample(batch_size)
         z = z.to(self.device)
-        if y is not None:
-            y = y.to(self.device)
-        return z, y
+        batch_lig = batch_lig.to(self.device)
+        batch_pocket = batch_pocket.to(self.device)
+        return z, batch_lig, batch_pocket
 
     def sample_conditional_path(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Samples from the conditional distribution p_t(x|z).

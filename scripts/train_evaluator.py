@@ -2,15 +2,15 @@
 
 import itertools
 
-from topoflow.data.graphs import QM9WithRDKitMetrics
-from topoflow.data.graphs import MolecularDataModule
+from topoflow.data import QM9WithRDKitMetrics
+from topoflow.data import MolecularDataModule
 from topoflow.evaluators import GATEvaluator
 
 import torch
 
 torch.set_float32_matmul_precision("medium")
 import lightning.pytorch as pl
-from pytorch_lightning.loggers import MLFlowLogger
+from lightning.pytorch.loggers import MLFlowLogger
 
 
 def run_experiment(hparams, dataset):
