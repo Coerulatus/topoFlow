@@ -53,6 +53,9 @@ class TransformerVectorField(nn.Module):
         batch_x = torch.cat([batch_lig, batch_pocket], dim=0)
 
         # Time embedding: [batch_size, 1] -> [batch_size, h_dim]
+        if len(t.shape) == 0:
+            t = t.unsqueeze(0)
+            t = t.repeat(batch_x.shape[0], 1)  # [num_x, 1]
         t_embed = self.time_embed(t[:, None]).squeeze()  # [batch_size, h_dim]
         t_per_x = t_embed[batch_x]  # [num_x, h_dim]
 

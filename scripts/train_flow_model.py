@@ -63,9 +63,7 @@ def train_flow_model(
         shuffle=True,
         num_workers=8,
     )
-    path = GaussianConditionalProbabilityPath(
-        p_data=p_data, alpha=alpha, beta=beta, histogram=histogram
-    )
+    path = GaussianConditionalProbabilityPath(p_data=p_data, alpha=alpha, beta=beta)
     # ======================================================================
     # Model Initialization
     # ======================================================================
@@ -79,7 +77,7 @@ def train_flow_model(
     flow_model = FlowModel(
         vector_field_model=vector_field,
         path=path,
-        n_val_samples=1,
+        n_val_samples=0,
         device="cuda" if torch.cuda.is_available() else "cpu",
         lr=learning_rate,
     )
@@ -93,16 +91,17 @@ def train_flow_model(
         mode="min",
         save_top_k=1,
     )
+    logger = pl.loggers.MLFlowLogger(
+        experiment_name=experiment_name,
+        tracking_uri=mlflow_tracking_uri,
+    )
 
     trainer = pl.Trainer(
         max_epochs=epochs,
         accelerator="auto",
         devices=1 if torch.cuda.is_available() else None,
         callbacks=[checkpoint_callback],
-        logger=pl.loggers.MLFlowLogger(
-            experiment_name="TopologicalFlow",
-            tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"),
-        ),
+        logger=logger,
         enable_progress_bar=True,
         check_val_every_n_epoch=1,
     )

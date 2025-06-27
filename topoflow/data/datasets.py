@@ -20,7 +20,7 @@ from topoflow.data.utils import (
     download_crossdocked,
     process_ligand_and_pocket,
     saveall,
-    Sampleable,
+    get_n_nodes_hist,
 )
 import topoflow.utils.constants as constants
 
@@ -409,6 +409,16 @@ class CrossDocked(InMemoryDataset):
 
         unique_sample_ids = np.unique(lig_mask_all)
 
+        # We need the histogram with the distribution of number of nodes (only for training)
+        if split_name == "train":
+            n_nodes_hist = get_n_nodes_hist(
+                lig_mask_all, pocket_mask_all, smooth_sigma=1.0
+            )
+            n_nodes_hist_path = os.path.join(
+                self.processed_dir, "size_distribution.npy"
+            )
+            np.save(n_nodes_hist_path, n_nodes_hist)
+
         if len(names) != len(unique_sample_ids):
             print(
                 f"Warning: Mismatch between number of names ({len(names)}) and unique sample IDs ({len(unique_sample_ids)}) in {split_name}.npz. This might indicate corrupt data."
@@ -475,3 +485,13 @@ class CrossDocked(InMemoryDataset):
             )
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
         print(f"Loaded dataset from {self.processed_paths[0]}.")
+
+        try:
+            self.distribution_hist = np.load(
+                os.path.join(self.processed_dir, "size_distribution.npy"),
+                allow_pickle=True,
+            )
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                "Size distribution not found. Process the dataset with train split once to generate it."
+            )

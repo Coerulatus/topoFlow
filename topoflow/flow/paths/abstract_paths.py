@@ -35,7 +35,7 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         self.p_data = p_data
         self.device = device
         # Determine the target shape for time tensors based on the simple distribution's samples.
-        z, _ = p_simple.sample(1)
+        z = p_simple.sample(1)
         n_dim = z.dim()
         self.t_target_shape = [-1] + [1] * (n_dim - 1)
 
@@ -85,6 +85,19 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         t_batched = t[batch_all]
         return t, t_batched
 
+    def create_mask(self, lengths):
+        """Creates a mask tensor based on the lengths of segments."""
+        max_len = lengths.sum()
+        range_tensor = torch.arange(max_len, device=lengths.device)
+        segment_starts = torch.cumsum(
+            torch.cat([torch.tensor([0], device=lengths.device), lengths[:-1]]), dim=0
+        )
+        segment_ids = torch.repeat_interleave(
+            torch.arange(len(lengths), device=lengths.device), lengths
+        )
+        mask = range_tensor >= segment_starts[segment_ids]
+        return mask.to(torch.long)
+
     def sample_simple_distribution(self, batch_size: int):
         """Samples from the simple distribution `p_simple`.
 
@@ -97,15 +110,17 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
                 - torch.Tensor or None: Labels for the samples. [batch_size, label_dim].
                     Returns None if no labels are associated with the simple distribution.
         """
-        if hasattr(self, "nodes_distribution") and self.nodes_distribution is not None:
-            num_nodes_lig, num_nodes_pocket = self.nodes_distribution.sample(batch_size)
-            z, y = self.p_simple.sample(num_nodes_lig + num_nodes_pocket)
+        if hasattr(self, "size_distribution") and self.size_distribution is not None:
+            num_nodes_lig, num_nodes_pocket = self.size_distribution.sample(batch_size)
+            batch_lig = self.create_mask(num_nodes_lig)
+            batch_pocket = self.create_mask(num_nodes_pocket)
+            z = self.p_simple.sample(
+                torch.sum(num_nodes_lig) + torch.sum(num_nodes_pocket)
+            )
         else:
-            z, y = self.p_simple.sample(batch_size)
+            z = self.p_simple.sample(batch_size)
             z = z.to(self.device)
-            if y is not None:
-                y = y.to(self.device)
-        return z, y
+        return z, batch_lig, batch_pocket
 
     @abstractmethod
     def sample_conditioning_variable(self, batch_size: int):

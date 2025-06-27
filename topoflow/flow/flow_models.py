@@ -65,7 +65,11 @@ class FlowModel(pl.LightningModule):
                 - u_t_ref: The reference vector field from the path.
         """
         batch_size = batch.shape[0]
-        z, batch_lig, batch_pocket = self.path.sample_conditioning_variable(batch_size)
+        # We override the batch size to ensure it matches the expected size
+        # path.p_data.sample() returns always the same batch_size even if the input batch is smaller.
+        z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
+            batch_size
+        )
         t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
         x = self.path.sample_conditional_path(z, t_batched)
         u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
@@ -84,7 +88,9 @@ class FlowModel(pl.LightningModule):
         Returns:
             The training loss for the current step.
         """
-        u_t_theta, u_t_ref = self.forward(batch, training=True)
+        if batch_idx >= 124:
+            pass
+        u_t_theta, u_t_ref = self.forward(batch)
         loss = self.loss_function(u_t_theta, u_t_ref)
 
         self.log("train_loss", loss, on_epoch=True, prog_bar=True)
@@ -103,8 +109,7 @@ class FlowModel(pl.LightningModule):
         Returns:
             The validation loss for the current step.
         """
-        res = self.forward(batch)
-        u_t_theta, u_t_ref = res[0], res[1]
+        u_t_theta, u_t_ref = self.forward(batch)
         loss = self.loss_function(u_t_theta, u_t_ref)
 
         self.log("val_loss", loss, on_epoch=True, prog_bar=False)
@@ -165,9 +170,11 @@ class FlowModel(pl.LightningModule):
             The generated samples after simulating the flow.
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
-        starting_points = self.path.p_simple.sample(n_samples)[0]
+        starting_points, batch_lig, batch_pocket = self.path.sample_simple_distribution(
+            n_samples
+        )
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
-        output = simulator.simulate(starting_points, t_eval)
+        output = simulator.simulate(starting_points, t_eval, batch_lig, batch_pocket)
         return output[:, -1]
 
     def configure_optimizers(self):

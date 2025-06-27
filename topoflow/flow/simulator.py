@@ -211,7 +211,9 @@ class TorchDiffEqSimulator(Simulator):
             t = torch.tensor([ts[0], ts[-1]], device=ts.device)
         else:
             t = ts[:]
-        ode_func = lambda t, x: self.ode.drift_coefficient(x, t)
+        ode_func = lambda t, x: self.ode.drift_coefficient(
+            x, t, batch_lig, batch_pocket
+        )
         sol = odeint(ode_func, x, t, method=self.solver)
         return sol.transpose(0, 1)
 

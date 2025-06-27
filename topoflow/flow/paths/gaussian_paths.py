@@ -20,9 +20,7 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
             noise.
     """
 
-    def __init__(
-        self, p_data, alpha, beta, device="cpu", target_dim=None, histogram=None
-    ):
+    def __init__(self, p_data, alpha, beta, device="cpu", target_dim=None):
         """Initializes the GaussianConditionalProbabilityPath.
 
         Args:
@@ -34,24 +32,21 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
                 Defaults to 'cpu'.
             target_dim: The target dimension of the data. If None, it's inferred
                 from `p_data.dim`. Defaults to None.
-            histogram: Optional histogram with number of nodes for ligand and pockets.
         """
         if target_dim is None:
             target_dim = p_data.dim
         p_simple = IsotropicGaussian(target_dim, 1.0)
         super().__init__(p_simple, p_data, device)
         self.alpha = alpha
-        # Note: Directly assigning a 'device' attribute to the callable might
-        # not be standard practice for all callables. Ensure `alpha` and `beta`
-        # objects are designed to handle this or pass device explicitly to their
-        # calls if needed.
         self.alpha.device = device
         self.beta = beta
         self.beta.device = device
-        if histogram is not None:
-            self.nodes_distribution = DistributionNodes(histogram)
-        else:
-            self.nodes_distribution = None
+        try:
+            self.size_distribution = DistributionNodes(p_data.dataset.distribution_hist)
+        except AttributeError:
+            raise ValueError(
+                "The provided `p_data.dataset` must have a `size_distribution` attribute."
+            )
 
     def sample_conditioning_variable(self, batch_size: int):
         """Samples the conditioning variable `z`.
@@ -68,11 +63,11 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
                 - `batch_pocket`: The pockets associated with the samples.
                   [n_atoms, *dims]
         """
-        z, batch_lig, batch_pocket = self.p_data.sample(batch_size)
+        z, batch_lig, batch_pocket, batch_size = self.p_data.sample(batch_size)
         z = z.to(self.device)
         batch_lig = batch_lig.to(self.device)
         batch_pocket = batch_pocket.to(self.device)
-        return z, batch_lig, batch_pocket
+        return z, batch_lig, batch_pocket, batch_size
 
     def sample_conditional_path(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Samples from the conditional distribution p_t(x|z).

@@ -114,9 +114,8 @@ class IsotropicGaussian(torch.nn.Module, Sampleable):
 
         Returns:
             torch.Tensor: Samples from the distribution. Shape: [num_samples, *self.shape].
-            None: Placeholder for labels, not used in this case.
         """
-        return (torch.randn(num_samples, *self.shape) * self.std).to(self.dummy), None
+        return (torch.randn(num_samples, *self.shape) * self.std).to(self.dummy)
 
 
 class GaussianMixture(torch.nn.Module, Sampleable, Density):
@@ -170,7 +169,7 @@ class GaussianMixture(torch.nn.Module, Sampleable, Density):
 
     def sample(self, num_samples: int) -> torch.Tensor:
         """Sample from the Gaussian mixture model."""
-        return self.distribution.sample(torch.Size((num_samples,))), None
+        return self.distribution.sample(torch.Size((num_samples,)))
 
     @classmethod
     def random_2D(

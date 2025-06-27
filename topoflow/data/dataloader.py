@@ -63,4 +63,4 @@ class DataLoaderSampleable(DataLoader):
         f_lig = torch.cat([batch.x_lig, batch.h_lig], dim=1)
         f_pocket = torch.cat([batch.x_pocket, batch.h_pocket], dim=1)
         f_all = torch.cat([f_lig, f_pocket], dim=0)
-        return f_all, batch.batch_lig, batch.batch_pocket
+        return f_all, batch.batch_lig, batch.batch_pocket, self.batch_size

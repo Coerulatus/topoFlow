@@ -305,7 +305,7 @@ def compute_smiles(positions, one_hot, mask, dataset_info):
     return mols_smiles
 
 
-def get_n_nodes(lig_mask, pocket_mask, smooth_sigma=None):
+def get_n_nodes_hist(lig_mask, pocket_mask, smooth_sigma=None):
     """Computes the joint distribution of ligand's and pocket's number of nodes."""
     idx_lig, n_nodes_lig = np.unique(lig_mask, return_counts=True)
     idx_pocket, n_nodes_pocket = np.unique(pocket_mask, return_counts=True)
