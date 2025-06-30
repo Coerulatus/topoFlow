@@ -5,6 +5,8 @@ import os
 import numpy as np
 from torch_geometric.data import Data
 import rdkit.Chem as Chem
+from rdkit.Chem import Draw
+import torch
 
 import topoflow.utils.constants as constants
 from topoflow.utils.molecules import make_mol_openbabel
@@ -303,27 +305,107 @@ def visualize_data(
     )
 
     # Clean up temporary files
-    # os.remove(ligand_file)
-    # os.remove(pocket_file)
+    os.remove(ligand_file)
+    os.remove(pocket_file)
+
+
+def visualize_data_rdkit(
+    batched_data,
+    image_path=None,
+    dataset_name="crossdock_full",
+    mols_per_row=4,
+    sub_img_size=(300, 300),
+):
+    """Visualization function for a PyTorch Geometric batch Data object containing ligand information using RDKit."""
+    if dataset_name is not None:
+        dataset_params = constants.dataset_params[dataset_name]
+        atom_decoder = dataset_params.get("atom_decoder", None)
+    else:
+        raise ValueError("dataset_name must be provided to retrieve parameters.")
+
+    # Each entry in `mol_list` is one RDKit molecule built from batched data using index mask
+    mols = []
+    unique_ids = torch.unique(batched_data.batch_lig)
+    for i in unique_ids:
+        mask = batched_data.batch_lig == i
+        x_lig = batched_data.x_lig[mask]
+        h_lig = batched_data.h_lig[mask]
+        mol = make_mol_openbabel(x_lig, h_lig, atom_decoder)
+        mols.append(mol)
+
+    img = Draw.MolsToGridImage(
+        mols,
+        molsPerRow=mols_per_row,
+        subImgSize=sub_img_size,
+        legends=[f"Mol {i}" for i in range(len(mols))],
+    )
+
+    if image_path:
+        os.makedirs(os.path.dirname(image_path), exist_ok=True)
+        img.save(image_path)
+        print(f"Image saved to: {image_path}")
+    img.show()
+
+
+def mol_to_data(mol, atom_encoder, batch_id):
+    """Convert an RDKit molecule to a PyTorch Geometric Data object."""
+    # --- 3D coordinates ---
+    conf = mol.GetConformer()
+    coords = torch.tensor(
+        conf.GetPositions(), dtype=torch.float
+    )  # shape: [num_atoms, 3]
+
+    # --- Atom types one-hot ---
+    atom_types = [atom_encoder[atom.GetSymbol()] for atom in mol.GetAtoms()]
+    num_atom_types = max(atom_encoder.values()) + 1
+    atom_types_tensor = torch.tensor(atom_types, dtype=torch.long)
+    one_hot = torch.nn.functional.one_hot(
+        atom_types_tensor, num_classes=num_atom_types
+    ).float()  # shape: [num_atoms, num_atom_types]
+
+    # --- Batch ---
+    batch = torch.full((coords.size(0),), batch_id, dtype=torch.long)
+
+    return coords, one_hot, batch
 
 
 # 3. Example Usage:
 if __name__ == "__main__":
-    pdb_file = "pymol_temp_plots/complex_1_pocket.pdb"  # Path to your protein PDB file
-    ligand_file = (
-        "pymol_temp_plots/complex_1_ligand.sdf"  # Path to your ligand SDF file
+    # pdb_file = "pymol_temp_plots/complex_1_pocket.pdb"  # Path to your protein PDB file
+    # ligand_file = (
+    #     "pymol_temp_plots/complex_1_ligand.sdf"  # Path to your ligand SDF file
+    # )
+    # output_image = "pymol_temp_plots/complex_1_plot.png"
+    # output_session = "pymol_temp_plots/complex_1_session.pse"
+
+    # print("Generating plot...")
+    # plot_molecular_complex(pdb_file, ligand_file, output_image, output_session)
+    # print("Plotting complete.")
+
+    from rdkit.Chem import AllChem
+
+    smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "c1ccncc1"]
+    mols = [Chem.MolFromSmiles(smi) for smi in smiles]
+    atom_encoder = constants.dataset_params["crossdock_full"]["atom_encoder"]
+
+    all_coords = []
+    all_feats = []
+    all_batch = []
+
+    for batch_id, mol in enumerate(mols):
+        if mol.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(mol)
+            AllChem.UFFOptimizeMolecule(mol)
+
+        coords, features, batch = mol_to_data(mol, atom_encoder, batch_id)
+        all_coords.append(coords)
+        all_feats.append(features)
+        all_batch.append(batch)
+
+    data = Data(
+        x_lig=torch.cat(all_coords, dim=0),  # 3D coords
+        h_lig=torch.cat(all_feats, dim=0),  # one-hot features
+        batch_lig=torch.cat(all_batch, dim=0),  # batch idx
     )
-    output_image = "pymol_temp_plots/complex_1_plot.png"
-    output_session = "pymol_temp_plots/complex_1_session.pse"
 
-    print("Generating plot...")
-    plot_molecular_complex(pdb_file, ligand_file, output_image, output_session)
-    print("Plotting complete.")
-
-    # Always call pymol.cmd.quit() when you are entirely done with all PyMOL operations
-    # to release resources.
-    # pymol.cmd.quit() # Uncomment this if you are done after this single plot
-
-    # Clean up dummy files
-    # import shutil
-    # shutil.rmtree(temp_dir)
+    visualize_data_rdkit(data)

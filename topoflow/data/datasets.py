@@ -154,6 +154,7 @@ class CrossDocked(InMemoryDataset):
         outdir: str = None,
         ca_only: bool = False,
         distance_cutoff: float = 8.0,
+        normalize_coords: bool = True,
         random_seed: int = 42,
     ):
         """Initialize the CrossDocked dataset.
@@ -169,6 +170,7 @@ class CrossDocked(InMemoryDataset):
             outdir (str, optional): Directory to save processed data. If None, uses the default processed directory.
             ca_only (bool): If True, only process C-alpha atoms in the protein pockets.
             distance_cutoff (float): Distance cutoff for processing ligand-pocket interactions.
+            normalize_coords (bool): If True, normalize the coordinates of the ligands and pockets.
             random_seed (int): Random seed for reproducibility.
         """
         self.split = split
@@ -176,6 +178,7 @@ class CrossDocked(InMemoryDataset):
         self.outdir = outdir
         self.ca_only = ca_only
         self.distance_cutoff = distance_cutoff
+        self.normalize_coords = normalize_coords
         self.random_seed = random_seed
 
         super().__init__(root, transform, pre_transform)
@@ -231,7 +234,7 @@ class CrossDocked(InMemoryDataset):
         print(f"Data split loaded successfully. Keys: {list(data_split.keys())}")
 
         # TODO: Remove this when loading whole dataset
-        # data_split["train"] = data_split["train"][:1000]
+        data_split["train"] = data_split["train"][:1000]
 
         # There is no validation set, copy 300 training examples (the validation set
         # is not very important in this application)
@@ -429,6 +432,43 @@ class CrossDocked(InMemoryDataset):
 
         unique_sample_ids = np.unique(lig_mask_all)
 
+        # Normalization of coordinates if required
+        if self.normalize_coords and split_name == "train":
+            print(
+                "Normalizing coordinates for ligands and pockets in training split..."
+            )
+            mean_lig = np.mean(lig_coords_all, axis=0)
+            std_lig = np.std(lig_coords_all, axis=0)
+            mean_pocket = np.mean(pocket_coords_all, axis=0)
+            std_pocket = np.std(pocket_coords_all, axis=0)
+            # Save normalization parameters for later use
+            np.savez(
+                os.path.join(self.processed_dir, "normalization_params.npz"),
+                mean_lig=mean_lig,
+                std_lig=std_lig,
+                mean_pocket=mean_pocket,
+                std_pocket=std_pocket,
+            )
+            lig_coords_all = (lig_coords_all - mean_lig) / std_lig
+            pocket_coords_all = (pocket_coords_all - mean_pocket) / std_pocket
+        elif self.normalize_coords:
+            print("Normalizing coordinates for validation/test splits...")
+            norm_params_path = os.path.join(
+                self.processed_dir, "normalization_params.npz"
+            )
+            if not os.path.exists(norm_params_path):
+                raise FileNotFoundError(
+                    f"Normalization parameters not found at {norm_params_path}. "
+                    "Ensure the training split was processed with normalization enabled."
+                )
+            norm_params = np.load(norm_params_path)
+            mean_lig = norm_params["mean_lig"]
+            std_lig = norm_params["std_lig"]
+            mean_pocket = norm_params["mean_pocket"]
+            std_pocket = norm_params["std_pocket"]
+            lig_coords_all = (lig_coords_all - mean_lig) / std_lig
+            pocket_coords_all = (pocket_coords_all - mean_pocket) / std_pocket
+
         # We need the histogram with the distribution of number of nodes (only for training)
         if split_name == "train":
             n_nodes_hist = get_n_nodes_hist(
@@ -525,3 +565,11 @@ class CrossDocked(InMemoryDataset):
             raise FileNotFoundError(
                 "Size distribution not found. Process the dataset with train split once to generate it."
             )
+
+        norm_params_path = os.path.join(self.processed_dir, "normalization_params.npz")
+        if not os.path.exists(norm_params_path):
+            raise FileNotFoundError(
+                f"Normalization parameters not found at {norm_params_path}. "
+                "Ensure the training split was processed with normalization enabled."
+            )
+        self.norm_params = np.load(norm_params_path)

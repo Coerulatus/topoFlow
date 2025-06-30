@@ -12,11 +12,13 @@ from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.vector_field_models import TransformerVectorField
 from topoflow.flow.flow_models import FlowModel
 import topoflow.utils.constants as constants
+from topoflow.data.augmentations import RandomRotateTranslate
 
 
 def train_flow_model(
     data_dir,
     data_name,
+    augment,
     vector_field_model,
     hidden_dim,
     checkpoint_dir,
@@ -26,12 +28,14 @@ def train_flow_model(
     seed,
     mlflow_tracking_uri,
     experiment_name,
+    run_name=None,
 ):
     """Train a Topological Flow model on the specified dataset.
 
     Args:
         data_dir (str): Directory containing the training data.
         data_name (str): Name of the dataset to use.
+        augment (bool): Whether to apply data augmentations.
         vector_field_model (str): Type of vector field model to use.
         hidden_dim (int): Dimension of the hidden layers in the model.
         checkpoint_dir (str): Directory to save the trained model.
@@ -41,13 +45,18 @@ def train_flow_model(
         seed (int): Random seed for reproducibility.
         mlflow_tracking_uri (str): MLflow tracking URI.
         experiment_name (str): MLflow experiment name.
+        run_name (str, optional): Name of the MLflow run. Defaults to None.
     """
     pl.seed_everything(seed)  # For reproducibility
     # ======================================================================
     # Data Preparation
     # ======================================================================
     if data_name == "cross_docked":
-        train_dataset = CrossDocked(root=data_dir, split="train")
+        train_dataset = CrossDocked(
+            root=data_dir,
+            split="train",
+            transform=RandomRotateTranslate() if augment else None,
+        )
 
     else:
         raise ValueError(f"Unsupported dataset: {data_name}")
@@ -94,6 +103,7 @@ def train_flow_model(
     logger = pl.loggers.MLFlowLogger(
         experiment_name=experiment_name,
         tracking_uri=mlflow_tracking_uri,
+        run_name=run_name,
     )
 
     trainer = pl.Trainer(
@@ -125,6 +135,12 @@ if __name__ == "__main__":
         default="cross_docked",
         choices=["cross_docked"],
         help="Name of the dataset to use.",
+    )
+    parser.add_argument(
+        "--augment",
+        type=bool,
+        default=True,
+        help="Whether to apply data augmentations.",
     )
     parser.add_argument(
         "--vector_field_model",
@@ -172,12 +188,18 @@ if __name__ == "__main__":
         default="TopologicalFlow",
         help="MLflow experiment name.",
     )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        help="Name of the MLflow run (optional).",
+    )
 
     args = parser.parse_args()
 
     train_flow_model(
         data_dir=args.data_dir,
         data_name=args.data_name,
+        augment=args.augment,
         vector_field_model=args.vector_field_model,
         hidden_dim=args.hidden_dim,
         checkpoint_dir=args.checkpoint_dir,
@@ -187,4 +209,5 @@ if __name__ == "__main__":
         seed=args.seed,
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         experiment_name=args.mlflow_experiment_name,
+        run_name=args.run_name if args.run_name else None,
     )
