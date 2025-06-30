@@ -92,8 +92,9 @@ class FlowModel(pl.LightningModule):
             pass
         u_t_theta, u_t_ref = self.forward(batch)
         loss = self.loss_function(u_t_theta, u_t_ref)
+        loss /= u_t_ref.shape[0]  # Normalize by number of atoms
 
-        self.log("train_loss", loss, on_epoch=True, prog_bar=True)
+        self.log("train/loss", loss, on_epoch=True, prog_bar=True)
         self.train_loss.append(loss.item())
         return loss
 
@@ -111,8 +112,9 @@ class FlowModel(pl.LightningModule):
         """
         u_t_theta, u_t_ref = self.forward(batch)
         loss = self.loss_function(u_t_theta, u_t_ref)
+        loss /= u_t_ref.shape[0]  # Normalize by number of atoms
 
-        self.log("val_loss", loss, on_epoch=True, prog_bar=False)
+        self.log("val/loss", loss, on_epoch=True, prog_bar=False)
         if self.n_val_samples > 0 and batch_idx == 0:
             self.val_samples.append(self.sample(self.n_val_samples).cpu())
         return loss
@@ -131,8 +133,9 @@ class FlowModel(pl.LightningModule):
         """
         u_t_theta, u_t_ref = self.forward(batch)
         loss = self.loss_function(u_t_theta, u_t_ref)
+        loss /= u_t_ref.shape[0]  # Normalize by number of atoms
 
-        self.log("test_loss", loss)
+        self.log("test/loss", loss)
         return loss
 
     def drift_coefficient(self, x, t, batch_lig, batch_pocket):
