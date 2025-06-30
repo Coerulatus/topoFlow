@@ -489,7 +489,7 @@ def download_google_drive_file(google_drive_url, destination_path, cookies_file=
         return False
 
 
-def download_crossdocked(basedir: Path, outdir: Path = None, random_seed: int = 42):
+def download_crossdocked(basedir: Path, outdir: Path = None):
     """Downloads the CrossDocked dataset.
 
     Args:
@@ -498,16 +498,11 @@ def download_crossdocked(basedir: Path, outdir: Path = None, random_seed: int = 
         outdir (Path, optional): Output directory for processed data.
                                  If None, a default path under `basedir` is used.
                                  Defaults to None.
-        random_seed (int, optional): Random seed for reproducibility. Defaults to 42.
     """
     print(f"Starting CrossDocked dataset processing from: {basedir}")
     print(
         f"Output directory for processed data: {outdir if outdir else 'default under basedir'}"
     )
-
-    random.seed(random_seed)  # Set random seed for reproducibility
-
-    # datadir = basedir / 'crossdocked_pocket10/'
 
     # Read data split
     split_path = Path(basedir, "split_by_name.pt")

@@ -1,6 +1,7 @@
 """QM9 dataset with RDKit-calculated molecular properties (QED, SAS, LogP)."""
 
 import os
+from collections import defaultdict
 from pathlib import Path
 import torch
 from torch_geometric.datasets import QM9
@@ -195,13 +196,7 @@ class CrossDocked(InMemoryDataset):
         if not os.path.exists(str(self.raw_dir)):
             os.makedirs(str(self.raw_dir))
 
-        download_crossdocked(
-            basedir=str(self.raw_dir),
-            outdir=str(self.processed_dir),
-            ca_only=self.ca_only,
-            dist_cutoff=self.distance_cutoff,
-            random_seed=self.random_seed,
-        )
+        download_crossdocked(basedir=str(self.raw_dir), outdir=str(self.processed_dir))
         print("Raw data download and initial NPZ processing complete.")
 
     def process(self):
@@ -236,7 +231,7 @@ class CrossDocked(InMemoryDataset):
         print(f"Data split loaded successfully. Keys: {list(data_split.keys())}")
 
         # TODO: Remove this when loading whole dataset
-        data_split["train"] = data_split["train"][:1000]
+        # data_split["train"] = data_split["train"][:1000]
 
         # There is no validation set, copy 300 training examples (the validation set
         # is not very important in this application)
@@ -250,7 +245,6 @@ class CrossDocked(InMemoryDataset):
         n_samples_after = {}
 
         for split in data_split.keys():
-            print(f"\nProcessing '{split}' split...")
             lig_coords_list = []
             lig_one_hot_list = []
             lig_mask_list = []
@@ -262,6 +256,14 @@ class CrossDocked(InMemoryDataset):
 
             pdb_sdf_split_dir = os.path.join(processed_dir, split)
             os.makedirs(pdb_sdf_split_dir, exist_ok=True)
+            target_file = os.path.join(processed_dir, f"{split}.npz")
+            if os.path.exists(target_file):
+                print(
+                    f"Target file {target_file} already exists. Skipping processing for {split}."
+                )
+                continue
+
+            print(f"\nProcessing '{split}' split...")
 
             tic = time()
             num_failed = 0
@@ -324,16 +326,35 @@ class CrossDocked(InMemoryDataset):
                     pbar.set_description(f"#failed: {num_failed}")
                     continue
 
-                pdb_and_mol_ids_list.append(f"{pocket_fn_rel}_{ligand_fn_rel}")
-                lig_coords_list.append(ligand_data["lig_coords"])
-                lig_one_hot_list.append(ligand_data["lig_one_hot"])
-                lig_mask_list.append(count * np.ones(len(ligand_data["lig_coords"])))
-                pocket_coords_list.append(pocket_data["pocket_coords"])
-                pocket_one_hot_list.append(pocket_data["pocket_one_hot"])
-                pocket_mask_list.append(
-                    count * np.ones(len(pocket_data["pocket_coords"]))
-                )
-                count += 1
+                if len(ligand_data["lig_coords"]) == len(
+                    ligand_data["lig_one_hot"]
+                ) and len(pocket_data["pocket_coords"]) == len(
+                    pocket_data["pocket_one_hot"]
+                ):
+                    pdb_and_mol_ids_list.append(f"{pocket_fn_rel}_{ligand_fn_rel}")
+                    lig_coords_list.append(ligand_data["lig_coords"])
+                    lig_one_hot_list.append(ligand_data["lig_one_hot"])
+                    lig_mask_list.append(
+                        count * np.ones(len(ligand_data["lig_coords"]))
+                    )
+                    pocket_coords_list.append(pocket_data["pocket_coords"])
+                    pocket_one_hot_list.append(pocket_data["pocket_one_hot"])
+                    pocket_mask_list.append(
+                        count * np.ones(len(pocket_data["pocket_coords"]))
+                    )
+                    count += 1
+                else:
+                    print(
+                        f"Skipping {pocket_fn_rel}, {ligand_fn_rel} due to mismatched lengths: "
+                        f"{len(ligand_data['lig_coords'])} vs {len(ligand_data['lig_one_hot'])} "
+                        f"and {len(pocket_data['pocket_coords'])} vs {len(pocket_data['pocket_one_hot'])}"
+                    )
+                    num_failed += 1
+                    failed_save.append(
+                        (pocket_fn_rel, ligand_fn_rel, "Mismatched lengths")
+                    )
+                    pbar.set_description(f"#failed: {num_failed}")
+                    continue
 
                 if split in {"val", "test"}:
                     new_rec_name = Path(pdbfile).stem.replace("_", "-")
@@ -356,7 +377,6 @@ class CrossDocked(InMemoryDataset):
                 pocket_coords = np.concatenate(pocket_coords_list, axis=0)
                 pocket_one_hot = np.concatenate(pocket_one_hot_list, axis=0)
                 pocket_mask = np.concatenate(pocket_mask_list, axis=0)
-                target_file = os.path.join(processed_dir, f"{split}.npz")
                 saveall(
                     target_file,
                     pdb_and_mol_ids_list,
@@ -427,25 +447,35 @@ class CrossDocked(InMemoryDataset):
         print(
             f"Reconstructing {len(unique_sample_ids)} samples from {split_name}.npz..."
         )
-        for i, sample_idx in enumerate(unique_sample_ids):
-            lig_indices = lig_mask_all == sample_idx
-            pocket_indices = pocket_mask_all == sample_idx
+        lig_index_map = defaultdict(list)
+        pocket_index_map = defaultdict(list)
 
-            if lig_indices.sum() == 0 or pocket_indices.sum() == 0:
+        for i, sid in enumerate(lig_mask_all):
+            lig_index_map[sid].append(i)
+        for i, sid in enumerate(pocket_mask_all):
+            pocket_index_map[sid].append(i)
+
+        # Loop through samples
+        for sample_idx in tqdm(unique_sample_ids):
+            lig_indices = lig_index_map.get(sample_idx, [])
+            pocket_indices = pocket_index_map.get(sample_idx, [])
+
+            if len(lig_indices) == 0 or len(pocket_indices) == 0:
                 print(
-                    f"Warning: No ligand or pocket data found for sample_idx {sample_idx} in {split_name}.npz. Skipping."
+                    f"Warning: No ligand or pocket for sample {sample_idx}. Skipping."
                 )
                 continue
 
+            # Integer indexing — much faster than boolean masks
             lig_coords = torch.from_numpy(lig_coords_all[lig_indices]).float()
             lig_one_hot = torch.from_numpy(lig_one_hot_all[lig_indices]).float()
-            batch_lig = torch.zeros(lig_coords.size(0), dtype=torch.long)
+            batch_lig = torch.zeros(len(lig_indices), dtype=torch.long)
 
             pocket_coords = torch.from_numpy(pocket_coords_all[pocket_indices]).float()
             pocket_one_hot = torch.from_numpy(
                 pocket_one_hot_all[pocket_indices]
             ).float()
-            batch_pocket = torch.zeros(pocket_coords.size(0), dtype=torch.long)
+            batch_pocket = torch.zeros(len(pocket_indices), dtype=torch.long)
 
             data = Data(
                 h_lig=lig_one_hot,
