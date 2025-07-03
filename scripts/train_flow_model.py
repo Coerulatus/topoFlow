@@ -21,6 +21,7 @@ def train_flow_model(
     augment,
     vector_field_model,
     hidden_dim,
+    evaluator,
     checkpoint_dir,
     epochs,
     batch_size,
@@ -38,6 +39,7 @@ def train_flow_model(
         augment (bool): Whether to apply data augmentations.
         vector_field_model (str): Type of vector field model to use.
         hidden_dim (int): Dimension of the hidden layers in the model.
+        evaluator (str): Evaluator to use for model evaluation. Either 'rdkit' or a path to a GATEvaluator checkpoint.
         checkpoint_dir (str): Directory to save the trained model.
         epochs (int): Number of training epochs.
         batch_size (int): Batch size for training.
@@ -83,10 +85,18 @@ def train_flow_model(
     else:
         raise ValueError(f"Unsupported vector field model: {vector_field_model}")
 
+    norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
+    if not os.path.exists(norm_path):
+        raise FileNotFoundError(
+            f"Normalization parameters not found at {norm_path}. Please run the preprocessing script."
+        )
     flow_model = FlowModel(
         vector_field_model=vector_field,
         path=path,
-        n_val_samples=0,
+        evaluator=evaluator,
+        n_val_samples=16,
+        sample_every=10,
+        norm_path=norm_path,
         device="cuda" if torch.cuda.is_available() else "cpu",
         lr=learning_rate,
     )
@@ -156,6 +166,12 @@ if __name__ == "__main__":
         help="Dimension of the hidden layers in the model.",
     )
     parser.add_argument(
+        "--evaluator",
+        type=str,
+        default="rdkit",
+        help="Evaluator to use for model evaluation. Either 'rdkit' or a path to a GATEvaluator checkpoint.",
+    )
+    parser.add_argument(
         "--checkpoint_dir",
         type=str,
         default="./checkpoints/topoflow/",
@@ -202,6 +218,7 @@ if __name__ == "__main__":
         augment=args.augment,
         vector_field_model=args.vector_field_model,
         hidden_dim=args.hidden_dim,
+        evaluator=args.evaluator,
         checkpoint_dir=args.checkpoint_dir,
         epochs=args.epochs,
         batch_size=args.batch_size,

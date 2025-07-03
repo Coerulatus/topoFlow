@@ -86,17 +86,11 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         return t, t_batched
 
     def create_mask(self, lengths):
-        """Creates a mask tensor based on the lengths of segments."""
-        max_len = lengths.sum()
-        range_tensor = torch.arange(max_len, device=lengths.device)
-        segment_starts = torch.cumsum(
-            torch.cat([torch.tensor([0], device=lengths.device), lengths[:-1]]), dim=0
-        )
+        """Creates a tensor that gives to each sample an index in the batch."""
         segment_ids = torch.repeat_interleave(
             torch.arange(len(lengths), device=lengths.device), lengths
         )
-        mask = range_tensor >= segment_starts[segment_ids]
-        return mask.to(torch.long)
+        return segment_ids.long()
 
     def sample_simple_distribution(self, batch_size: int):
         """Samples from the simple distribution `p_simple`.

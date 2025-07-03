@@ -1,13 +1,16 @@
 """Flow-based generative models."""
 
+import os
 import numpy as np
 import lightning.pytorch as pl
 import torch
+from torch_geometric.data import Data
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
 
 from topoflow.flow.simulator import TorchDiffEqSimulator
 from topoflow.flow.utils_plot import plot_results
+from topoflow.evaluators import RDKitEvaluator, GATEvaluator
 
 
 class FlowModel(pl.LightningModule):
@@ -21,7 +24,10 @@ class FlowModel(pl.LightningModule):
         self,
         vector_field_model,
         path,
+        evaluator=None,
         n_val_samples=0,
+        sample_every=1,
+        norm_path=None,
         device="cpu",
         lr=1e-3,
     ):
@@ -31,12 +37,16 @@ class FlowModel(pl.LightningModule):
             vector_field_model: The neural network model that estimates the vector field.
             path: An object representing the probability path, providing methods for
                 sampling and conditional vector fields.
+            evaluator: An optional evaluator for assessing generated samples.
             n_val_samples: Number of samples to generate during validation for visualization.
                 Defaults to 0.
+            sample_every: Frequency of sampling during validation. Defaults to 1.
+            norm_path: Path to the normalization parameters file.
             device: The device on which to run computations ('cpu' or 'cuda'). Defaults to 'cpu'.
             lr: Learning rate for the optimizer. Defaults to 1e-3.
         """
         super().__init__()
+        self.save_hyperparameters(ignore=["path"])
         self.vector_field_model = vector_field_model
         self.path = path
         self.path.device = device
@@ -49,6 +59,31 @@ class FlowModel(pl.LightningModule):
         self.loss_function = torch.nn.MSELoss()
         self.train_loss = []
         self.lr = lr
+        if evaluator is not None:
+            if evaluator == "rdkit":
+                self.evaluator = RDKitEvaluator()
+            elif os.path.exists(evaluator):
+                self.evaluator = GATEvaluator.load_from_checkpoint(evaluator)
+            else:
+                raise ValueError(
+                    "Evaluator must be 'rdkit' or a valid checkpoint path for GATEvaluator."
+                )
+        self.n_epoch = 0
+        self.sample_every = sample_every
+        self.unnorm = False
+        if norm_path is not None:
+            if not os.path.exists(norm_path):
+                raise FileNotFoundError(
+                    f"Normalization parameters not found at {norm_path}."
+                )
+            norm_params = np.load(norm_path, allow_pickle=True)
+            self.normalization_params(
+                mean_lig=norm_params["mean_lig"],
+                std_lig=norm_params["std_lig"],
+                mean_pocket=norm_params["mean_pocket"],
+                std_pocket=norm_params["std_pocket"],
+            )
+            self.unnorm = True
 
     def forward(self, batch):
         """Forward pass for the FlowModel.
@@ -115,8 +150,19 @@ class FlowModel(pl.LightningModule):
         loss /= u_t_ref.shape[0]  # Normalize by number of atoms
 
         self.log("val/loss", loss, on_epoch=True, prog_bar=False)
-        if self.n_val_samples > 0 and batch_idx == 0:
-            self.val_samples.append(self.sample(self.n_val_samples).cpu())
+        if (
+            self.n_val_samples > 0
+            and batch_idx == 0
+            and self.n_epoch % self.sample_every == 0
+        ):
+            samples = self.sample(self.n_val_samples, n_steps=50)
+            # self.val_samples.append(samples)
+
+            if self.evaluator is not None:
+                results = self.evaluator.evaluate(samples)
+                prefixed = {f"val/{k}": v for k, v in results.items()}
+                self.log_dict(prefixed, on_epoch=True, prog_bar=False)
+        self.n_epoch += 1
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -161,6 +207,25 @@ class FlowModel(pl.LightningModule):
         guided_vector_field = self.vector_field_model(x, t, batch_lig, batch_pocket)
         return guided_vector_field
 
+    def unnorm_x(self, x_lig, x_pocket):
+        """Unnormalizes the input tensor x using the stored normalization parameters."""
+        if not self.unnorm:
+            raise ValueError(
+                "Normalization parameters are not set. Cannot unnormalize."
+            )
+        mean_lig = torch.tensor(self.normalization_params["mean_lig"]).to(x_lig.device)
+        std_lig = torch.tensor(self.normalization_params["std_lig"]).to(x_lig.device)
+        mean_pocket = torch.tensor(self.normalization_params["mean_pocket"]).to(
+            x_pocket.device
+        )
+        std_pocket = torch.tensor(self.normalization_params["std_pocket"]).to(
+            x_pocket.device
+        )
+
+        x_lig = x_lig * std_lig + mean_lig
+        x_pocket = x_pocket * std_pocket + mean_pocket
+        return x_lig, x_pocket
+
     @torch.no_grad()
     def sample(self, n_samples, n_steps=20):
         """Samples data by simulating the learned flow from the simple distribution.
@@ -178,7 +243,22 @@ class FlowModel(pl.LightningModule):
         )
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
         output = simulator.simulate(starting_points, t_eval, batch_lig, batch_pocket)
-        return output[:, -1]
+        output = output[:, -1]
+        x_lig = output[: batch_lig.shape[0], :3]
+        h_lig = output[: batch_lig.shape[0], 3:]
+        x_pocket = output[batch_lig.shape[0] :, :3]
+        h_pocket = output[batch_lig.shape[0] :, 3:]
+        if self.unnorm:
+            x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+        data = Data(
+            x_lig=x_lig,
+            h_lig=h_lig,
+            batch_lig=batch_lig,
+            x_pocket=x_pocket,
+            h_pocket=h_pocket,
+            batch_pocket=batch_pocket,
+        )
+        return data
 
     def configure_optimizers(self):
         """Configures the optimizer and learning rate scheduler.

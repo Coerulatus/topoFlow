@@ -5,6 +5,9 @@ import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv, global_mean_pool
 from lightning.pytorch import LightningModule
 from torchmetrics.functional import mean_squared_error, mean_absolute_error
+from rdkit import Chem
+import topoflow.utils.constants as constants
+from topoflow.utils.molecules import data_to_rdmol
 
 
 class GAT(torch.nn.Module):
@@ -156,7 +159,8 @@ class GATEvaluator(LightningModule):
         ), f"Expected {len(self.y_cols)} normalization parameters, but found {found_keys}. \
                 Please ensure that y_cols contain the keys in norm_params."
         self.norm_params = torch.tensor(self.norm_params, dtype=torch.float32)
-
+        # TODO: add param dataset_name
+        self.atom_decoder = constants.dataset_params["crossdock_full"]["atom_decoder"]
         self.save_hyperparameters(ignore=["optimizer"])
 
     def forward(self, x, edge_index, edge_attr, batch):
@@ -260,3 +264,55 @@ class GATEvaluator(LightningModule):
     def configure_optimizers(self):
         """Configure the optimizer for training."""
         return self.optimizer
+
+    def evaluate(self, batch, validate=True):
+        """Evaluate the model on a batch of data and compute predicted molecular properties.
+
+        Args:
+            batch: A PyTorch Geometric Batch object.
+            validate (bool): If True, sanitize and filter invalid molecules before evaluating validity.
+
+        Returns:
+            dict: A dictionary with keys 'validity', 'qed', 'logp', 'sas' from model predictions.
+        """
+        if validate:
+            mols = data_to_rdmol(batch, self.atom_decoder)
+            mols_valid = []
+            mask = []
+            for i, mol in enumerate(mols):
+                try:
+                    Chem.SanitizeMol(mol)
+                    mols_valid.append(mol)
+                    mask.append(i)
+                except Exception:
+                    continue
+
+        if not mols_valid:
+            return {
+                "validity": torch.tensor(0.0),
+                "qed": torch.tensor(0.0),
+                "logp": torch.tensor(0.0),
+                "sas": torch.tensor(0.0),
+            }
+
+        validity = torch.tensor(len(mols_valid) / len(mols), dtype=torch.float)
+
+        x, edge_index, edge_attr, batch_index = (
+            batch.x,
+            batch.edge_index,
+            batch.edge_attr,
+            batch.batch,
+        )
+        y_hat = self(x, edge_index, edge_attr, batch_index).cpu()  # [num_graphs, 3]
+
+        if validate:
+            y_hat = y_hat[mask]
+
+        metrics = {
+            "validity": validity,
+            "qed": y_hat[:, 0].mean(),
+            "logp": y_hat[:, 1].mean(),
+            "sas": y_hat[:, 2].mean(),
+        }
+
+        return metrics

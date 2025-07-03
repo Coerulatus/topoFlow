@@ -20,11 +20,13 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
             noise.
     """
 
-    def __init__(self, p_data, alpha, beta, device="cpu", target_dim=None):
+    def __init__(
+        self, p_data, alpha, beta, device="cpu", target_dim=None, distribution_hist=None
+    ):
         """Initializes the GaussianConditionalProbabilityPath.
 
         Args:
-            p_data: The data distribution, expected to be a Gaussian.
+            p_data: The data distribution.
             alpha: Function that defines the time-dependent scaling of the
                 conditioning variable.
             beta: Function that defines the time-dependent scaling of the noise.
@@ -32,6 +34,8 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
                 Defaults to 'cpu'.
             target_dim: The target dimension of the data. If None, it's inferred
                 from `p_data.dim`. Defaults to None.
+            distribution_hist: Optional size distribution for the data. If not
+                provided, it will be inferred from `p_data.dataset.distribution_hist`.
         """
         if target_dim is None:
             target_dim = p_data.dim
@@ -41,12 +45,17 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
         self.alpha.device = device
         self.beta = beta
         self.beta.device = device
-        try:
-            self.size_distribution = DistributionNodes(p_data.dataset.distribution_hist)
-        except AttributeError:
-            raise ValueError(
-                "The provided `p_data.dataset` must have a `size_distribution` attribute."
-            )
+        if distribution_hist is not None:
+            self.size_distribution = DistributionNodes(distribution_hist)
+        else:
+            try:
+                self.size_distribution = DistributionNodes(
+                    p_data.dataset.distribution_hist
+                )
+            except AttributeError:
+                raise ValueError(
+                    "The provided `p_data.dataset` must have a `size_distribution` attribute."
+                )
 
     def sample_conditioning_variable(self, batch_size: int):
         """Samples the conditioning variable `z`.

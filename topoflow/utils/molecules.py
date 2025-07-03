@@ -21,7 +21,7 @@ def make_mol_openbabel(positions, atom_types, atom_decoder):
     """
     if not isinstance(atom_types, list) and atom_types.ndim == 2:
         atoms_idxs = torch.argmax(atom_types, dim=1).cpu().numpy()
-    elif isinstance(atom_types, list):
+    elif isinstance(atom_types, list) or atom_types.ndim == 1:
         atoms_idxs = atom_types
 
     atom_symbols = [atom_decoder[x] for x in atoms_idxs]
@@ -59,6 +59,51 @@ def make_mol_openbabel(positions, atom_types, atom_decoder):
         mol.AddBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(), bond.GetBondType())
 
     return mol
+
+
+def mol_to_data(mol, atom_encoder, batch_id=0):
+    """Convert an RDKit molecule to a PyTorch Geometric Data object."""
+    # --- 3D coordinates ---
+    conf = mol.GetConformer()
+    coords = torch.tensor(
+        conf.GetPositions(), dtype=torch.float
+    )  # shape: [num_atoms, 3]
+
+    # --- Atom types one-hot ---
+    atom_types = [atom_encoder[atom.GetSymbol()] for atom in mol.GetAtoms()]
+    num_atom_types = max(atom_encoder.values()) + 1
+    atom_types_tensor = torch.tensor(atom_types, dtype=torch.long)
+    one_hot = torch.nn.functional.one_hot(
+        atom_types_tensor, num_classes=num_atom_types
+    ).float()  # shape: [num_atoms, num_atom_types]
+
+    # --- Batch ---
+    batch = torch.full((coords.size(0),), batch_id, dtype=torch.long)
+
+    return coords, one_hot, batch
+
+
+def data_to_rdmol(data, atom_decoder):
+    """Convert PyTorch Geometric Data object to RDKit molecule."""
+    coords = data["x_lig"]
+    atom_types = data["h_lig"]
+    batch = data["batch_lig"]
+
+    # Convert atom types from one-hot to indices
+    atom_idxs = torch.argmax(atom_types, dim=1).cpu().numpy()
+
+    unique_batches = torch.unique(batch)
+    rd_mols = []
+    for batch_id in unique_batches:
+        coords_batch = coords[batch == batch_id]
+        atom_idxs_batch = atom_idxs[batch == batch_id]
+        rdmol = make_mol_openbabel(
+            coords_batch.cpu().numpy(), atom_idxs_batch, atom_decoder
+        )
+        if rdmol is not None:
+            rd_mols.append(rdmol)
+
+    return rd_mols
 
 
 def rdmol_to_smiles(rdmol):

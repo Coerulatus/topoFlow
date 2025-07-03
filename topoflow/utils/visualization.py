@@ -5,11 +5,12 @@ import os
 import numpy as np
 from torch_geometric.data import Data
 import rdkit.Chem as Chem
+from rdkit.Chem import AllChem
 from rdkit.Chem import Draw
 import torch
 
 import topoflow.utils.constants as constants
-from topoflow.utils.molecules import make_mol_openbabel
+from topoflow.utils.molecules import make_mol_openbabel, mol_to_data
 
 # 1. Start PyMOL (usually in headless mode for scripting)
 pymol.cmd.reinitialize()  # Clear previous states
@@ -119,12 +120,7 @@ def plot_molecular_complex(
     pymol.cmd.zoom("all", 5.0)  # Zoom to all objects with a padding
     pymol.cmd.center("all")  # Ensure the center of rotation is correct
 
-    # Optional: Set a white background
     pymol.cmd.bg_color("white")
-
-    # Optional: Ray trace for higher quality image (can be slow for complex scenes)
-    # Uncomment and adjust dimensions if you need a high-res image for publications
-    # pymol.cmd.ray(400, 400) # Ray trace with specified width and height
 
     # Save the image if output_image_path is provided
     if output_image_path:
@@ -174,8 +170,8 @@ def save_ligand_to_sdf(data_object, file_path: str, atom_decoder: dict = None):
         # Default atom map - crucial that this matches your data's encoding!
         atom_decoder = ["C", "N", "O", "S", "F", "P", "Cl", "Br", "I", "B", "Si", "Se"]
 
-    lig_elements = _get_elements_from_x_data(data_object.x_lig, atom_decoder)
-    lig_coords = data_object.pos_lig
+    lig_elements = _get_elements_from_x_data(data_object.h_lig, atom_decoder)
+    lig_coords = data_object.x_lig
     num_atoms = len(lig_elements)
     num_bonds = 0  # We don't have bond information from your Data object
 
@@ -186,7 +182,6 @@ def save_ligand_to_sdf(data_object, file_path: str, atom_decoder: dict = None):
     )
     molfile_lines.append("")  # Comment line
 
-    # Counts Line: aaabbblllfcccsssrrrPVVvvv
     molfile_lines.append(
         f"{num_atoms:3d}{num_bonds:3d}  0  0  0  0  0  0  0  0999 V2000"
     )
@@ -219,8 +214,8 @@ def save_pocket_to_pdb(data_object: Data, file_path: str, atom_decoder: dict = N
         # Default atom map - crucial that this matches your data's encoding!
         atom_decoder = ["C", "N", "O", "S", "F", "P", "Cl", "Br", "I", "B", "Si", "Se"]
 
-    pocket_elements = _get_elements_from_x_data(data_object.x_pocket, atom_decoder)
-    pocket_coords = data_object.pos_pocket
+    pocket_elements = _get_elements_from_x_data(data_object.h_pocket, atom_decoder)
+    pocket_coords = data_object.x_pocket
 
     pdb_lines = []
     atom_serial = 1  # Start atom numbering from 1
@@ -258,7 +253,7 @@ def visualize_data(
     data_object: Data,
     image_path: str = None,
     session_path: str = None,
-    dataset_name: str = None,
+    dataset_name: str = "crossdock_full",
     add_ligand_bonds: bool = True,
 ):
     """Visualization function for a Data object containing ligand and pocket information.
@@ -278,6 +273,7 @@ def visualize_data(
                                            If False, only the ligand atoms are shown without bonds.
                                            Defaults to True.
     """
+    data_object = data_object.to(torch.device("cpu"))  # Ensure data is on CPU for PyMOL
     dataset_params = constants.dataset_params[dataset_name] if dataset_name else None
     # Save ligand and pocket to files
     ligand_file = "temp_ligand.sdf"
@@ -287,7 +283,7 @@ def visualize_data(
         atom_decoder = dataset_params.get("atom_decoder", None)
     if add_ligand_bonds:
         rdmol = make_mol_openbabel(
-            data_object.pos_lig, data_object.x_lig, atom_decoder=atom_decoder
+            data_object.x_lig, data_object.h_lig, atom_decoder=atom_decoder
         )
         save_ligand_to_sdf(rdmol, ligand_file, atom_decoder)
     else:
@@ -331,6 +327,7 @@ def visualize_data_rdkit(
         x_lig = batched_data.x_lig[mask]
         h_lig = batched_data.h_lig[mask]
         mol = make_mol_openbabel(x_lig, h_lig, atom_decoder)
+        AllChem.Compute2DCoords(mol)  # Compute 2D coordinates for better visualization
         mols.append(mol)
 
     img = Draw.MolsToGridImage(
@@ -338,6 +335,8 @@ def visualize_data_rdkit(
         molsPerRow=mols_per_row,
         subImgSize=sub_img_size,
         legends=[f"Mol {i}" for i in range(len(mols))],
+        useSVG=False,
+        returnPNG=False,
     )
 
     if image_path:
@@ -347,29 +346,6 @@ def visualize_data_rdkit(
     img.show()
 
 
-def mol_to_data(mol, atom_encoder, batch_id):
-    """Convert an RDKit molecule to a PyTorch Geometric Data object."""
-    # --- 3D coordinates ---
-    conf = mol.GetConformer()
-    coords = torch.tensor(
-        conf.GetPositions(), dtype=torch.float
-    )  # shape: [num_atoms, 3]
-
-    # --- Atom types one-hot ---
-    atom_types = [atom_encoder[atom.GetSymbol()] for atom in mol.GetAtoms()]
-    num_atom_types = max(atom_encoder.values()) + 1
-    atom_types_tensor = torch.tensor(atom_types, dtype=torch.long)
-    one_hot = torch.nn.functional.one_hot(
-        atom_types_tensor, num_classes=num_atom_types
-    ).float()  # shape: [num_atoms, num_atom_types]
-
-    # --- Batch ---
-    batch = torch.full((coords.size(0),), batch_id, dtype=torch.long)
-
-    return coords, one_hot, batch
-
-
-# 3. Example Usage:
 if __name__ == "__main__":
     # pdb_file = "pymol_temp_plots/complex_1_pocket.pdb"  # Path to your protein PDB file
     # ligand_file = (
