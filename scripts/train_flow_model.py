@@ -106,7 +106,7 @@ def train_flow_model(
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename="topoflow-{epoch:02d}",
-        monitor="val/loss",
+        monitor="train/loss",
         mode="min",
         save_top_k=1,
     )
