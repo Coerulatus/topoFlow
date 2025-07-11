@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import numpy as np
 import torch
 import lightning.pytorch as pl
 from topoflow.data.dataloader import DataLoaderSampleable
@@ -13,6 +14,7 @@ from topoflow.flow.vector_field_models import TransformerVectorField
 from topoflow.flow.flow_models import FlowModel
 import topoflow.utils.constants as constants
 from topoflow.data.augmentations import RandomRotateTranslate
+from topoflow.utils.metrics import get_distributions
 
 
 def train_flow_model(
@@ -53,17 +55,21 @@ def train_flow_model(
     # ======================================================================
     # Data Preparation
     # ======================================================================
-    if data_name == "cross_docked":
+    if data_name == "crossdock_full":
         train_dataset = CrossDocked(
             root=data_dir,
             split="train",
             transform=RandomRotateTranslate() if augment else None,
         )
+        val_dataset = CrossDocked(root=data_dir, split="val")
 
     else:
         raise ValueError(f"Unsupported dataset: {data_name}")
     datamodule = MockDatamodule(
-        train_length=len(train_dataset), val_length=batch_size, batch_size=batch_size
+        train_length=len(train_dataset),
+        val_length=batch_size,
+        batch_size=batch_size,
+        test_length=100,
     )
 
     alpha = LinearAlpha()
@@ -75,6 +81,20 @@ def train_flow_model(
         num_workers=8,
     )
     path = GaussianConditionalProbabilityPath(p_data=p_data, alpha=alpha, beta=beta)
+
+    val_metric_dist_path = os.path.join(data_dir, "processed", "val_distribution.npy")
+    if os.path.exists(val_metric_dist_path):
+        val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
+    else:
+        val_distribution = get_distributions(
+            val_dataset,
+            metrics=["qed", "logp", "sas"],
+            atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
+        )
+        np.save(val_metric_dist_path, val_distribution)
+    # TODO: remove this
+    for key in val_distribution:
+        val_distribution[key] = val_distribution[key][:16]
     # ======================================================================
     # Model Initialization
     # ======================================================================
@@ -94,8 +114,9 @@ def train_flow_model(
         vector_field_model=vector_field,
         path=path,
         evaluator=evaluator,
-        n_val_samples=16,
+        val_distribution=val_distribution,
         sample_every=10,
+        atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
         norm_path=norm_path,
         device="cuda" if torch.cuda.is_available() else "cpu",
         lr=learning_rate,
@@ -106,7 +127,7 @@ def train_flow_model(
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename="topoflow-{epoch:02d}",
-        monitor="train/loss",
+        monitor="train/loss",  # validation is just copying train samples
         mode="min",
         save_top_k=1,
     )
@@ -142,8 +163,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_name",
         type=str,
-        default="cross_docked",
-        choices=["cross_docked"],
+        default="crossdock_full",
+        choices=["crossdock_full"],
         help="Name of the dataset to use.",
     )
     parser.add_argument(
@@ -178,7 +199,7 @@ if __name__ == "__main__":
         help="Directory to save the trained model.",
     )
     parser.add_argument(
-        "--epochs", type=int, default=100, help="Number of training epochs."
+        "--epochs", type=int, default=1000, help="Number of training epochs."
     )
     parser.add_argument(
         "--batch_size", type=int, default=8, help="Batch size for training."
@@ -201,7 +222,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopologicalFlow",
+        default="TopologicalFlow_test",
         help="MLflow experiment name.",
     )
     parser.add_argument(

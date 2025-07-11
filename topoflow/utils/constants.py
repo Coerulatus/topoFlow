@@ -411,7 +411,7 @@ dataset_params["crossdock_full"] = {
         "P": 7,
         "I": 8,
         "F": 9,
-        "others": 10,
+        "OTHR": 10,
     },
     "idx_to_atom_map": {
         0: "C",
@@ -424,9 +424,9 @@ dataset_params["crossdock_full"] = {
         7: "P",
         8: "I",
         9: "F",
-        10: "others",
+        10: "OTHR",
     },
-    "atom_decoder": ["C", "N", "O", "S", "B", "Br", "Cl", "P", "I", "F", "others"],
+    "atom_decoder": ["C", "N", "O", "S", "B", "Br", "Cl", "P", "I", "F", "OTHR"],
     "aa_encoder": {
         "C": 0,
         "N": 1,
@@ -438,9 +438,9 @@ dataset_params["crossdock_full"] = {
         "P": 7,
         "I": 8,
         "F": 9,
-        "others": 10,
+        "OTHR": 10,
     },
-    "aa_decoder": ["C", "N", "O", "S", "B", "Br", "Cl", "P", "I", "F", "others"],
+    "aa_decoder": ["C", "N", "O", "S", "B", "Br", "Cl", "P", "I", "F", "OTHR"],
     "colors_dic": [
         "#33ff33",
         "#3333ff",

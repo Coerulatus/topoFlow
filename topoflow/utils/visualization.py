@@ -8,9 +8,114 @@ import rdkit.Chem as Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import Draw
 import torch
-
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import topoflow.utils.constants as constants
 from topoflow.utils.molecules import make_mol_openbabel, mol_to_data
+
+
+def visualize_data_matplotlib(
+    data_object: Data,
+    atom_decoder: dict = None,
+    dataset_name: str = "crossdock_full",
+    save_path: str = None,
+    figsize: tuple = (8, 6),
+    elev: int = 30,
+    azim: int = 45,
+    show: bool = True,
+):
+    """Visualizes ligand and pocket atoms in 3D using matplotlib instead of PyMOL.
+
+    Args:
+        data_object (Data): PyTorch Geometric Data object with x_lig, x_pocket, h_lig, h_pocket.
+        atom_decoder (dict, optional): Mapping from atom index to element symbol. If None, loaded from dataset_name.
+        dataset_name (str): Dataset name used to fetch atom_decoder from constants.
+        save_path (str, optional): Path to save the figure. If None, the image is not saved.
+        figsize (tuple): Size of the figure.
+        elev (int): Elevation angle for the 3D plot.
+        azim (int): Azimuth angle for the 3D plot.
+        show (bool): Whether to call plt.show().
+    """
+    if atom_decoder is None and dataset_name is not None:
+        atom_decoder = constants.dataset_params[dataset_name]["atom_decoder"]
+    elif atom_decoder is None:
+        atom_decoder = ["C", "N", "O", "S", "F", "P", "Cl", "Br", "I", "B", "Si", "Se"]
+
+    # Get elements
+    lig_elements = _get_elements_from_x_data(data_object.h_lig, atom_decoder)
+    pocket_elements = _get_elements_from_x_data(data_object.h_pocket, atom_decoder)
+
+    # Color map per element
+    color_map = {
+        "C": "black",
+        "N": "blue",
+        "O": "red",
+        "S": "yellow",
+        "F": "green",
+        "P": "orange",
+        "Cl": "lime",
+        "Br": "brown",
+        "I": "purple",
+        "B": "magenta",
+        "Si": "gray",
+        "Se": "cyan",
+    }
+
+    # 3D plot
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_title("Ligand and Pocket Visualization (matplotlib)")
+
+    # Plot pocket atoms
+    for pos, elem in zip(data_object.x_pocket, pocket_elements):
+        x, y, z = pos.cpu().numpy()
+        ax.scatter(
+            x,
+            y,
+            z,
+            c=color_map.get(elem, "gray"),
+            s=20,
+            label=f"Pocket-{elem}",
+            alpha=0.5,
+            edgecolors="k",
+        )
+
+    # Plot ligand atoms
+    for pos, elem in zip(data_object.x_lig, lig_elements):
+        x, y, z = pos.cpu().numpy()
+        ax.scatter(
+            x,
+            y,
+            z,
+            c=color_map.get(elem, "gray"),
+            s=60,
+            label=f"Ligand-{elem}",
+            edgecolors="k",
+        )
+
+    ax.view_init(elev=elev, azim=azim)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.axis("off")
+
+    # Remove duplicate labels
+    handles, labels = ax.get_legend_handles_labels()
+    unique = dict(zip(labels, handles))
+    ax.legend(
+        unique.values(), unique.keys(), loc="upper right", fontsize=7, frameon=False
+    )
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
+        print(f"Matplotlib image saved to: {save_path}")
+
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
 
 # 1. Start PyMOL (usually in headless mode for scripting)
 pymol.cmd.reinitialize()  # Clear previous states
@@ -344,6 +449,62 @@ def visualize_data_rdkit(
         img.save(image_path)
         print(f"Image saved to: {image_path}")
     img.show()
+
+
+def visualize_trajectory(
+    data_list: list,
+    image_path: str = None,
+    dataset_name: str = "crossdock_full",
+    add_ligand_bonds: bool = True,
+    gif_path: str = None,
+):
+    """Visualizes a list of Data objects representing a trajectory of molecular complexes.
+
+    The model creates a series of images showing the evolution of the ligand and pocket
+    over the trajectory by using PyMOL.
+
+    Args:
+        data_list (list): A list of PyTorch Geometric Data objects, each containing ligand and pocket information.
+        image_path (str, optional): Path to save the output images (e.g., 'output.png').
+                                    If None, no images are saved.
+        dataset_name (str, optional): Name of the dataset to retrieve parameters from constants.dataset_params.
+                                      If None, default parameters are used.
+        add_ligand_bonds (bool, optional): If True, adds bonds to the ligand visualization.
+                                           If False, only the ligand atoms are shown without bonds.
+                                           Defaults to True.
+        gif_path (str, optional): Path to save the output GIF file (e.g., 'output.gif').
+                                   If None, no GIF is saved.
+    """
+    if not isinstance(data_list, list) or not all(
+        isinstance(d, Data) for d in data_list
+    ):
+        raise ValueError("data_list must be a list of PyTorch Geometric Data objects.")
+    if image_path and not os.path.isdir(os.path.dirname(image_path)):
+        os.makedirs(os.path.dirname(image_path))
+    if image_path and image_path.endswith(".png"):
+        image_path = image_path[:-4]
+    for idx, data_object in enumerate(data_list):
+        data_object = data_object.to(
+            torch.device("cpu")
+        )  # Ensure data is on CPU for PyMOL
+        # Save ligand and pocket to files
+        visualize_data(
+            data_object,
+            image_path=f"{image_path}_{idx}.png",
+            session_path=f"{image_path}_{idx}.pse",
+            dataset_name=dataset_name,
+            add_ligand_bonds=add_ligand_bonds,
+        )
+
+    if gif_path is not None:
+        # Create a GIF from the saved images
+        import imageio
+
+        images = []
+        for idx in range(len(data_list)):
+            img_path = f"{image_path}_{idx}.png"
+            images.append(imageio.imread(img_path))
+        imageio.mimsave(gif_path, images, duration=1, disposal=2, loop=1)
 
 
 if __name__ == "__main__":

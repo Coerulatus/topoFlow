@@ -155,6 +155,7 @@ class CrossDocked(InMemoryDataset):
         ca_only: bool = False,
         distance_cutoff: float = 8.0,
         normalize_coords: bool = True,
+        center_pocket: bool = True,
         random_seed: int = 42,
     ):
         """Initialize the CrossDocked dataset.
@@ -171,6 +172,7 @@ class CrossDocked(InMemoryDataset):
             ca_only (bool): If True, only process C-alpha atoms in the protein pockets.
             distance_cutoff (float): Distance cutoff for processing ligand-pocket interactions.
             normalize_coords (bool): If True, normalize the coordinates of the ligands and pockets.
+            center_pocket (bool): If True, center the pocket coordinates around the origin.
             random_seed (int): Random seed for reproducibility.
         """
         self.split = split
@@ -179,6 +181,7 @@ class CrossDocked(InMemoryDataset):
         self.ca_only = ca_only
         self.distance_cutoff = distance_cutoff
         self.normalize_coords = normalize_coords
+        self.center_pocket = center_pocket
         self.random_seed = random_seed
 
         super().__init__(root, transform, pre_transform)
@@ -334,6 +337,12 @@ class CrossDocked(InMemoryDataset):
                 ) and len(pocket_data["pocket_coords"]) == len(
                     pocket_data["pocket_one_hot"]
                 ):
+                    if self.center_pocket:
+                        # Center the pocket coordinates around the origin
+                        pocket_coords = pocket_data["pocket_coords"]
+                        mean_pocket = np.mean(pocket_coords, axis=0)
+                        pocket_data["pocket_coords"] -= mean_pocket
+                        ligand_data["lig_coords"] -= mean_pocket
                     pdb_and_mol_ids_list.append(f"{pocket_fn_rel}_{ligand_fn_rel}")
                     lig_coords_list.append(ligand_data["lig_coords"])
                     lig_one_hot_list.append(ligand_data["lig_one_hot"])

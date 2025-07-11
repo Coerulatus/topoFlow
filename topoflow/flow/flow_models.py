@@ -11,6 +11,8 @@ from sklearn.decomposition import PCA
 from topoflow.flow.simulator import TorchDiffEqSimulator
 from topoflow.flow.utils_plot import plot_results
 from topoflow.evaluators import RDKitEvaluator, GATEvaluator
+from topoflow.utils.metrics import wasserstein_1d, qed_scorer, logp_scorer, sas_scorer
+from topoflow.utils.molecules import data_to_rdmol
 
 
 class FlowModel(pl.LightningModule):
@@ -26,7 +28,9 @@ class FlowModel(pl.LightningModule):
         path,
         evaluator=None,
         n_val_samples=0,
+        val_distribution=None,
         sample_every=1,
+        atom_decoder=None,
         norm_path=None,
         device="cpu",
         lr=1e-3,
@@ -40,7 +44,9 @@ class FlowModel(pl.LightningModule):
             evaluator: An optional evaluator for assessing generated samples.
             n_val_samples: Number of samples to generate during validation for visualization.
                 Defaults to 0.
+            val_distribution: The expected distribution of metrics for validation.
             sample_every: Frequency of sampling during validation. Defaults to 1.
+            atom_decoder: Optional atom decoder for converting samples to RDKit molecules.
             norm_path: Path to the normalization parameters file.
             device: The device on which to run computations ('cpu' or 'cuda'). Defaults to 'cpu'.
             lr: Learning rate for the optimizer. Defaults to 1e-3.
@@ -56,6 +62,8 @@ class FlowModel(pl.LightningModule):
             self.unguided_label = None
         self.val_samples = []
         self.n_val_samples = n_val_samples
+        self.val_distribution = val_distribution
+        self.atom_decoder = atom_decoder
         self.loss_function = torch.nn.MSELoss()
         self.train_loss = []
         self.lr = lr
@@ -77,12 +85,12 @@ class FlowModel(pl.LightningModule):
                     f"Normalization parameters not found at {norm_path}."
                 )
             norm_params = np.load(norm_path, allow_pickle=True)
-            self.normalization_params(
-                mean_lig=norm_params["mean_lig"],
-                std_lig=norm_params["std_lig"],
-                mean_pocket=norm_params["mean_pocket"],
-                std_pocket=norm_params["std_pocket"],
-            )
+            self.normalization_params = {
+                "mean_lig": norm_params["mean_lig"],
+                "std_lig": norm_params["std_lig"],
+                "mean_pocket": norm_params["mean_pocket"],
+                "std_pocket": norm_params["std_pocket"],
+            }
             self.unnorm = True
 
     def forward(self, batch):
@@ -123,11 +131,8 @@ class FlowModel(pl.LightningModule):
         Returns:
             The training loss for the current step.
         """
-        if batch_idx >= 124:
-            pass
         u_t_theta, u_t_ref = self.forward(batch)
         loss = self.loss_function(u_t_theta, u_t_ref)
-        loss /= u_t_ref.shape[0]  # Normalize by number of atoms
 
         self.log("train/loss", loss, on_epoch=True, prog_bar=True)
         self.train_loss.append(loss.item())
@@ -147,7 +152,6 @@ class FlowModel(pl.LightningModule):
         """
         u_t_theta, u_t_ref = self.forward(batch)
         loss = self.loss_function(u_t_theta, u_t_ref)
-        loss /= u_t_ref.shape[0]  # Normalize by number of atoms
 
         self.log("val/loss", loss, on_epoch=True, prog_bar=False)
         if (
@@ -163,6 +167,23 @@ class FlowModel(pl.LightningModule):
                 prefixed = {f"val/{k}": v for k, v in results.items()}
                 self.log_dict(prefixed, on_epoch=True, prog_bar=False)
         self.n_epoch += 1
+        if (
+            self.val_distribution is not None
+            and batch_idx == 0
+            and self.n_epoch % self.sample_every == 0
+        ):
+            distances = self.test_distribution(
+                test_distribution=self.val_distribution,
+                metrics=["qed", "logp", "sas"],
+                atom_decoder=self.atom_decoder,
+            )
+            for metric, distance in distances.items():
+                self.log(
+                    f"val/{metric}_wasserstein_distance",
+                    distance,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -179,10 +200,72 @@ class FlowModel(pl.LightningModule):
         """
         u_t_theta, u_t_ref = self.forward(batch)
         loss = self.loss_function(u_t_theta, u_t_ref)
-        loss /= u_t_ref.shape[0]  # Normalize by number of atoms
 
         self.log("test/loss", loss)
+
         return loss
+
+    @torch.no_grad()
+    def test_distribution(
+        self, test_distribution, metrics=["qed", "logp", "sas"], atom_decoder=None
+    ):
+        """Test is the molecules produced follow the expected distribution.
+
+        This method uses the Wasserstein distance to compare the distribution of
+        the generated samples with the expected distribution.
+
+        Args:
+            test_distribution: Dictionary containing the expected distribution
+                of metrics (e.g., {'qed': [0.5, 0.6], 'logp': [-2, 2]}).
+            metrics: List of metrics to evaluate. Defaults to ['qed', 'logp', 'sas'].
+            atom_decoder: Optional atom decoder for converting samples to RDKit molecules.
+                Defaults to None to use the model's default atom decoder.
+        """
+        MAX_BATCH_SIZE = 16
+        if atom_decoder is None:
+            atom_decoder = self.atom_decoder
+        num_samples = len(test_distribution[metrics[0]])
+
+        n_batches = (num_samples + MAX_BATCH_SIZE - 1) // MAX_BATCH_SIZE
+        mols = []
+        for i in range(n_batches):
+            samples = self.sample(
+                min(MAX_BATCH_SIZE, num_samples - i * MAX_BATCH_SIZE),
+                n_steps=50,
+            )
+            mols += data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
+        results = {}
+        for metric in metrics:
+            if metric not in test_distribution:
+                raise ValueError(f"Metric {metric} not found in test distribution.")
+            elif metric == "qed":
+                results[metric] = [qed_scorer(mol) for mol in mols]
+                results[metric] = [s for s in results[metric] if s is not None]
+            elif metric == "logp":
+                results[metric] = [logp_scorer(mol) for mol in mols]
+                results[metric] = [s for s in results[metric] if s is not None]
+            elif metric == "sas":
+                results[metric] = [sas_scorer(mol) for mol in mols]
+                results[metric] = [s for s in results[metric] if s is not None]
+            else:
+                raise ValueError(f"Unsupported metric: {metric}")
+
+        distances = {}
+        try:
+            for metric in metrics:
+                expected = test_distribution[metric]
+                actual = results[metric]
+                if isinstance(expected, list):
+                    expected = torch.tensor(expected)
+                if isinstance(actual, list):
+                    actual = torch.tensor(actual, device=expected.device)
+                distance = wasserstein_1d(expected, actual)
+                distances[metric] = distance.item()
+
+            return distances
+        except Exception as e:
+            print(f"Error calculating distances: {e}")
+            return {metric: float("nan") for metric in metrics}
 
     def drift_coefficient(self, x, t, batch_lig, batch_pocket):
         """Computes the drift coefficient (vector field) at time t.
@@ -259,6 +342,41 @@ class FlowModel(pl.LightningModule):
             batch_pocket=batch_pocket,
         )
         return data
+
+    def sample_with_trajectory(self, n_samples, n_steps=20):
+        """Samples data by simulating the learned flow from the simple distribution and returns the trajectory.
+
+        Args:
+            n_samples: Number of samples to generate.
+            n_steps: Number of integration steps for the simulator. Defaults to 20.
+
+        Returns:
+            The generated samples after simulating the flow, along with the trajectory.
+        """
+        simulator = TorchDiffEqSimulator(self, solver="rk4")
+        starting_points, batch_lig, batch_pocket = self.path.sample_simple_distribution(
+            n_samples
+        )
+        t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
+        output = simulator.simulate(starting_points, t_eval, batch_lig, batch_pocket)
+        data_trajectory = []
+        for i in range(output.shape[1]):
+            x_lig = output[: batch_lig.shape[0], i, :3]
+            h_lig = output[: batch_lig.shape[0], i, 3:]
+            x_pocket = output[batch_lig.shape[0] :, i, :3]
+            h_pocket = output[batch_lig.shape[0] :, i, 3:]
+            if self.unnorm:
+                x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+            data = Data(
+                x_lig=x_lig,
+                h_lig=h_lig,
+                batch_lig=batch_lig,
+                x_pocket=x_pocket,
+                h_pocket=h_pocket,
+                batch_pocket=batch_pocket,
+            )
+            data_trajectory.append(data)
+        return data_trajectory
 
     def configure_optimizers(self):
         """Configures the optimizer and learning rate scheduler.
