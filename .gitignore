@@ -206,3 +206,4 @@ __marimo__/
 /checkpoints/
 /mlruns/
 /results/
+/notebooks/outputs/trajectory/
