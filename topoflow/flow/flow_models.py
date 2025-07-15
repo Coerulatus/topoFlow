@@ -108,6 +108,19 @@ class FlowModel(pl.LightningModule):
                 - u_t_ref: The reference vector field from the path.
         """
         batch_size = batch.shape[0]
+
+        # TODO: remove this when finishing debugging
+        # if not hasattr(self, 'debug_cache'):
+        #     self.debug_cache = self.path.sample_conditioning_variable(batch_size)
+        #     self.debug_t = self.path.sample_time(batch_size, self.debug_cache[1], self.debug_cache[2])
+        #     self.debug_x = self.path.sample_conditional_path(self.debug_cache[0], self.debug_t[1])
+        #     self.debug_u = self.path.conditional_vector_field(self.debug_x, self.debug_cache[0], self.debug_t[1])
+        # t = self.debug_t[0]
+        # x = self.debug_x
+        # u_t_ref = self.debug_u
+        # batch_lig = self.debug_cache[1]
+        # batch_pocket = self.debug_cache[2]
+
         # We override the batch size to ensure it matches the expected size
         # path.p_data.sample() returns always the same batch_size even if the input batch is smaller.
         z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(

@@ -32,7 +32,7 @@ class TransformerVectorField(nn.Module):
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=h_dim,
+            d_model=2 * h_dim,
             nhead=num_heads,
             dim_feedforward=4 * h_dim,
             dropout=dropout,
@@ -41,7 +41,7 @@ class TransformerVectorField(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # Final output projection
-        self.out_proj = nn.Linear(h_dim, x_dim)
+        self.out_proj = nn.Linear(2 * h_dim, x_dim)
 
     def forward(self, x, t, batch_lig, batch_pocket):
         """Forward pass of the vector field model.
@@ -76,12 +76,17 @@ class TransformerVectorField(nn.Module):
         x = self.x_embed(x)  # [num_x, h_dim]
 
         # Expand t to per-node
-        if len(t.shape) == 0:
-            t = t.unsqueeze(0).repeat(batch_x.shape[0], 1)
-        t_embed = self.time_embed(t[:, None]).squeeze()
-        t_per_x = t_embed[batch_x]
+        if t.ndim == 0:
+            t = t.view(1, 1)
+        elif t.ndim == 1:
+            t = t[:, None]  # [batch_size, 1]
+        t_embed = self.time_embed(t)  # [batch_size, h_dim]
 
-        x = x + t_per_x  # Time conditioning
+        # Now assign each node the right t embedding via batch_x
+        t_per_x = t_embed[batch_x]  # [num_x, h_dim]
+
+        # Add time conditioning
+        x = torch.cat([x, t_per_x], dim=-1)
 
         # Create attention mask: prevent attention across graphs
         attn_mask = (batch_x[:, None] != batch_x[None, :]).to(device)

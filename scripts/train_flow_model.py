@@ -67,7 +67,7 @@ def train_flow_model(
         raise ValueError(f"Unsupported dataset: {data_name}")
     datamodule = MockDatamodule(
         train_length=len(train_dataset),
-        val_length=batch_size,
+        val_length=0,  # TODO: add validation back
         batch_size=batch_size,
         test_length=100,
     )
@@ -100,7 +100,7 @@ def train_flow_model(
     # ======================================================================
     if vector_field_model == "transformer":
         vector_field = TransformerVectorField(
-            x_dim=p_data.dim, h_dim=hidden_dim, num_heads=4, num_layers=2, dropout=0.1
+            x_dim=p_data.dim, h_dim=hidden_dim, num_heads=16, num_layers=3, dropout=0.1
         )
     else:
         raise ValueError(f"Unsupported vector field model: {vector_field_model}")
@@ -183,7 +183,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hidden_dim",
         type=int,
-        default=32,
+        default=128,
         help="Dimension of the hidden layers in the model.",
     )
     parser.add_argument(
@@ -202,7 +202,7 @@ if __name__ == "__main__":
         "--epochs", type=int, default=1000, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=8, help="Batch size for training."
+        "--batch_size", type=int, default=10, help="Batch size for training."
     )
     parser.add_argument(
         "--learning_rate",
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopologicalFlow_test",
+        default="TopologicalFlow",
         help="MLflow experiment name.",
     )
     parser.add_argument(
