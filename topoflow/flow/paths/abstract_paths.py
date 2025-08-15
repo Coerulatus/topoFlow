@@ -1,7 +1,7 @@
 """Abstract base class for defining conditional probability paths."""
 
 from abc import ABC, abstractmethod
-
+import numpy as np
 import torch
 
 
@@ -78,7 +78,11 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         Returns:
             Samples from a uniform distribution U[0,1). [batch_size, *1s]
         """
-        t = torch.rand(batch_size, device=self.device).view(self.t_target_shape)
+        if torch.max(batch_lig) + 1 != batch_size:
+            batch_size = torch.max(batch_lig) + 1
+        t = (
+            torch.rand(batch_size, device=self.device).view(self.t_target_shape) * 0.01
+        ) + 0.4
         if batch_lig is None and batch_pocket is None:
             return t, None
         batch_all = torch.cat([batch_lig, batch_pocket], dim=0)
@@ -92,11 +96,12 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         )
         return segment_ids.long()
 
-    def sample_simple_distribution(self, batch_size: int):
+    def sample_simple_distribution(self, batch_size: int, batch_pocket=None):
         """Samples from the simple distribution `p_simple`.
 
         Args:
             batch_size: Number of samples.
+            batch_pocket: Optional tensor indicating the samples associated with the pockets.
 
         Returns:
             A tuple containing:
@@ -105,9 +110,21 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
                     Returns None if no labels are associated with the simple distribution.
         """
         if hasattr(self, "size_distribution") and self.size_distribution is not None:
-            num_nodes_lig, num_nodes_pocket = self.size_distribution.sample(batch_size)
+            if batch_pocket is not None:
+                num_nodes_lig, _ = self.size_distribution.sample(batch_size)
+                num_nodes_pocket = torch.tensor(batch_pocket.shape[0])
+            else:
+                num_nodes_lig, num_nodes_pocket = self.size_distribution.sample(
+                    batch_size
+                )
+                batch_pocket = self.create_mask(num_nodes_pocket)
+                batch_pocket = batch_pocket.to(self.device)
+
+            # TODO: remove this
+            num_nodes_lig = torch.tensor([26])
+
             batch_lig = self.create_mask(num_nodes_lig)
-            batch_pocket = self.create_mask(num_nodes_pocket)
+            batch_lig = batch_lig.to(self.device)
             z = self.p_simple.sample(
                 torch.sum(num_nodes_lig) + torch.sum(num_nodes_pocket)
             )

@@ -60,10 +60,10 @@ class Alpha(Scheduler):
     def validate(self):
         """Validates that Alpha(0) is 0 and Alpha(1) is 1."""
         assert torch.allclose(
-            self(torch.zeros(1, 1)), torch.zeros(1, 1)
+            self(torch.zeros(1, 1)), torch.zeros(1, 1), atol=1e-6
         ), "Alpha(0) should be 0"
         assert torch.allclose(
-            self(torch.ones(1, 1)), torch.ones(1, 1)
+            self(torch.ones(1, 1)), torch.ones(1, 1), atol=1e-6
         ), "Alpha(1) should be 1"
 
 
@@ -76,10 +76,10 @@ class Beta(Scheduler):
     def validate(self):
         """Validates that Beta(0) is 1 and Beta(1) is 0."""
         assert torch.allclose(
-            self(torch.zeros(1, 1)), torch.ones(1, 1)
+            self(torch.zeros(1, 1)), torch.ones(1, 1), atol=1e-6
         ), "Beta(0) should be 1"
         assert torch.allclose(
-            self(torch.ones(1, 1)), torch.zeros(1, 1)
+            self(torch.ones(1, 1)), torch.zeros(1, 1), atol=1e-6
         ), "Beta(1) should be 0"
 
 
@@ -107,6 +107,38 @@ class LinearAlpha(Alpha):
             A tensor of ones with the same shape as t. [batch_size, *1s]
         """
         return torch.ones_like(t)
+
+
+class SineAlpha(Alpha):
+    """Sine-based alpha scheduler, where Alpha(t) = sin(pi*t/2).
+
+    This schedule ensures the noise term goes from 0 to 1, and in combination
+    with CosineAlpha, it maintains a constant variance.
+    """
+
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        """Computes Alpha(t) = sin(pi*t/2).
+
+        Args:
+            t: Time. [batch_size, *1s]
+
+        Returns:
+            The value of the sine schedule at time t. [batch_size, *1s]
+        """
+        return torch.sin(t * torch.pi / 2.0).to(t.device)
+
+    def dt(self, t: torch.Tensor) -> torch.Tensor:
+        """Computes the derivative of SineAlpha(t).
+
+        The derivative is pi/2 * cos(pi*t/2).
+
+        Args:
+            t: Time. [batch_size, *1s]
+
+        Returns:
+            The derivative of the sine schedule at time t. [batch_size, *1s]
+        """
+        return torch.pi / 2.0 * torch.cos(t * torch.pi / 2.0).to(t.device)
 
 
 class SquareRootBeta(Beta):
@@ -166,3 +198,34 @@ class LinearBeta(Beta):
             A tensor of negative ones with the same shape as t. [batch_size, *1s]
         """
         return -torch.ones_like(t)
+
+
+class CosineBeta(Beta):
+    """Cosine-based beta scheduler, where Beta(t) = cos(pi*t/2).
+
+    This schedule ensures the signal term goes from 1 to 0.
+    """
+
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        """Computes Beta(t) = cos(pi*t/2).
+
+        Args:
+            t: Time. [batch_size, *1s]
+
+        Returns:
+            The value of the cosine schedule at time t. [batch_size, *1s]
+        """
+        return torch.cos(t * torch.pi / 2.0).to(t.device)
+
+    def dt(self, t: torch.Tensor) -> torch.Tensor:
+        """Computes the derivative of CosineBeta(t).
+
+        The derivative is -pi/2 * sin(pi*t/2).
+
+        Args:
+            t: Time. [batch_size, *1s]
+
+        Returns:
+            The derivative of the cosine schedule at time t. [batch_size, *1s]
+        """
+        return -torch.pi / 2.0 * torch.sin(t * torch.pi / 2.0).to(t.device)

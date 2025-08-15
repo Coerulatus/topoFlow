@@ -5,27 +5,27 @@ channels:
   - nvidia
   - defaults
 dependencies:
+  - anaconda::ipykernel
+  - conda-forge::pre_commit
+  - lightning
+  - matplotlib
+  - mordred
+  - numpy
   - pip
   - python=3.10
   - pytorch-cuda=11.8
   - pytorch=2.5.1
-  - conda-forge::pre_commit
-  - anaconda::ipykernel
-  - numpy
   - scikit-learn
-  - matplotlib
-  - tqdm
-  - mordred
   - torchmetrics
-  - lightning
+  - tqdm
   - pytorch_geometric
   - seaborn
   - mlflow
-  - torchmetrics
   - torchdiffeq
-  - biopython
+  - openbabel
+  - pytest
+  - conda-forge::biopython
   - imageio
+  - gdown
   - pymol-open-source
   - pytest-cov
-  - gdown
-  - openbabel

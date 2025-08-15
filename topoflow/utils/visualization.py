@@ -360,6 +360,7 @@ def visualize_data(
     session_path: str = None,
     dataset_name: str = "crossdock_full",
     add_ligand_bonds: bool = True,
+    norm_params: dict = None,
 ):
     """Visualization function for a Data object containing ligand and pocket information.
 
@@ -377,8 +378,18 @@ def visualize_data(
         add_ligand_bonds (bool, optional): If True, adds bonds to the ligand visualization.
                                            If False, only the ligand atoms are shown without bonds.
                                            Defaults to True.
+        norm_params (dict, optional): Normalization parameters used for the data object. They are used to unnormalize
+                                      the ligand and pocket coordinates before visualization.
     """
     data_object = data_object.to(torch.device("cpu"))  # Ensure data is on CPU for PyMOL
+    if norm_params is not None:
+        data_object.x_lig = (
+            data_object.x_lig * norm_params["std_pocket"] + norm_params["mean_pocket"]
+        )
+        data_object.x_pocket = (
+            data_object.x_pocket * norm_params["std_pocket"]
+            + norm_params["mean_pocket"]
+        )
     dataset_params = constants.dataset_params[dataset_name] if dataset_name else None
     # Save ligand and pocket to files
     ligand_file = "temp_ligand.sdf"

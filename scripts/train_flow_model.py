@@ -8,11 +8,12 @@ import lightning.pytorch as pl
 from topoflow.data.dataloader import DataLoaderSampleable
 from topoflow.data.datasets import CrossDocked
 from topoflow.data import MockDatamodule
-from topoflow.flow.schedulers import LinearAlpha, LinearBeta
+from topoflow.flow.schedulers import LinearAlpha, LinearBeta, SineAlpha, CosineBeta
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
-from topoflow.flow.vector_field_models import TransformerVectorField
+from topoflow.flow.vector_field_models import TransformerVectorField, MLPVectorField
 from topoflow.flow.flow_models import FlowModel
 import topoflow.utils.constants as constants
+from topoflow.flow.utils import InverseTimeFactor, InverseTimeFactorNoClamping
 from topoflow.data.augmentations import RandomRotateTranslate
 from topoflow.utils.metrics import get_distributions
 
@@ -27,7 +28,10 @@ def train_flow_model(
     checkpoint_dir,
     epochs,
     batch_size,
-    learning_rate,
+    start_lr,
+    max_lr,
+    min_lr,
+    max_frac,
     seed,
     mlflow_tracking_uri,
     experiment_name,
@@ -45,7 +49,10 @@ def train_flow_model(
         checkpoint_dir (str): Directory to save the trained model.
         epochs (int): Number of training epochs.
         batch_size (int): Batch size for training.
-        learning_rate (float): Learning rate for the optimizer.
+        start_lr (float): Initial learning rate for the optimizer.
+        max_lr (float): Maximum learning rate for the scheduler.
+        min_lr (float): Minimum learning rate for the scheduler.
+        max_frac (float): Fraction of the maximum learning rate to use.
         seed (int): Random seed for reproducibility.
         mlflow_tracking_uri (str): MLflow tracking URI.
         experiment_name (str): MLflow experiment name.
@@ -67,13 +74,16 @@ def train_flow_model(
         raise ValueError(f"Unsupported dataset: {data_name}")
     datamodule = MockDatamodule(
         train_length=len(train_dataset),
-        val_length=0,  # TODO: add validation back
+        val_length=0,  # len(val_dataset), #TODO: fix this
         batch_size=batch_size,
         test_length=100,
     )
 
-    alpha = LinearAlpha()
-    beta = LinearBeta()
+    # alpha = LinearAlpha()
+    # beta = LinearBeta()
+    alpha = SineAlpha()
+    beta = CosineBeta()
+
     p_data = DataLoaderSampleable(
         train_dataset,
         batch_size=batch_size,
@@ -92,15 +102,20 @@ def train_flow_model(
             atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
         )
         np.save(val_metric_dist_path, val_distribution)
-    # TODO: remove this
-    for key in val_distribution:
-        val_distribution[key] = val_distribution[key][:16]
     # ======================================================================
     # Model Initialization
     # ======================================================================
     if vector_field_model == "transformer":
         vector_field = TransformerVectorField(
-            x_dim=p_data.dim, h_dim=hidden_dim, num_heads=16, num_layers=3, dropout=0.1
+            h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.0, combine="add"
+        )
+    elif vector_field_model == "mlp":
+        vector_field = MLPVectorField(
+            input_dim=14,  # Assuming 14 features as per the dataset
+            output_dim=14,  # Assuming 3D vector field output
+            hidden_dims=[hidden_dim, hidden_dim],
+            activation=torch.nn.SiLU,
+            additional_features="add",  # Use 'add' to incorporate time and conditioning features
         )
     else:
         raise ValueError(f"Unsupported vector field model: {vector_field_model}")
@@ -110,6 +125,12 @@ def train_flow_model(
         raise FileNotFoundError(
             f"Normalization parameters not found at {norm_path}. Please run the preprocessing script."
         )
+
+    time_factor = InverseTimeFactorNoClamping(
+        max_value=1.0,
+        min_value=0.5,
+    )
+
     flow_model = FlowModel(
         vector_field_model=vector_field,
         path=path,
@@ -119,7 +140,12 @@ def train_flow_model(
         atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
         norm_path=norm_path,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        lr=learning_rate,
+        start_lr=start_lr,
+        max_lr=max_lr,
+        min_lr=min_lr,
+        max_epochs=epochs,
+        max_frac=max_frac,
+        time_factor=time_factor,
     )
     # ======================================================================
     # Training Setup
@@ -145,6 +171,8 @@ def train_flow_model(
         logger=logger,
         enable_progress_bar=True,
         check_val_every_n_epoch=1,
+        gradient_clip_val=0.2,
+        gradient_clip_algorithm="norm",
     )
     # ======================================================================
     # Start Training
@@ -170,14 +198,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--augment",
         type=bool,
-        default=True,
+        default=False,
         help="Whether to apply data augmentations.",
     )
     parser.add_argument(
         "--vector_field_model",
         type=str,
         default="transformer",
-        choices=["transformer"],
+        choices=["transformer", "mlp"],
         help="Type of vector field model to use.",
     )
     parser.add_argument(
@@ -205,10 +233,28 @@ if __name__ == "__main__":
         "--batch_size", type=int, default=10, help="Batch size for training."
     )
     parser.add_argument(
-        "--learning_rate",
+        "--start_lr",
         type=float,
-        default=0.001,
+        default=0.0005,
         help="Learning rate for the optimizer.",
+    )
+    parser.add_argument(
+        "--max_lr",
+        type=float,
+        default=0.002,
+        help="Maximum learning rate for the optimizer.",
+    )
+    parser.add_argument(
+        "--min_lr",
+        type=float,
+        default=0.0001,
+        help="Minimum learning rate for the optimizer.",
+    )
+    parser.add_argument(
+        "--max_frac_lr",
+        type=float,
+        default=0.1,
+        help="Fraction of epochs to use for warmup of learning rate.",
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
@@ -222,7 +268,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopologicalFlow",
+        default="TopologicalFlow_debug",
         help="MLflow experiment name.",
     )
     parser.add_argument(
@@ -243,7 +289,10 @@ if __name__ == "__main__":
         checkpoint_dir=args.checkpoint_dir,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
+        start_lr=args.start_lr,
+        max_lr=args.max_lr,
+        min_lr=args.min_lr,
+        max_frac=args.max_frac_lr,
         seed=args.seed,
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         experiment_name=args.mlflow_experiment_name,

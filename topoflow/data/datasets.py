@@ -458,7 +458,8 @@ class CrossDocked(InMemoryDataset):
                 mean_pocket=mean_pocket,
                 std_pocket=std_pocket,
             )
-            lig_coords_all = (lig_coords_all - mean_lig) / std_lig
+            # lig_coords_all = (lig_coords_all - mean_lig) / std_lig
+            lig_coords_all = (lig_coords_all - mean_pocket) / std_pocket
             pocket_coords_all = (pocket_coords_all - mean_pocket) / std_pocket
         elif self.normalize_coords:
             print("Normalizing coordinates for validation/test splits...")
@@ -475,7 +476,8 @@ class CrossDocked(InMemoryDataset):
             std_lig = norm_params["std_lig"]
             mean_pocket = norm_params["mean_pocket"]
             std_pocket = norm_params["std_pocket"]
-            lig_coords_all = (lig_coords_all - mean_lig) / std_lig
+            # lig_coords_all = (lig_coords_all - mean_lig) / std_lig
+            lig_coords_all = (lig_coords_all - mean_pocket) / std_pocket
             pocket_coords_all = (pocket_coords_all - mean_pocket) / std_pocket
 
         # We need the histogram with the distribution of number of nodes (only for training)

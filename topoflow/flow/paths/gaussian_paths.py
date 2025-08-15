@@ -57,11 +57,15 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
                     "The provided `p_data.dataset` must have a `size_distribution` attribute."
                 )
 
-    def sample_conditioning_variable(self, batch_size: int):
+    def sample_conditioning_variable(
+        self, batch_size: int, pocket_only=False, force_batch_size=False
+    ):
         """Samples the conditioning variable `z`.
 
         Args:
             batch_size: The number of samples to generate.
+            pocket_only: If True, only samples pocket atoms.
+            force_batch_size: If True, ensures exactly `batch_size` samples are returned.
 
         Returns:
             A tuple containing:
@@ -72,10 +76,17 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
                 - `batch_pocket`: The pockets associated with the samples.
                   [n_atoms, *dims]
         """
-        z, batch_lig, batch_pocket, batch_size = self.p_data.sample(batch_size)
+        z, batch_lig, batch_pocket, batch_size = self.p_data.sample(
+            batch_size, force_batch_size
+        )
+        if pocket_only:
+            z = z[batch_lig.shape[0] :, :]  # Only keep pocket atoms
+            batch_lig = None
+        else:
+            batch_lig = batch_lig.to(self.device)
         z = z.to(self.device)
-        batch_lig = batch_lig.to(self.device)
         batch_pocket = batch_pocket.to(self.device)
+
         return z, batch_lig, batch_pocket, batch_size
 
     def sample_conditional_path(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:

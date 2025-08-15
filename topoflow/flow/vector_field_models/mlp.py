@@ -43,7 +43,7 @@ class MLPVectorField(torch.nn.Module):
         y_classes=None,
         hidden_dims=None,
         activation=torch.nn.SiLU,
-        additional_features="concat",
+        additional_features="add",
     ):
         """Initializes the MLPVectorField.
 
@@ -58,7 +58,7 @@ class MLPVectorField(torch.nn.Module):
                 Defaults to `torch.nn.SiLU`.
             additional_features: Method to incorporate time and conditioning
                 features. Can be 'concat' (concatenate to input) or 'add'
-                (add as learned embeddings). Defaults to 'concat'.
+                (add as learned embeddings). Defaults to 'add'.
 
         Raises:
             ValueError: If `additional_features` is not 'concat' or 'add'.
@@ -91,7 +91,34 @@ class MLPVectorField(torch.nn.Module):
             raise ValueError("additional_features must be 'concat' or 'add'")
         self.layer_norm = torch.nn.LayerNorm(input_dim)
 
-    def forward(self, x, t, y=None):
+    def forward(self, x, t, batch_lig, batch_pocket):
+        """Forward pass of the vector field model.
+
+        Args:
+            x: [num_x, x_dim] — node features (ligand + pocket)
+            t: scalar or [batch_size] — time step
+            batch_lig: [num_lig] — ligand graph index
+            batch_pocket: [num_pocket] — pocket graph index
+        Returns:
+            [num_x, x_dim] — vector field
+        """
+        x = self.layer_norm(x)
+
+        if t.ndim == 0:
+            t = t.unsqueeze(0).unsqueeze(-1).repeat(x.shape[0], 1)
+        elif t.ndim == 1:
+            t = t.unsqueeze(-1)
+
+        if self.additional_features == "add":
+            t_emb = self.t_embedder(t)
+            t_emb = self.layer_norm(t_emb)
+            xt = x + t_emb
+        else:
+            xt = torch.cat([x, t], dim=-1)
+
+        return self.mlp(xt)
+
+    def forward_old(self, x, t, y=None):
         """Forward pass through the MLP vector field.
 
         Args:

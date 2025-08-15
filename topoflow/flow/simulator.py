@@ -195,6 +195,7 @@ class TorchDiffEqSimulator(Simulator):
         ts: torch.Tensor,
         batch_lig: torch.Tensor,
         batch_pocket: torch.Tensor,
+        z: torch.Tensor = None,
     ) -> torch.Tensor:
         """Simulates the dynamics over a sequence of time steps.
 
@@ -203,6 +204,7 @@ class TorchDiffEqSimulator(Simulator):
             ts: Sequence of time steps. [batch_size, time_steps]
             batch_lig: The ligands associated with the samples. [batch_size, *dims]
             batch_pocket: The pockets associated with the samples. [batch_size, *dims]
+            z: Optional sampled data.
 
         Returns:
             State at final time step.
@@ -212,7 +214,7 @@ class TorchDiffEqSimulator(Simulator):
         else:
             t = ts[:]
         ode_func = lambda t, x: self.ode.drift_coefficient(
-            x, t, batch_lig, batch_pocket
+            x, t, batch_lig, batch_pocket, z=z
         )
         sol = odeint(ode_func, x, t, method=self.solver)
         return sol.transpose(0, 1)

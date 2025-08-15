@@ -1,9 +1,13 @@
 """Utility functions and classes for sampling and density estimation in PyTorch."""
 
 from abc import ABC, abstractmethod
+import math
 import numpy as np
 
 import torch
+from torch import Tensor
+import torch.nn as nn
+from torch.optim.lr_scheduler import _LRScheduler
 
 
 class Sampleable(ABC):
@@ -290,3 +294,172 @@ class DistributionNodes:
             [self.n2_given_n1[c].log_prob(i.cpu()) for i, c in zip(n2, n1)]
         )
         return log_probs.to(n2.device)
+
+
+class BaseTimeFactor(nn.Module, ABC):
+    """Return a scalar weight per sample based on the interpolation time.
+
+    Args:
+        max_value: Upper clamp for the time-factor value.
+        min_value: Lower clamp for the time-factor value.
+        zero_before: If *t* ≤ this threshold the factor is forced to zero.
+        eps: Small constant to avoid division by zero.
+    """
+
+    def __init__(
+        self,
+        max_value: float,
+        min_value: float = 0.05,
+        zero_before: float = 0.0,
+        eps: float = 1e-6,
+    ) -> None:
+        """Initialize the base time factor."""
+        super().__init__()
+        self.max_value = max_value
+        self.min_value = min_value
+        self.zero_before = zero_before
+        self.eps = eps
+
+    @abstractmethod
+    def forward(self, t: Tensor) -> Tensor:
+        """Return the time-factor for each element in `t`."""
+        pass
+
+
+class InverseTimeFactor(BaseTimeFactor):
+    """Weight ~ 1 / (1 - t)^2 as used in the Proteina paper."""
+
+    def __init__(
+        self,
+        max_value: float = 100.0,
+        min_value: float = 0.05,
+        zero_before: float = 0.0,
+        eps: float = 1e-6,
+    ) -> None:
+        """Initialize the inverse time factor with clamping.
+
+        Args:
+            max_value: Upper limit for the time factor.
+            min_value: Lower limit for the time factor.
+            zero_before: If *t* ≤ this threshold, the factor is forced to zero.
+            eps: Small constant to avoid division by zero.
+        """
+        super().__init__(max_value, min_value, zero_before, eps)
+
+    def forward(self, t: Tensor) -> Tensor:  # noqa: D401
+        """Return `1 / (1 - t)^2` clamped to [`min_value`, `max_value`]."""
+        norm_scale = 1 / ((1 - t + self.eps) ** 2)
+        norm_scale = torch.clamp(norm_scale, min=self.min_value, max=self.max_value)
+        return norm_scale * (t > self.zero_before)
+
+
+class InverseTimeFactorNoClamping(BaseTimeFactor):
+    """Weight ~ 1 / (1 - t)^2 without clamping."""
+
+    def __init__(
+        self,
+        max_value: float = 100.0,
+        min_value: float = 0.05,
+        zero_before: float = 0.0,
+    ) -> None:
+        """Initialize the inverse time factor without clamping.
+
+        Args:
+            max_value: Upper limit for the time factor.
+            min_value: Lower limit for the time factor.
+            zero_before: If *t* ≤ this threshold, the factor is forced to zero.
+        """
+        assert max_value > 0, "max_value must be greater than 0"
+        assert min_value > 0, "min_value must be greater than 0"
+        assert max_value != min_value, "max_value must not be equal to min_value"
+        super().__init__(max_value, min_value, zero_before)
+
+    def forward(self, t: Tensor) -> Tensor:
+        """Return `1 / (1 - t)^2` in the range [min,max] without clamping."""
+        b = (
+            2 * self.max_value
+            + (
+                4 * self.max_value**2
+                - 4 * self.max_value * (self.max_value - self.min_value)
+            )
+            ** 0.5
+        ) / (2 * (self.max_value - self.min_value))
+        a = self.min_value * b**2
+        norm_scale = a / (b - t) ** 2
+        return norm_scale * (t >= self.zero_before)
+
+
+class CustomScheduler(_LRScheduler):
+    """A custom learning rate scheduler.
+
+    This scheduler combines a linear warmup phase with a cosine annealing phase.
+    It is designed to prevent early training instability while
+    allowing the learning rate to smoothly decay towards the end of training.
+    """
+
+    def __init__(
+        self,
+        optimizer,
+        start_lr,
+        max_lr,
+        min_lr,
+        max_epochs,
+        max_frac,
+        last_epoch=-1,
+        verbose=False,
+    ):
+        """Initializes the custom scheduler.
+
+        Args:
+            optimizer (torch.optim.Optimizer): Wrapped optimizer.
+            start_lr (float): The initial learning rate for the warmup phase.
+            max_lr (float): The maximum learning rate to be reached at the end of warmup.
+            min_lr (float): The final learning rate at the end of training.
+            max_epochs (int): The total number of training epochs.
+            max_frac (float): The fraction of total epochs for the warmup phase.
+            last_epoch (int): The index of the last epoch. Defaults to -1.
+            verbose (bool): If True, prints a message for each learning rate update.
+                            Defaults to False.
+        """
+        self.start_lr = start_lr
+        self.max_lr = max_lr
+        self.min_lr = min_lr
+        self.max_epochs = max_epochs
+        self.warmup_epochs = int(max_frac * max_epochs)
+
+        # Ensure that the warmup phase doesn't take up all epochs
+        if self.warmup_epochs >= self.max_epochs:
+            raise ValueError("Warmup phase must be shorter than total training epochs.")
+
+        # Pass the optimizer to the base class
+        super().__init__(optimizer, last_epoch, verbose)
+
+    def get_lr(self):
+        """Computes the learning rate for the current epoch.
+
+        This method is called by the `step()` method of the base class.
+
+        Returns:
+            A list of learning rates for each parameter group.
+        """
+        current_epoch = self.last_epoch
+
+        if current_epoch < self.warmup_epochs:
+            # Linear Warmup Phase
+            # Interpolate linearly from start_lr to max_lr
+            warmup_factor = (self.max_lr - self.start_lr) / self.warmup_epochs
+            lr = self.start_lr + current_epoch * warmup_factor
+        else:
+            # Cosine Annealing Phase
+            # Calculate learning rate based on cosine schedule from max_lr to min_lr
+            # The cosine phase starts from epoch 'warmup_epochs'
+            cosine_epoch = current_epoch - self.warmup_epochs
+            cosine_epochs_total = self.max_epochs - self.warmup_epochs
+
+            cosine_lr = self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (
+                1 + math.cos(math.pi * cosine_epoch / cosine_epochs_total)
+            )
+
+            lr = cosine_lr
+
+        return [lr for _ in self.optimizer.param_groups]
