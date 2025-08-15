@@ -195,23 +195,24 @@ class FlowModel(pl.LightningModule):
     def on_after_backward(self):
         """Logs the gradients after the backward pass."""
         # TODO: remove this after debugging
-        for name, param in self.named_parameters():
-            if param.grad is not None:
-                # Log the L2 norm of the gradient
-                self.log(
-                    f"gradients/{name}_norm",
-                    param.grad.norm(),
-                    on_epoch=True,
-                    on_step=False,
-                )
+        # for name, param in self.named_parameters():
+        #     if param.grad is not None:
+        #         # Log the L2 norm of the gradient
+        #         self.log(
+        #             f"gradients/{name}_norm",
+        #             param.grad.norm(),
+        #             on_epoch=True,
+        #             on_step=False,
+        #         )
 
-                # Log the average absolute value of the gradient
-                self.log(
-                    f"gradients/{name}_mean_abs",
-                    param.grad.abs().mean(),
-                    on_epoch=True,
-                    on_step=False,
-                )
+        #         # Log the average absolute value of the gradient
+        #         self.log(
+        #             f"gradients/{name}_mean_abs",
+        #             param.grad.abs().mean(),
+        #             on_epoch=True,
+        #             on_step=False,
+        #         )
+        pass
 
     def validation_step(self, batch, batch_idx):
         """Performs a single validation step.

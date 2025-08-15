@@ -74,7 +74,7 @@ def train_flow_model(
         raise ValueError(f"Unsupported dataset: {data_name}")
     datamodule = MockDatamodule(
         train_length=len(train_dataset),
-        val_length=0,  # len(val_dataset), #TODO: fix this
+        val_length=len(val_dataset),
         batch_size=batch_size,
         test_length=100,
     )

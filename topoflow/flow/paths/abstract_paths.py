@@ -120,9 +120,6 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
                 batch_pocket = self.create_mask(num_nodes_pocket)
                 batch_pocket = batch_pocket.to(self.device)
 
-            # TODO: remove this
-            num_nodes_lig = torch.tensor([26])
-
             batch_lig = self.create_mask(num_nodes_lig)
             batch_lig = batch_lig.to(self.device)
             z = self.p_simple.sample(
