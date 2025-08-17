@@ -7,6 +7,7 @@ import torch
 from torch_geometric.data import Data
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
+from tqdm import tqdm
 
 from topoflow.flow.simulator import TorchDiffEqSimulator
 from topoflow.flow.utils_plot import plot_results
@@ -314,7 +315,13 @@ class FlowModel(pl.LightningModule):
             num_samples + self.max_batched_samples - 1
         ) // self.max_batched_samples
         mols = []
-        for i in range(n_batches):
+        for i in tqdm(
+            range(n_batches),
+            desc="Sampling molecules",
+            unit="batch",
+            ncols=100,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+        ):
             samples = self.sample(
                 min(
                     self.max_batched_samples, num_samples - i * self.max_batched_samples
