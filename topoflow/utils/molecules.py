@@ -85,9 +85,9 @@ def mol_to_data(mol, atom_encoder, batch_id=0):
 
 def data_to_rdmol(data, atom_decoder, sanitize=False):
     """Convert PyTorch Geometric Data object to RDKit molecule."""
-    coords = data["x_lig"]
-    atom_types = data["h_lig"]
-    batch = data["batch_lig"]
+    coords = data["x_lig"].to("cpu")
+    atom_types = data["h_lig"].to("cpu")
+    batch = data["batch_lig"].to("cpu")
 
     # Convert atom types from one-hot to indices
     atom_idxs = torch.argmax(atom_types, dim=1).cpu().numpy()
@@ -97,9 +97,7 @@ def data_to_rdmol(data, atom_decoder, sanitize=False):
     for batch_id in unique_batches:
         coords_batch = coords[batch == batch_id]
         atom_idxs_batch = atom_idxs[batch == batch_id]
-        rdmol = make_mol_openbabel(
-            coords_batch.cpu().numpy(), atom_idxs_batch, atom_decoder
-        )
+        rdmol = make_mol_openbabel(coords_batch.numpy(), atom_idxs_batch, atom_decoder)
         if rdmol is not None:
             if sanitize:
                 try:

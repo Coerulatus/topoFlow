@@ -135,6 +135,7 @@ def train_flow_model(
         vector_field_model=vector_field,
         path=path,
         evaluator=evaluator,
+        max_batched_samples=batch_size,
         val_distribution=val_distribution,
         sample_every=10,
         atom_decoder=constants.dataset_params[data_name]["atom_decoder"],

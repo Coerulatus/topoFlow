@@ -71,8 +71,79 @@ class SimpleTimeEmbedding(nn.Module):
         return self.time_embed(t_reshaped)
 
 
+class ScaledDotProductAttentionLayer(nn.Module):
+    """Custom attention layer using torch.nn.functional.scaled_dot_product_attention.
+
+    This replaces the standard TransformerEncoderLayer.
+    """
+
+    def __init__(self, d_model, num_heads, dropout=0.1):
+        """Initialize the custom attention layer."""
+        super().__init__()
+        self.num_heads = num_heads
+        self.d_model = d_model
+        assert d_model % num_heads == 0
+        self.head_dim = d_model // num_heads
+
+        # Linear layers to project input into query, key, and value tensors
+        self.query_projection = nn.Linear(d_model, d_model)
+        self.key_projection = nn.Linear(d_model, d_model)
+        self.value_projection = nn.Linear(d_model, d_model)
+        self.output_projection = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, attn_mask=None):
+        """Forward pass of the attention layer."""
+        # x shape: [batch_size, seq_len, d_model]
+        batch_size, seq_len, _ = x.shape
+
+        # Project and reshape for multi-head attention
+        # Shape after projection: [batch_size, seq_len, d_model]
+        # Reshape to: [batch_size, seq_len, num_heads, head_dim]
+        # Transpose to: [batch_size, num_heads, seq_len, head_dim]
+        q = (
+            self.query_projection(x)
+            .reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        k = (
+            self.key_projection(x)
+            .reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        v = (
+            self.value_projection(x)
+            .reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+
+        # Use scaled_dot_product_attention, which handles the computation efficiently
+        # The function automatically uses optimized kernels if available.
+        attn_output = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,  # Pass the mask directly
+            dropout_p=self.dropout.p,
+            is_causal=False,
+        )
+
+        # Transpose back and reshape to original d_model dimension
+        attn_output = attn_output.transpose(1, 2).reshape(
+            batch_size, seq_len, self.d_model
+        )
+
+        # Final linear projection
+        output = self.output_projection(attn_output)
+
+        return output
+
+
 class TransformerVectorField(nn.Module):
-    """Transformer-based vector field model for Topological Flow, with learned type embedding."""
+    """Transformer-based vector field model for Topological Flow, with learned type embedding.
+
+    Uses a custom attention layer with scaled_dot_product_attention.
+    """
 
     def __init__(
         self,
@@ -100,7 +171,6 @@ class TransformerVectorField(nn.Module):
         self.time_embed = SimpleTimeEmbedding(h_dim)
 
         # New: Embedding for pocket velocities.
-        # This will embed the 3D velocity vector into the h_dim space.
         self.pocket_vel_embed = nn.Sequential(
             nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
@@ -110,25 +180,43 @@ class TransformerVectorField(nn.Module):
             nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
         self.combine = combine
+
         # Updated: The feature projection now needs to handle an extra embedding.
         if combine == "concat":
             self.feature_projection = nn.Linear(4 * h_dim, h_dim)
-        # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=h_dim,
-            nhead=num_heads,
-            dim_feedforward=4 * h_dim,
-            dropout=dropout,
-            batch_first=True,
+
+        # Modified: Use a custom Transformer block with scaled_dot_product_attention
+        self.transformer_layers = nn.ModuleList(
+            [
+                ScaledDotProductAttentionLayer(
+                    d_model=h_dim, num_heads=num_heads, dropout=dropout
+                )
+                for _ in range(num_layers)
+            ]
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # We will manually apply LayerNorm and feed-forward layers within the forward pass.
+        self.norm_layers = nn.ModuleList(
+            [nn.LayerNorm(h_dim) for _ in range(num_layers)]
+        )
+        self.ffn_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(h_dim, 4 * h_dim),
+                    nn.SiLU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(4 * h_dim, h_dim),
+                    nn.Dropout(dropout),
+                )
+                for _ in range(num_layers)
+            ]
+        )
 
         # Final output projection
         self.out_coord_linear = nn.Sequential(
             nn.LayerNorm(h_dim),
             nn.Linear(h_dim, spatial_dim, bias=False),
         )
-
         self.out_atom_type_linear = nn.Sequential(
             nn.Linear(h_dim, h_dim),
             nn.SiLU(inplace=False),
@@ -139,9 +227,8 @@ class TransformerVectorField(nn.Module):
         """Forward pass of the vector field model with pocket velocity conditioning."""
         device = x.device
 
+        # Combine batches and create type labels
         batch_x = torch.cat([batch_lig, batch_pocket], dim=0)
-
-        # Build type labels: 1 for ligand, 0 for pocket
         type_labels = torch.cat(
             [
                 torch.ones(len(batch_lig), dtype=torch.long),
@@ -149,45 +236,54 @@ class TransformerVectorField(nn.Module):
             ]
         ).to(device)
 
-        # Get learned type embedding
-        type_embed = self.type_embed(type_labels)  # [num_x, h_dim]
+        # Embed all inputs
+        type_embed = self.type_embed(type_labels)
+        x_embed = self.x_embed(x)
 
-        # Embed x
-        x_embed = self.x_embed(x)  # [num_x, h_dim]
-
-        # Time embedding
         num_samples = torch.max(batch_pocket) + 1
-        if len(t.shape) == 0:
-            t = t.repeat(num_samples, 1)  # Ensure t is a column vector
-        time_embed = self.time_embed(t)  # [batch_size, h_dim]
+        if t.ndim == 0:
+            t = t.repeat(num_samples)
+        time_embed = self.time_embed(t.unsqueeze(1))
+        t_per_x = time_embed[batch_x]
 
-        t_per_x = time_embed[batch_x]  # [num_x, h_dim]
-
-        # Create a zero tensor for the ligand velocities
         u_t_ref_lig = torch.zeros([len(batch_lig), self.x_dim], device=device)
-        # Combine the ligand zeros with the pocket velocities
         u_t_ref = torch.cat([u_t_ref_lig, u_t_ref_pocket], dim=0)
-        # Embed the reference velocities
         pocket_vel_embed = self.pocket_vel_embed(u_t_ref)
 
-        # Combine all embeddings.
-        # Now there are four embeddings to combine: x, type, time, and pocket velocity.
+        # Combine all embeddings
         if self.combine == "add":
-            x = x_embed + type_embed + t_per_x + pocket_vel_embed
+            x_combined = x_embed + type_embed + t_per_x + pocket_vel_embed
         elif self.combine == "concat":
-            x = torch.cat([x_embed, type_embed, t_per_x, pocket_vel_embed], dim=-1)
-            x = self.feature_projection(x)
+            x_combined = torch.cat(
+                [x_embed, type_embed, t_per_x, pocket_vel_embed], dim=-1
+            )
+            x_combined = self.feature_projection(x_combined)
 
-        # Create attention mask: prevent attention across graphs
-        attn_mask = (batch_x[:, None] != batch_x[None, :]).float().to(device)
-        attn_mask = attn_mask.masked_fill(attn_mask > 0, float("-inf"))
+        # Add a batch dimension to match transformer input shape [batch_size, seq_len, d_model]
+        x_combined = x_combined.unsqueeze(0)
 
-        # Transformer forward
-        x_encoded = self.transformer(x.unsqueeze(0), mask=attn_mask).squeeze(0)
+        # Create the attention mask
+        attn_mask = (batch_x[:, None] != batch_x[None, :]).to(device)
+
+        # Transformer forward pass with manual layers
+        x_encoded = x_combined
+        for i in range(len(self.transformer_layers)):
+            # Attention layer with residual connection and layer norm
+            attention_out = self.transformer_layers[i](
+                self.norm_layers[i](x_encoded), attn_mask=attn_mask
+            )
+            x_encoded = x_encoded + attention_out
+
+            # Feed-forward network with residual connection and layer norm
+            ffn_out = self.ffn_layers[i](self.norm_layers[i](x_encoded))
+            x_encoded = x_encoded + ffn_out
+
+        # Remove the batch dimension before final projections
+        x_encoded = x_encoded.squeeze(0)
 
         # Output projections
-        coords_out = self.out_coord_linear(x_encoded)  # [num_x, spatial_dim]
-        atom_type_out = self.out_atom_type_linear(x_encoded)  # [num_x, atom_dim]
+        coords_out = self.out_coord_linear(x_encoded)
+        atom_type_out = self.out_atom_type_linear(x_encoded)
 
         return torch.cat([coords_out, atom_type_out], dim=-1)
 

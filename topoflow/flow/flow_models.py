@@ -29,6 +29,7 @@ class FlowModel(pl.LightningModule):
         path,
         evaluator=None,
         n_val_samples=0,
+        max_batched_samples=16,
         val_distribution=None,
         sample_every=1,
         atom_decoder=None,
@@ -50,6 +51,8 @@ class FlowModel(pl.LightningModule):
             evaluator: An optional evaluator for assessing generated samples.
             n_val_samples: Number of samples to generate during validation for visualization.
                 Defaults to 0.
+            max_batched_samples: Maximum number of samples to process in a single batch.
+                Defaults to 16.
             val_distribution: The expected distribution of metrics for validation.
             sample_every: Frequency of sampling during validation. Defaults to 1.
             atom_decoder: Optional atom decoder for converting samples to RDKit molecules.
@@ -109,6 +112,8 @@ class FlowModel(pl.LightningModule):
             }
             self.unnorm = True
         self.time_factor = time_factor
+        self.sample_steps = 20
+        self.max_batched_samples = max_batched_samples
 
     def _get_loss(self, u_t_theta, u_t_ref, t=None):
         """Calculates the loss between the predicted and reference vector fields."""
@@ -226,23 +231,26 @@ class FlowModel(pl.LightningModule):
         Returns:
             The validation loss for the current step.
         """
-        u_t_theta, u_t_ref = self.forward(batch)
-        loss = self.loss_function(u_t_theta, u_t_ref)
+        u_t_theta, u_t_ref, t = self.forward(batch)
+        # loss = self.loss_function(u_t_theta, u_t_ref)
+        loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t)
 
         self.log("val/loss", loss, on_epoch=True, prog_bar=False)
-        if (
-            self.n_val_samples > 0
-            and batch_idx == 0
-            and self.n_epoch % self.sample_every == 0
-        ):
-            samples = self.sample(self.n_val_samples, n_steps=50)
-            # self.val_samples.append(samples)
+        self.log(
+            "val/loss_without_time", loss_without_time, on_epoch=True, prog_bar=False
+        )
+        # if (
+        #     self.n_val_samples > 0
+        #     and batch_idx == 0
+        #     and self.n_epoch % self.sample_every == 0
+        # ):
+        #     samples = self.sample(self.n_val_samples, n_steps=20)
+        #     # self.val_samples.append(samples)
 
-            if self.evaluator is not None:
-                results = self.evaluator.evaluate(samples)
-                prefixed = {f"val/{k}": v for k, v in results.items()}
-                self.log_dict(prefixed, on_epoch=True, prog_bar=False)
-        self.n_epoch += 1
+        #     if self.evaluator is not None:
+        #         results = self.evaluator.evaluate(samples)
+        #         prefixed = {f"val/{k}": v for k, v in results.items()}
+        #         self.log_dict(prefixed, on_epoch=True, prog_bar=False)
         if (
             self.val_distribution is not None
             and batch_idx == 0
@@ -260,6 +268,7 @@ class FlowModel(pl.LightningModule):
                     on_epoch=True,
                     prog_bar=False,
                 )
+        self.n_epoch += 1
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -297,17 +306,20 @@ class FlowModel(pl.LightningModule):
             atom_decoder: Optional atom decoder for converting samples to RDKit molecules.
                 Defaults to None to use the model's default atom decoder.
         """
-        MAX_BATCH_SIZE = 1
         if atom_decoder is None:
             atom_decoder = self.atom_decoder
         num_samples = len(test_distribution[metrics[0]])
 
-        n_batches = (num_samples + MAX_BATCH_SIZE - 1) // MAX_BATCH_SIZE
+        n_batches = (
+            num_samples + self.max_batched_samples - 1
+        ) // self.max_batched_samples
         mols = []
         for i in range(n_batches):
             samples = self.sample(
-                min(MAX_BATCH_SIZE, num_samples - i * MAX_BATCH_SIZE),
-                n_steps=50,
+                min(
+                    self.max_batched_samples, num_samples - i * self.max_batched_samples
+                ),
+                n_steps=self.sample_steps,
             )
             mols += data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
         results = {}
@@ -330,6 +342,7 @@ class FlowModel(pl.LightningModule):
         try:
             for metric in metrics:
                 expected = test_distribution[metric]
+                expected = [e for e in expected if e is not None]
                 actual = results[metric]
                 if isinstance(expected, list):
                     expected = torch.tensor(expected)
