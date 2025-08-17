@@ -88,7 +88,7 @@ def train_flow_model(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=8,
+        num_workers=os.cpu_count() - 1,
     )
     path = GaussianConditionalProbabilityPath(p_data=p_data, alpha=alpha, beta=beta)
 
@@ -107,7 +107,7 @@ def train_flow_model(
     # ======================================================================
     if vector_field_model == "transformer":
         vector_field = TransformerVectorField(
-            h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.0, combine="add"
+            h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.1, combine="add"
         )
     elif vector_field_model == "mlp":
         vector_field = MLPVectorField(
@@ -137,7 +137,7 @@ def train_flow_model(
         evaluator=evaluator,
         max_batched_samples=batch_size,
         val_distribution=val_distribution,
-        sample_every=10,
+        sample_every=5,
         atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
         norm_path=norm_path,
         device="cuda" if torch.cuda.is_available() else "cpu",
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--augment",
         type=bool,
-        default=False,
+        default=True,
         help="Whether to apply data augmentations.",
     )
     parser.add_argument(
@@ -228,10 +228,10 @@ if __name__ == "__main__":
         help="Directory to save the trained model.",
     )
     parser.add_argument(
-        "--epochs", type=int, default=1000, help="Number of training epochs."
+        "--epochs", type=int, default=100, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=10, help="Batch size for training."
+        "--batch_size", type=int, default=256, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",
