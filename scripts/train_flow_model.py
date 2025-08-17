@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import psutil
 import numpy as np
 import torch
 import lightning.pytorch as pl
@@ -78,7 +79,6 @@ def train_flow_model(
         batch_size=batch_size,
         test_length=100,
     )
-
     # alpha = LinearAlpha()
     # beta = LinearBeta()
     alpha = SineAlpha()
@@ -88,7 +88,7 @@ def train_flow_model(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=os.cpu_count() - 1,
+        num_workers=len(psutil.Process().cpu_affinity()),
     )
     path = GaussianConditionalProbabilityPath(p_data=p_data, alpha=alpha, beta=beta)
 
@@ -135,7 +135,7 @@ def train_flow_model(
         vector_field_model=vector_field,
         path=path,
         evaluator=evaluator,
-        max_batched_samples=batch_size,
+        max_batched_samples=batch_size * 16,
         val_distribution=val_distribution,
         sample_every=5,
         atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
@@ -174,6 +174,7 @@ def train_flow_model(
         check_val_every_n_epoch=1,
         gradient_clip_val=0.2,
         gradient_clip_algorithm="norm",
+        limit_train_batches=2,
     )
     # ======================================================================
     # Start Training
@@ -231,7 +232,7 @@ if __name__ == "__main__":
         "--epochs", type=int, default=100, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=256, help="Batch size for training."
+        "--batch_size", type=int, default=16, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",

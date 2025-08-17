@@ -156,13 +156,13 @@ class FlowModel(pl.LightningModule):
 
         # We override the batch size to ensure it matches the expected size
         # path.p_data.sample() returns always the same batch_size even if the input batch is smaller.
-        if not hasattr(self, "debug_cache"):
-            self.debug_cache = self.path.sample_conditioning_variable(batch_size)
-        z, batch_lig, batch_pocket, batch_size = self.debug_cache
+        # if not hasattr(self, "debug_cache"):
+        #     self.debug_cache = self.path.sample_conditioning_variable(batch_size)
+        # z, batch_lig, batch_pocket, batch_size = self.debug_cache
 
-        # z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
-        #     batch_size
-        # )
+        z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
+            batch_size
+        )
         t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
         x = self.path.sample_conditional_path(z, t_batched)
         u_t_ref = self.path.conditional_vector_field(x, z, t_batched)

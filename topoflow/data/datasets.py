@@ -241,7 +241,7 @@ class CrossDocked(InMemoryDataset):
 
         # There is no validation set, copy 300 training examples (the validation set
         # is not very important in this application)
-        data_split["val"] = random.sample(data_split["train"], 1)
+        data_split["val"] = random.sample(data_split["train"], 256)
 
         n_train_before = len(data_split["train"])
         n_val_before = len(data_split["val"])
