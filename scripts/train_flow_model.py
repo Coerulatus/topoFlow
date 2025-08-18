@@ -127,8 +127,8 @@ def train_flow_model(
         )
 
     time_factor = InverseTimeFactorNoClamping(
-        max_value=1.0,
-        min_value=0.5,
+        max_value=5.0,
+        min_value=0.05,
     )
 
     flow_model = FlowModel(
@@ -137,7 +137,7 @@ def train_flow_model(
         evaluator=evaluator,
         max_batched_samples=batch_size * 16,
         val_distribution=val_distribution,
-        sample_every=5,
+        sample_every=1,
         atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
         norm_path=norm_path,
         device="cuda" if torch.cuda.is_available() else "cpu",
@@ -229,7 +229,7 @@ if __name__ == "__main__":
         help="Directory to save the trained model.",
     )
     parser.add_argument(
-        "--epochs", type=int, default=100, help="Number of training epochs."
+        "--epochs", type=int, default=20, help="Number of training epochs."
     )
     parser.add_argument(
         "--batch_size", type=int, default=16, help="Batch size for training."

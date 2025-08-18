@@ -113,8 +113,10 @@ class FlowModel(pl.LightningModule):
             }
             self.unnorm = True
         self.time_factor = time_factor
-        self.sample_steps = 20
+        self.sample_steps = 100
         self.max_batched_samples = max_batched_samples
+
+        # self.forward = torch.compile(self.forward)
 
     def _get_loss(self, u_t_theta, u_t_ref, t=None):
         """Calculates the loss between the predicted and reference vector fields."""
@@ -125,6 +127,26 @@ class FlowModel(pl.LightningModule):
             loss *= self.time_factor(t).view(-1)
         loss = loss.mean()
         return loss, loss_without_time
+
+    def _get_data(self, batch):
+        """Extracts data from p_data."""
+        batch_size = batch.shape[0]
+        z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
+            batch_size
+        )
+        t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
+        x = self.path.sample_conditional_path(z, t_batched)
+        u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
+
+        return {
+            "z": z,
+            "batch_lig": batch_lig,
+            "batch_pocket": batch_pocket,
+            "t": t,
+            "t_batched": t_batched,
+            "x": x,
+            "u_t_ref": u_t_ref,
+        }
 
     def forward(self, batch):
         """Forward pass for the FlowModel.
@@ -140,7 +162,14 @@ class FlowModel(pl.LightningModule):
                 - u_t_theta: The predicted vector field by the model.
                 - u_t_ref: The reference vector field from the path.
         """
-        batch_size = batch.shape[0]
+        z = batch.get("z")
+        batch_lig = batch.get("batch_lig")
+        batch_pocket = batch.get("batch_pocket")
+        t = batch.get("t")
+        t_batched = batch.get("t_batched")
+        x = batch.get("x")
+        u_t_ref = batch.get("u_t_ref")
+        u_t_ref_pocket = u_t_ref[batch_lig.shape[0] :, :]
 
         # TODO: remove this when finishing debugging
         # if not hasattr(self, 'debug_cache'):
@@ -161,13 +190,13 @@ class FlowModel(pl.LightningModule):
         #     self.debug_cache = self.path.sample_conditioning_variable(batch_size)
         # z, batch_lig, batch_pocket, batch_size = self.debug_cache
 
-        z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
-            batch_size
-        )
-        t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
-        x = self.path.sample_conditional_path(z, t_batched)
-        u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
-        u_t_ref_pocket = u_t_ref[batch_lig.shape[0] :, :]
+        # z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
+        #     batch_size
+        # )
+        # t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
+        # x = self.path.sample_conditional_path(z, t_batched)
+        # u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
+        # u_t_ref_pocket = u_t_ref[batch_lig.shape[0] :, :]
         u_t_theta = self.vector_field_model(
             x, t, u_t_ref_pocket, batch_lig, batch_pocket
         )
@@ -186,6 +215,7 @@ class FlowModel(pl.LightningModule):
         Returns:
             The training loss for the current step.
         """
+        batch = self._get_data(batch)
         u_t_theta, u_t_ref, t = self.forward(batch)
         # loss = self.loss_function(u_t_theta, u_t_ref)
         loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t)
@@ -232,6 +262,7 @@ class FlowModel(pl.LightningModule):
         Returns:
             The validation loss for the current step.
         """
+        batch = self._get_data(batch)
         u_t_theta, u_t_ref, t = self.forward(batch)
         # loss = self.loss_function(u_t_theta, u_t_ref)
         loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t)

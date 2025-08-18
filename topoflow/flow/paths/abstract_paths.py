@@ -80,9 +80,7 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         """
         if torch.max(batch_lig) + 1 != batch_size:
             batch_size = torch.max(batch_lig) + 1
-        t = (
-            torch.rand(batch_size, device=self.device).view(self.t_target_shape) * 0.01
-        ) + 0.4
+        t = torch.rand(batch_size, device=self.device).view(self.t_target_shape)
         if batch_lig is None and batch_pocket is None:
             return t, None
         batch_all = torch.cat([batch_lig, batch_pocket], dim=0)
