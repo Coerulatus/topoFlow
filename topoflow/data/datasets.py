@@ -23,6 +23,7 @@ from topoflow.data.utils import (
     saveall,
     get_n_nodes_hist,
 )
+from topoflow.utils.molecules import data_to_rdmol, rdmol_to_smiles
 import topoflow.utils.constants as constants
 
 
@@ -584,3 +585,25 @@ class CrossDocked(InMemoryDataset):
                 "Ensure the training split was processed with normalization enabled."
             )
         self.norm_params = np.load(norm_params_path)
+
+        smiles_path = self.processed_paths[0][:-3] + "_smiles.txt"
+        if not os.path.exists(smiles_path):
+            print("No SMILES file found, generating from RDKit molecules...")
+            smiles_list = []
+            for data in tqdm(self, desc="Converting data to RDKit molecules"):
+                mol = data_to_rdmol(
+                    data, constants.dataset_params["crossdock_full"]["atom_decoder"]
+                )[0]
+                smiles_list.append(rdmol_to_smiles(mol))
+            with open(smiles_path, "w") as f:
+                for smiles in smiles_list:
+                    if smiles is not None:
+                        f.write(smiles + "\n")
+            print(f"Generated SMILES file at {smiles_path}")
+        else:
+            self.smiles_list = []
+            with open(smiles_path, "r") as f:
+                self.smiles_list = [line.strip() for line in f.readlines()]
+            print(f"Loaded SMILES file from {smiles_path}")
+
+        print(f"Dataset loaded successfully with {len(self)} samples.")

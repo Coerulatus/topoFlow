@@ -135,7 +135,7 @@ def train_flow_model(
         vector_field_model=vector_field,
         path=path,
         evaluator=evaluator,
-        max_batched_samples=batch_size * 16,
+        max_batched_samples=batch_size,
         val_distribution=val_distribution,
         sample_every=1,
         atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
@@ -232,7 +232,7 @@ if __name__ == "__main__":
         "--epochs", type=int, default=20, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=16, help="Batch size for training."
+        "--batch_size", type=int, default=4, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",

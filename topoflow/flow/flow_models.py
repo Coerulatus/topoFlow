@@ -13,7 +13,15 @@ from topoflow.flow.simulator import TorchDiffEqSimulator
 from topoflow.flow.utils_plot import plot_results
 from topoflow.flow.utils import CustomScheduler
 from topoflow.evaluators import RDKitEvaluator, GATEvaluator
-from topoflow.utils.metrics import wasserstein_1d, qed_scorer, logp_scorer, sas_scorer
+from topoflow.utils.metrics import (
+    wasserstein_1d,
+    qed_scorer,
+    logp_scorer,
+    sas_scorer,
+    compute_connectivity,
+    compute_uniqueness,
+    compute_novelty,
+)
 from topoflow.utils.molecules import data_to_rdmol
 
 
@@ -113,7 +121,7 @@ class FlowModel(pl.LightningModule):
             }
             self.unnorm = True
         self.time_factor = time_factor
-        self.sample_steps = 100
+        self.sample_steps = 20
         self.max_batched_samples = max_batched_samples
 
         # self.forward = torch.compile(self.forward)
@@ -288,7 +296,7 @@ class FlowModel(pl.LightningModule):
             and batch_idx == 0
             and self.n_epoch % self.sample_every == 0
         ):
-            distances = self.test_distribution(
+            distances, other_metrics = self.test_distribution(
                 test_distribution=self.val_distribution,
                 metrics=["qed", "logp", "sas"],
                 atom_decoder=self.atom_decoder,
@@ -300,6 +308,9 @@ class FlowModel(pl.LightningModule):
                     on_epoch=True,
                     prog_bar=False,
                 )
+            for metric, value in other_metrics.items():
+                self.log(f"val/{metric}", value, on_epoch=True, prog_bar=False)
+
         self.n_epoch += 1
         return loss
 
@@ -376,6 +387,17 @@ class FlowModel(pl.LightningModule):
             else:
                 raise ValueError(f"Unsupported metric: {metric}")
 
+        # Check connectivity, uniqueness and novelty
+        connectivity_score, connected = compute_connectivity(mols)
+        uniqueness_ratio, unique_smiles = compute_uniqueness(connected)
+        novelty_ratio, novel_smiles = compute_novelty(
+            connected, self.path.p_data.dataset.smiles_list
+        )
+        res = {}
+        res["connectivity"] = torch.tensor(connectivity_score, dtype=torch.float)
+        res["uniqueness"] = torch.tensor(uniqueness_ratio, dtype=torch.float)
+        res["novelty"] = torch.tensor(novelty_ratio, dtype=torch.float)
+
         distances = {}
         try:
             for metric in metrics:
@@ -389,10 +411,10 @@ class FlowModel(pl.LightningModule):
                 distance = wasserstein_1d(expected, actual)
                 distances[metric] = distance.item()
 
-            return distances
+            return distances, res
         except Exception as e:
             print(f"Error calculating distances: {e}")
-            return {metric: float("nan") for metric in metrics}
+            return {metric: float("nan") for metric in metrics}, res
 
     def drift_coefficient(self, x, t, batch_lig, batch_pocket, z=None):
         """Computes the drift coefficient (vector field) at time t.

@@ -3,7 +3,15 @@
 import rdkit
 import rdkit.Chem
 import torch
-from topoflow.utils.metrics import qed_scorer, logp_scorer, sas_scorer
+from topoflow.utils.metrics import (
+    qed_scorer,
+    logp_scorer,
+    sas_scorer,
+    lipinski_scorer,
+    compute_connectivity,
+    compute_uniqueness,
+    compute_novelty,
+)
 from topoflow.utils.molecules import data_to_rdmol
 import topoflow.utils.constants as constants
 
@@ -11,7 +19,9 @@ import topoflow.utils.constants as constants
 class RDKitEvaluator(torch.nn.Module):
     """Evaluator for RDKit-based metrics."""
 
-    def __init__(self, metrics=["qed", "logp", "sas"], dataset_name="crossdock_full"):
+    def __init__(
+        self, metrics=["qed", "logp", "sas", "lipinski"], dataset_name="crossdock_full"
+    ):
         """Initialize the RDKit evaluator.
 
         Args:
@@ -28,6 +38,8 @@ class RDKitEvaluator(torch.nn.Module):
                 self.metric_functions["logp"] = logp_scorer
             elif metric == "sas":
                 self.metric_functions["sas"] = sas_scorer
+            elif metric == "lipinski":
+                self.metric_functions["lipinski"] = lipinski_scorer
             else:
                 raise ValueError(
                     f"Unsupported metric: {metric}. Supported metrics are: qed, logp, sas."

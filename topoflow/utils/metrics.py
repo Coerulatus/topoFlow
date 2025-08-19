@@ -2,12 +2,14 @@
 
 import sys
 import os
-from rdkit.Chem import QED, Descriptors
+from rdkit.Chem import QED, Descriptors, Lipinski, Crippen
+import numpy as np
+from rdkit import Chem
 import torch
 
 sys.path.append(os.path.join(os.environ["CONDA_PREFIX"], "share", "RDKit", "Contrib"))
 from SA_Score import sascorer
-from topoflow.utils.molecules import data_to_rdmol
+from topoflow.utils.molecules import data_to_rdmol, rdmol_to_smiles
 
 
 class Metric(torch.nn.Module):
@@ -74,6 +76,82 @@ class SASMetric(Metric):
 def sas_scorer(mol):
     """Calculate the Synthetic Accessibility Score (SAS) for a molecule."""
     return SASMetric()(mol)
+
+
+class LipinskiMetric(Metric):
+    """Lipinski's Rule of Five metric."""
+
+    def __init__(self):
+        """Initialize the Lipinski metric."""
+        super(LipinskiMetric, self).__init__(scorer_function=self.calculate_lipinski)
+
+
+def lipinski_scorer(mol):
+    """Calculate the Lipinski score for a molecule."""
+    return LipinskiMetric()(mol)
+
+
+@staticmethod
+def calculate_lipinski(rdmol):
+    """Calculate the Lipinski score for a molecule."""
+    rule_1 = Descriptors.ExactMolWt(rdmol) < 500
+    rule_2 = Lipinski.NumHDonors(rdmol) <= 5
+    rule_3 = Lipinski.NumHAcceptors(rdmol) <= 10
+    rule_4 = (logp := Crippen.MolLogP(rdmol) >= -2) & (logp <= 5)
+    rule_5 = Chem.rdMolDescriptors.CalcNumRotatableBonds(rdmol) <= 10
+    return np.sum([int(a) for a in [rule_1, rule_2, rule_3, rule_4, rule_5]])
+
+
+def compute_connectivity(valid, connectivity_thresh=1.0):
+    """Calculate connectivity of molecules.
+
+    Consider molecule connected if its largest fragment contains at least x% of all atoms, where x is determined by self.connectivity_thresh (defaults to 1).
+    """
+    if len(valid) < 1:
+        return [], 0.0
+
+    connected_smiles = []
+    for mol in valid:
+        mol_frags = Chem.rdmolops.GetMolFrags(mol, asMols=True)
+        largest_mol = max(mol_frags, default=mol, key=lambda m: m.GetNumAtoms())
+        if largest_mol.GetNumAtoms() / mol.GetNumAtoms() >= connectivity_thresh:
+            smiles = rdmol_to_smiles(largest_mol)
+            if smiles is not None:
+                connected_smiles.append(smiles)
+
+    return len(connected_smiles) / len(valid), connected_smiles
+
+
+def compute_uniqueness(connected):
+    """Calculate uniqueness of molecules in the dataset.
+
+    Args:
+        connected: list of SMILES strings representing connected molecules.
+
+    Returns:
+        uniqueness ratio and a list of unique SMILES strings.
+    """
+    if len(connected) < 1:
+        return 0.0, []
+
+    return len(set(connected)) / len(connected), list(set(connected))
+
+
+def compute_novelty(connected, known_smiles):
+    """Calculate novelty of molecules in the dataset.
+
+    Args:
+        connected: list of SMILES strings representing connected molecules.
+        known_smiles: set of SMILES strings representing known molecules.
+
+    Returns:
+        novelty ratio and a list of novel SMILES strings.
+    """
+    if len(connected) < 1 or known_smiles is None:
+        return 0.0, []
+
+    novel = [smiles for smiles in connected if smiles not in known_smiles]
+    return len(novel) / len(connected), novel
 
 
 def wasserstein_1d(a, b):

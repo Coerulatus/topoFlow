@@ -4,6 +4,7 @@ import tempfile
 import numpy as np
 from rdkit import Chem
 from openbabel import openbabel
+from tqdm import tqdm
 import torch
 
 
@@ -83,7 +84,7 @@ def mol_to_data(mol, atom_encoder, batch_id=0):
     return coords, one_hot, batch
 
 
-def data_to_rdmol(data, atom_decoder, sanitize=False):
+def data_to_rdmol(data, atom_decoder, sanitize=False, show_progress=False):
     """Convert PyTorch Geometric Data object to RDKit molecule."""
     coords = data["x_lig"].to("cpu")
     atom_types = data["h_lig"].to("cpu")
@@ -94,6 +95,8 @@ def data_to_rdmol(data, atom_decoder, sanitize=False):
 
     unique_batches = torch.unique(batch)
     rd_mols = []
+    if show_progress:
+        unique_batches = tqdm(unique_batches, desc="Converting data to RDKit molecules")
     for batch_id in unique_batches:
         coords_batch = coords[batch == batch_id]
         atom_idxs_batch = atom_idxs[batch == batch_id]
@@ -111,7 +114,11 @@ def data_to_rdmol(data, atom_decoder, sanitize=False):
 
 def rdmol_to_smiles(rdmol):
     """Convert RDKit molecule to SMILES string."""
-    mol = Chem.Mol(rdmol)
-    Chem.RemoveStereochemistry(mol)
-    mol = Chem.RemoveHs(mol)
-    return Chem.MolToSmiles(mol)
+    try:
+        mol = Chem.Mol(rdmol)
+        Chem.RemoveStereochemistry(mol)
+        mol = Chem.RemoveHs(mol)
+        return Chem.MolToSmiles(mol)
+    except Exception as e:
+        print(f"Error converting RDKit molecule to SMILES: {e}")
+        return None
