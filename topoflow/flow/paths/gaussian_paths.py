@@ -76,18 +76,19 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
                 - `batch_pocket`: The pockets associated with the samples.
                   [n_atoms, *dims]
         """
-        z, batch_lig, batch_pocket, batch_size = self.p_data.sample(
+        z, batch_all, batch_lig, batch_pocket, batch_size = self.p_data.sample(
             batch_size, force_batch_size
         )
         if pocket_only:
-            z = z[batch_lig.shape[0] :, :]  # Only keep pocket atoms
+            z = z[torch.where(batch_pocket != -1)[0], :]  # Only keep pocket atoms
             batch_lig = None
         else:
             batch_lig = batch_lig.to(self.device)
         z = z.to(self.device)
+        batch_all = batch_all.to(self.device)
         batch_pocket = batch_pocket.to(self.device)
 
-        return z, batch_lig, batch_pocket, batch_size
+        return z, batch_all, batch_lig, batch_pocket, batch_size
 
     def sample_conditional_path(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Samples from the conditional distribution p_t(x|z).

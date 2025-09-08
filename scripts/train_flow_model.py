@@ -6,7 +6,7 @@ import psutil
 import numpy as np
 import torch
 import lightning.pytorch as pl
-from topoflow.data.dataloader import DataLoaderSampleable
+from topoflow.data.dataloader_adj import DataLoaderSampleable
 from topoflow.data.datasets import CrossDocked
 from topoflow.data import MockDatamodule
 from topoflow.flow.schedulers import LinearAlpha, LinearBeta, SineAlpha, CosineBeta
@@ -127,7 +127,7 @@ def train_flow_model(
         )
 
     time_factor = InverseTimeFactorNoClamping(
-        max_value=5.0,
+        max_value=100.0,
         min_value=0.05,
     )
 
@@ -152,11 +152,11 @@ def train_flow_model(
     # Training Setup
     # ======================================================================
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        dirpath=checkpoint_dir,
+        dirpath=checkpoint_dir + "/run3",
         filename="topoflow-{epoch:02d}",
         monitor="train/loss",  # validation is just copying train samples
         mode="min",
-        save_top_k=1,
+        save_top_k=-1,
     )
     logger = pl.loggers.MLFlowLogger(
         experiment_name=experiment_name,
@@ -171,10 +171,11 @@ def train_flow_model(
         callbacks=[checkpoint_callback],
         logger=logger,
         enable_progress_bar=True,
-        check_val_every_n_epoch=1,
-        gradient_clip_val=0.2,
+        check_val_every_n_epoch=5,
+        gradient_clip_val=0.5,
         gradient_clip_algorithm="norm",
-        limit_train_batches=2,
+        limit_train_batches=1.0,
+        num_sanity_val_steps=0,
     )
     # ======================================================================
     # Start Training
@@ -229,10 +230,10 @@ if __name__ == "__main__":
         help="Directory to save the trained model.",
     )
     parser.add_argument(
-        "--epochs", type=int, default=20, help="Number of training epochs."
+        "--epochs", type=int, default=100, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=4, help="Batch size for training."
+        "--batch_size", type=int, default=128, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",
@@ -270,7 +271,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopologicalFlow_debug",
+        default="TopologicalFlow",
         help="MLflow experiment name.",
     )
     parser.add_argument(

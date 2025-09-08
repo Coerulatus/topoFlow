@@ -50,7 +50,6 @@ def validate_checkpoints(
     # ----------------------------------------------------------------------
     # MLflow Setup
     # ----------------------------------------------------------------------
-    # Find or create the MLflow experiment
     mlflow.set_tracking_uri(mlflow_tracking_uri)
     mlflow.set_experiment(experiment_name)
 
@@ -62,8 +61,6 @@ def validate_checkpoints(
         # ----------------------------------------------------------------------
         # Data and Model Component Preparation
         # ----------------------------------------------------------------------
-        # This part re-initializes the data and model components
-        # that are necessary for the validation loop.
         if data_name == "crossdock_full":
             val_dataset = CrossDocked(root=data_dir, split="val")
         else:
@@ -76,7 +73,6 @@ def validate_checkpoints(
             test_length=100,
         )
 
-        # Initialize core components used in the FlowModel
         alpha = SineAlpha()
         beta = CosineBeta()
         p_data = DataLoaderSampleable(
@@ -107,23 +103,20 @@ def validate_checkpoints(
         # ----------------------------------------------------------------------
         # Validation Loop
         # ----------------------------------------------------------------------
-        # Get all checkpoint files and sort them by epoch number
         checkpoint_files = [
             f for f in os.listdir(checkpoint_dir) if f.endswith(".ckpt")
         ]
-        # Sort by the epoch number in the filename (e.g., topoflow-epoch=01.ckpt)
         checkpoint_files.sort(key=lambda x: int(x.split("-epoch=")[-1].split(".")[0]))
 
         if not checkpoint_files:
             print(f"No checkpoints found in the specified directory: {checkpoint_dir}")
             return
 
+        checkpoint_files = [checkpoint_files[-1]]
         for checkpoint_file in checkpoint_files:
             checkpoint_path = os.path.join(checkpoint_dir, checkpoint_file)
             print(f"Validating checkpoint: {checkpoint_file}")
 
-            # Load the model from the checkpoint. We need to pass the arguments
-            # that were used to initialize the model initially.
             try:
                 model = FlowModel.load_from_checkpoint(
                     checkpoint_path,
@@ -140,6 +133,7 @@ def validate_checkpoints(
                     atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
                     norm_path=norm_path,
                     device="cuda" if torch.cuda.is_available() else "cpu",
+                    max_batched_samples=1,
                 )
             except Exception as e:
                 print(f"Failed to load checkpoint {checkpoint_file}: {e}")
@@ -202,17 +196,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopologicalFlow",
+        default="TopologicalFlow_debug",
         help="MLflow experiment name.",
     )
     parser.add_argument(
         "--run_name",
         type=str,
-        default="ValidationRun",
         help="Name of the MLflow run (optional).",
     )
     parser.add_argument(
-        "--batch_size", type=int, default=1, help="Batch size for validation."
+        "--batch_size", type=int, default=4, help="Batch size for validation."
     )
 
     args = parser.parse_args()

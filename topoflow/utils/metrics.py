@@ -102,7 +102,7 @@ def calculate_lipinski(rdmol):
     return np.sum([int(a) for a in [rule_1, rule_2, rule_3, rule_4, rule_5]])
 
 
-def compute_connectivity(valid, connectivity_thresh=1.0):
+def compute_connectivity(valid, connectivity_thresh=0.5):  # TODO:chooose threoshold
     """Calculate connectivity of molecules.
 
     Consider molecule connected if its largest fragment contains at least x% of all atoms, where x is determined by self.connectivity_thresh (defaults to 1).
@@ -112,12 +112,16 @@ def compute_connectivity(valid, connectivity_thresh=1.0):
 
     connected_smiles = []
     for mol in valid:
-        mol_frags = Chem.rdmolops.GetMolFrags(mol, asMols=True)
-        largest_mol = max(mol_frags, default=mol, key=lambda m: m.GetNumAtoms())
-        if largest_mol.GetNumAtoms() / mol.GetNumAtoms() >= connectivity_thresh:
-            smiles = rdmol_to_smiles(largest_mol)
-            if smiles is not None:
-                connected_smiles.append(smiles)
+        try:
+            mol_frags = Chem.rdmolops.GetMolFrags(mol, asMols=True)
+            largest_mol = max(mol_frags, default=mol, key=lambda m: m.GetNumAtoms())
+            if largest_mol.GetNumAtoms() / mol.GetNumAtoms() >= connectivity_thresh:
+                smiles = rdmol_to_smiles(largest_mol)
+                if smiles is not None:
+                    connected_smiles.append(smiles)
+        except Exception as e:
+            print(f"Error processing molecule: {e}")
+            continue
 
     return len(connected_smiles) / len(valid), connected_smiles
 

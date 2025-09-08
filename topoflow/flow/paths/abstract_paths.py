@@ -65,34 +65,45 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         x = self.sample_conditional_path(z, t)
         return x.to(self.device)
 
-    def sample_time(
-        self, batch_size: int, batch_lig=None, batch_pocket=None
-    ) -> torch.Tensor:
+    def sample_time(self, batch_size: int, batch=None) -> torch.Tensor:
         """Samples time `t` uniformly from [0, 1).
 
         Args:
             batch_size: Number of time samples to generate.
-            batch_lig: Optional tensor indicating the samples associated with the ligands.
-            batch_pocket: Optional tensor indicating the samples associated with the pockets.
+            batch: Optional tensor indicating the samples associated with the batches.
 
         Returns:
             Samples from a uniform distribution U[0,1). [batch_size, *1s]
         """
-        if torch.max(batch_lig) + 1 != batch_size:
-            batch_size = torch.max(batch_lig) + 1
+        if torch.max(batch) + 1 != batch_size:
+            batch_size = torch.max(batch) + 1
         t = torch.rand(batch_size, device=self.device).view(self.t_target_shape)
-        if batch_lig is None and batch_pocket is None:
+        if batch is None:
             return t, None
-        batch_all = torch.cat([batch_lig, batch_pocket], dim=0)
-        t_batched = t[batch_all]
+        t_batched = t[batch]
         return t, t_batched
 
-    def create_mask(self, lengths):
+    def create_mask(self, lengths_lig, lengths_pocket):
         """Creates a tensor that gives to each sample an index in the batch."""
-        segment_ids = torch.repeat_interleave(
-            torch.arange(len(lengths), device=lengths.device), lengths
-        )
-        return segment_ids.long()
+        total_length = lengths_lig + lengths_pocket
+        all_segment_ids = torch.repeat_interleave(
+            torch.arange(len(lengths_lig), device=lengths_lig.device), total_length
+        ).long()
+        lig_segment_ids = all_segment_ids.clone()
+        pocket_segment_ids = all_segment_ids.clone()
+
+        current_idx = 0
+        for i in range(len(lengths_lig)):
+            lig_segment_ids[
+                current_idx
+                + lengths_lig[i] : current_idx
+                + lengths_lig[i]
+                + lengths_pocket[i]
+            ] = -1
+            pocket_segment_ids[current_idx : current_idx + lengths_lig[i]] = -1
+            current_idx += lengths_lig[i] + lengths_pocket[i]
+
+        return all_segment_ids, lig_segment_ids, pocket_segment_ids
 
     def sample_simple_distribution(self, batch_size: int, batch_pocket=None):
         """Samples from the simple distribution `p_simple`.
@@ -110,23 +121,26 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         if hasattr(self, "size_distribution") and self.size_distribution is not None:
             if batch_pocket is not None:
                 num_nodes_lig, _ = self.size_distribution.sample(batch_size)
-                num_nodes_pocket = torch.tensor(batch_pocket.shape[0])
+                num_nodes_pocket = torch.tensor(
+                    [torch.sum(batch_pocket == i).item() for i in range(batch_size)]
+                )
             else:
                 num_nodes_lig, num_nodes_pocket = self.size_distribution.sample(
                     batch_size
                 )
-                batch_pocket = self.create_mask(num_nodes_pocket)
-                batch_pocket = batch_pocket.to(self.device)
 
-            batch_lig = self.create_mask(num_nodes_lig)
-            batch_lig = batch_lig.to(self.device)
+            batch_all, batch_lig, batch_pocket = self.create_mask(
+                num_nodes_lig, num_nodes_pocket
+            )
+
             z = self.p_simple.sample(
                 torch.sum(num_nodes_lig) + torch.sum(num_nodes_pocket)
             )
         else:
-            z = self.p_simple.sample(batch_size)
-            z = z.to(self.device)
-        return z, batch_lig, batch_pocket
+            raise ValueError(
+                "The simple distribution must have a size distribution to sample variable-sized data."
+            )
+        return z, batch_all, batch_lig, batch_pocket
 
     @abstractmethod
     def sample_conditioning_variable(self, batch_size: int):

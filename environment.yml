@@ -13,8 +13,8 @@ dependencies:
   - numpy
   - pip
   - python=3.10
-  - pytorch-cuda=11.8
-  - pytorch=2.5.1
+  - pytorch-cuda=12.8
+  - pytorch=2.8.0
   - scikit-learn
   - torchmetrics
   - tqdm
@@ -29,3 +29,4 @@ dependencies:
   - gdown
   - pymol-open-source
   - pytest-cov
+  - xformers

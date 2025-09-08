@@ -18,6 +18,7 @@ from topoflow.utils.metrics import (
     qed_scorer,
     logp_scorer,
     sas_scorer,
+    lipinski_scorer,
     compute_connectivity,
     compute_uniqueness,
     compute_novelty,
@@ -139,15 +140,16 @@ class FlowModel(pl.LightningModule):
     def _get_data(self, batch):
         """Extracts data from p_data."""
         batch_size = batch.shape[0]
-        z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
-            batch_size
+        z, batch_all, batch_lig, batch_pocket, batch_size = (
+            self.path.sample_conditioning_variable(batch_size)
         )
-        t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
+        t, t_batched = self.path.sample_time(batch_size, batch_all)
         x = self.path.sample_conditional_path(z, t_batched)
         u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
 
         return {
             "z": z,
+            "batch_all": batch_all,
             "batch_lig": batch_lig,
             "batch_pocket": batch_pocket,
             "t": t,
@@ -170,43 +172,17 @@ class FlowModel(pl.LightningModule):
                 - u_t_theta: The predicted vector field by the model.
                 - u_t_ref: The reference vector field from the path.
         """
-        z = batch.get("z")
+        batch_all = batch.get("batch_all")
         batch_lig = batch.get("batch_lig")
         batch_pocket = batch.get("batch_pocket")
         t = batch.get("t")
         t_batched = batch.get("t_batched")
         x = batch.get("x")
         u_t_ref = batch.get("u_t_ref")
-        u_t_ref_pocket = u_t_ref[batch_lig.shape[0] :, :]
+        u_t_ref_pocket = u_t_ref[torch.where(batch_pocket != -1)[0], :]
 
-        # TODO: remove this when finishing debugging
-        # if not hasattr(self, 'debug_cache'):
-        #     self.debug_cache = self.path.sample_conditioning_variable(batch_size)
-        #     self.debug_t = self.path.sample_time(batch_size, self.debug_cache[1], self.debug_cache[2])
-        #     self.debug_x = self.path.sample_conditional_path(self.debug_cache[0], self.debug_t[1])
-        #     self.debug_u = self.path.conditional_vector_field(self.debug_x, self.debug_cache[0], self.debug_t[1])
-        # t = self.debug_t[0]
-        # t_batched = self.debug_t[1]
-        # x = self.debug_x
-        # u_t_ref = self.debug_u
-        # batch_lig = self.debug_cache[1]
-        # batch_pocket = self.debug_cache[2]
-
-        # We override the batch size to ensure it matches the expected size
-        # path.p_data.sample() returns always the same batch_size even if the input batch is smaller.
-        # if not hasattr(self, "debug_cache"):
-        #     self.debug_cache = self.path.sample_conditioning_variable(batch_size)
-        # z, batch_lig, batch_pocket, batch_size = self.debug_cache
-
-        # z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
-        #     batch_size
-        # )
-        # t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
-        # x = self.path.sample_conditional_path(z, t_batched)
-        # u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
-        # u_t_ref_pocket = u_t_ref[batch_lig.shape[0] :, :]
         u_t_theta = self.vector_field_model(
-            x, t, u_t_ref_pocket, batch_lig, batch_pocket
+            x, t, u_t_ref_pocket, batch_all, batch_lig, batch_pocket
         )
 
         return u_t_theta, u_t_ref, t_batched
@@ -298,7 +274,11 @@ class FlowModel(pl.LightningModule):
         ):
             distances, other_metrics = self.test_distribution(
                 test_distribution=self.val_distribution,
-                metrics=["qed", "logp", "sas"],
+                metrics=[
+                    "qed",
+                    "logp",
+                    "sas",
+                ],  # TODO: add lipinski, but also in the val_dist
                 atom_decoder=self.atom_decoder,
             )
             for metric, distance in distances.items():
@@ -384,16 +364,21 @@ class FlowModel(pl.LightningModule):
             elif metric == "sas":
                 results[metric] = [sas_scorer(mol) for mol in mols]
                 results[metric] = [s for s in results[metric] if s is not None]
+            elif metric == "lipinski":
+                results[metric] = [lipinski_scorer(mol) for mol in mols]
+                results[metric] = [s for s in results[metric] if s is not None]
             else:
                 raise ValueError(f"Unsupported metric: {metric}")
 
         # Check connectivity, uniqueness and novelty
+        validity_score = num_samples / len(mols)
         connectivity_score, connected = compute_connectivity(mols)
         uniqueness_ratio, unique_smiles = compute_uniqueness(connected)
         novelty_ratio, novel_smiles = compute_novelty(
             connected, self.path.p_data.dataset.smiles_list
         )
         res = {}
+        res["validity"] = torch.tensor(validity_score, dtype=torch.float)
         res["connectivity"] = torch.tensor(connectivity_score, dtype=torch.float)
         res["uniqueness"] = torch.tensor(uniqueness_ratio, dtype=torch.float)
         res["novelty"] = torch.tensor(novelty_ratio, dtype=torch.float)
@@ -416,12 +401,13 @@ class FlowModel(pl.LightningModule):
             print(f"Error calculating distances: {e}")
             return {metric: float("nan") for metric in metrics}, res
 
-    def drift_coefficient(self, x, t, batch_lig, batch_pocket, z=None):
+    def drift_coefficient(self, x, t, batch_all, batch_lig, batch_pocket, z=None):
         """Computes the drift coefficient (vector field) at time t.
 
         Args:
             x: Input tensor. Shape: [num_atoms, *dims].
             t: Time at which to compute the drift coefficient. Shape: [batch_size].
+            batch_all: Tensor containing the combined batch indices for all samples.
             batch_lig: Tensor containing ligands associated with the samples.
             batch_pocket: Tensor containing pockets associated with the samples.
             z: Tensor containing the target pocket.
@@ -438,12 +424,14 @@ class FlowModel(pl.LightningModule):
         else:
             # During training, we use the reference velocity from the path.
             num_samples = torch.max(batch_pocket) + 1
-            t_batched = t.repeat(num_samples, 1)[batch_pocket]
-            x_pocket = x[batch_lig.shape[0] :, :]
+            t_batched = t.repeat(num_samples, 1)[
+                batch_pocket[torch.where(batch_pocket != -1)[0]]
+            ]
+            x_pocket = x[torch.where(batch_pocket != -1)[0], :]
             u_t_ref_pocket = self.path.conditional_vector_field(x_pocket, z, t_batched)
 
         guided_vector_field = self.vector_field_model(
-            x, t, u_t_ref_pocket, batch_lig, batch_pocket
+            x, t, u_t_ref_pocket, batch_all, batch_lig, batch_pocket
         )
         return guided_vector_field
 
@@ -453,8 +441,10 @@ class FlowModel(pl.LightningModule):
             raise ValueError(
                 "Normalization parameters are not set. Cannot unnormalize."
             )
-        mean_lig = torch.tensor(self.normalization_params["mean_lig"]).to(x_lig.device)
-        std_lig = torch.tensor(self.normalization_params["std_lig"]).to(x_lig.device)
+        mean_lig = torch.tensor(self.normalization_params["mean_pocket"]).to(
+            x_lig.device
+        )
+        std_lig = torch.tensor(self.normalization_params["std_pocket"]).to(x_lig.device)
         mean_pocket = torch.tensor(self.normalization_params["mean_pocket"]).to(
             x_pocket.device
         )
@@ -479,27 +469,28 @@ class FlowModel(pl.LightningModule):
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
 
-        z, _, batch_pocket, _ = self.path.sample_conditioning_variable(
+        z, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
             n_samples, pocket_only=True, force_batch_size=True
         )
 
-        starting_points, batch_lig, batch_pocket = self.path.sample_simple_distribution(
-            n_samples, batch_pocket=batch_pocket
+        starting_points, batch_all, batch_lig, batch_pocket = (
+            self.path.sample_simple_distribution(n_samples, batch_pocket=batch_pocket)
         )
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
         output = simulator.simulate(
-            starting_points, t_eval, batch_lig, batch_pocket, z=z
+            starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z
         )
         output = output[:, -1]
-        x_lig = output[: batch_lig.shape[0], :3]
-        h_lig = output[: batch_lig.shape[0], 3:]
-        x_pocket = output[batch_lig.shape[0] :, :3]
-        h_pocket = output[batch_lig.shape[0] :, 3:]
+        x_lig = output[torch.where(batch_lig != -1)[0], :3]
+        h_lig = output[torch.where(batch_lig != -1)[0], 3:]
+        x_pocket = output[torch.where(batch_pocket != -1)[0], :3]
+        h_pocket = output[torch.where(batch_pocket != -1)[0], 3:]
         if self.unnorm:
             x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
         data = Data(
             x_lig=x_lig,
             h_lig=h_lig,
+            batch_all=batch_all,
             batch_lig=batch_lig,
             x_pocket=x_pocket,
             h_pocket=h_pocket,
@@ -517,18 +508,16 @@ class FlowModel(pl.LightningModule):
         Returns:
             The generated samples after simulating the flow, along with the trajectory.
         """
-        z, batch_lig, batch_pocket, batch_size = self.path.sample_conditioning_variable(
-            n_samples
-        )
-        t, t_batched = self.path.sample_time(batch_size, batch_lig, batch_pocket)
-        x = self.path.sample_conditional_path(z, t_batched)
-        u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
-        u_t_ref_pocket = u_t_ref[batch_lig.shape[0] :, :]
-
         simulator = TorchDiffEqSimulator(self, solver="rk4")
-        starting_points, batch_lig, batch_pocket = self.path.sample_simple_distribution(
-            n_samples
+
+        z, _, batch_pocket, _ = self.path.sample_conditioning_variable(
+            n_samples, pocket_only=True, force_batch_size=True
         )
+
+        starting_points, batch_lig, batch_pocket = self.path.sample_simple_distribution(
+            n_samples, batch_pocket=batch_pocket
+        )
+
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
 
         output = simulator.simulate(
@@ -536,14 +525,14 @@ class FlowModel(pl.LightningModule):
             t_eval,
             batch_lig,
             batch_pocket,
-            u_t_ref_pocket=u_t_ref_pocket,
+            z=z,
         )
         data_trajectory = []
         for i in range(output.shape[1]):
             x_lig = output[: batch_lig.shape[0], i, :3]
             h_lig = output[: batch_lig.shape[0], i, 3:]
             x_pocket = output[batch_lig.shape[0] :, i, :3]
-            h_pocket = output[batch_lig.shape[0] :, 3:]
+            h_pocket = output[batch_lig.shape[0] :, i, 3:]
             if self.unnorm:
                 x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
             data = Data(

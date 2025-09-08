@@ -468,6 +468,7 @@ def visualize_trajectory(
     dataset_name: str = "crossdock_full",
     add_ligand_bonds: bool = True,
     gif_path: str = None,
+    plot_every: int = 1,
 ):
     """Visualizes a list of Data objects representing a trajectory of molecular complexes.
 
@@ -485,6 +486,8 @@ def visualize_trajectory(
                                            Defaults to True.
         gif_path (str, optional): Path to save the output GIF file (e.g., 'output.gif').
                                    If None, no GIF is saved.
+        plot_every (int, optional): Interval at which to plot the trajectory frames.
+                                    Defaults to 1 (plot every frame).
     """
     if not isinstance(data_list, list) or not all(
         isinstance(d, Data) for d in data_list
@@ -495,6 +498,8 @@ def visualize_trajectory(
     if image_path and image_path.endswith(".png"):
         image_path = image_path[:-4]
     for idx, data_object in enumerate(data_list):
+        if idx % plot_every != 0:
+            continue
         data_object = data_object.to(
             torch.device("cpu")
         )  # Ensure data is on CPU for PyMOL
@@ -513,6 +518,8 @@ def visualize_trajectory(
 
         images = []
         for idx in range(len(data_list)):
+            if idx % plot_every != 0:
+                continue
             img_path = f"{image_path}_{idx}.png"
             images.append(imageio.imread(img_path))
         imageio.mimsave(gif_path, images, duration=1, disposal=2, loop=1)

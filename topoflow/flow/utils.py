@@ -406,7 +406,6 @@ class CustomScheduler(_LRScheduler):
         max_epochs,
         max_frac,
         last_epoch=-1,
-        verbose=False,
     ):
         """Initializes the custom scheduler.
 
@@ -418,8 +417,6 @@ class CustomScheduler(_LRScheduler):
             max_epochs (int): The total number of training epochs.
             max_frac (float): The fraction of total epochs for the warmup phase.
             last_epoch (int): The index of the last epoch. Defaults to -1.
-            verbose (bool): If True, prints a message for each learning rate update.
-                            Defaults to False.
         """
         self.start_lr = start_lr
         self.max_lr = max_lr
@@ -432,7 +429,7 @@ class CustomScheduler(_LRScheduler):
             raise ValueError("Warmup phase must be shorter than total training epochs.")
 
         # Pass the optimizer to the base class
-        super().__init__(optimizer, last_epoch, verbose)
+        super().__init__(optimizer, last_epoch)
 
     def get_lr(self):
         """Computes the learning rate for the current epoch.
