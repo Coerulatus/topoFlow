@@ -179,7 +179,6 @@ class TransformerVectorField(nn.Module):
         h_dim,
         spatial_dim=3,
         atom_dim=11,
-        type_embed_dim=8,
         num_heads=4,
         num_layers=2,
         dropout=0.1,
@@ -243,19 +242,9 @@ class TransformerVectorField(nn.Module):
         type_embed = self.type_embed(type_labels_all)
 
         # Initialize a zero tensor for all atoms to store the velocity embeddings.
-        pocket_vel_embed_all = torch.zeros(len(x), self.h_dim, device=device)
-
-        # Embed the velocities.
-        embedded_velocities = self.pocket_vel_embed(u_t_ref_pocket)
-
-        # Use the batch_x indices to assign the correct embedded velocity to each pocket atom.
-        # This requires careful indexing.
-        num_pockets = u_t_ref_pocket.shape[0]
-        pocket_batch_indices = torch.arange(num_pockets, device=device)
-        embedded_velocities = self.pocket_vel_embed(u_t_ref_pocket)
-        pocket_vel_embed_all[is_pocket] = embedded_velocities[
-            pocket_batch_indices[batch_pocket[is_pocket]]
-        ]
+        u_t_ref_all = torch.zeros(len(x), self.x_dim, device=device)
+        u_t_ref_all[is_pocket] = u_t_ref_pocket
+        vel_embed = self.pocket_vel_embed(u_t_ref_all)
 
         # Embed x
         x_embed = self.x_embed(x)
@@ -269,11 +258,9 @@ class TransformerVectorField(nn.Module):
 
         # Combine all embeddings.
         if self.combine == "add":
-            x_combined = x_embed + type_embed + t_per_x + pocket_vel_embed_all
+            x_combined = x_embed + type_embed + t_per_x + vel_embed
         elif self.combine == "concat":
-            x_combined = torch.cat(
-                [x_embed, type_embed, t_per_x, pocket_vel_embed_all], dim=-1
-            )
+            x_combined = torch.cat([x_embed, type_embed, t_per_x, vel_embed], dim=-1)
             x_combined = self.feature_projection(x_combined)
 
         # Create the BlockDiagonalMask from the batch tensor

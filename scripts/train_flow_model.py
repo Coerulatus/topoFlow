@@ -11,8 +11,12 @@ from topoflow.data.datasets import CrossDocked
 from topoflow.data import MockDatamodule
 from topoflow.flow.schedulers import LinearAlpha, LinearBeta, SineAlpha, CosineBeta
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
-from topoflow.flow.vector_field_models import TransformerVectorField, MLPVectorField
-from topoflow.flow.flow_models import FlowModel
+from topoflow.flow.vector_field_models import (
+    TransformerVectorField,
+    MLPVectorField,
+    TransformerVectorFieldLigand,
+)
+from topoflow.flow.flow_models_ligand import FlowModel
 import topoflow.utils.constants as constants
 from topoflow.flow.utils import InverseTimeFactor, InverseTimeFactorNoClamping
 from topoflow.data.augmentations import RandomRotateTranslate
@@ -106,8 +110,8 @@ def train_flow_model(
     # Model Initialization
     # ======================================================================
     if vector_field_model == "transformer":
-        vector_field = TransformerVectorField(
-            h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.1, combine="add"
+        vector_field = TransformerVectorFieldLigand(
+            h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.1
         )
     elif vector_field_model == "mlp":
         vector_field = MLPVectorField(
@@ -127,7 +131,7 @@ def train_flow_model(
         )
 
     time_factor = InverseTimeFactorNoClamping(
-        max_value=100.0,
+        max_value=10.0,
         min_value=0.05,
     )
 
@@ -152,7 +156,7 @@ def train_flow_model(
     # Training Setup
     # ======================================================================
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        dirpath=checkpoint_dir + "/run3",
+        dirpath=checkpoint_dir + "/run_" + (run_name if run_name else "default"),
         filename="topoflow-{epoch:02d}",
         monitor="train/loss",  # validation is just copying train samples
         mode="min",
@@ -171,11 +175,11 @@ def train_flow_model(
         callbacks=[checkpoint_callback],
         logger=logger,
         enable_progress_bar=True,
-        check_val_every_n_epoch=5,
+        check_val_every_n_epoch=200,
         gradient_clip_val=0.5,
         gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
-        num_sanity_val_steps=0,
+        num_sanity_val_steps=1,
     )
     # ======================================================================
     # Start Training
@@ -230,10 +234,10 @@ if __name__ == "__main__":
         help="Directory to save the trained model.",
     )
     parser.add_argument(
-        "--epochs", type=int, default=100, help="Number of training epochs."
+        "--epochs", type=int, default=1000, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=128, help="Batch size for training."
+        "--batch_size", type=int, default=16, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",

@@ -124,17 +124,28 @@ class FlowModel(pl.LightningModule):
         self.time_factor = time_factor
         self.sample_steps = 20
         self.max_batched_samples = max_batched_samples
+        self.loss_lig_weight = 100
 
         # self.forward = torch.compile(self.forward)
 
-    def _get_loss(self, u_t_theta, u_t_ref, t=None):
+    def _get_loss(self, u_t_theta, u_t_ref, t=None, batch=None):
         """Calculates the loss between the predicted and reference vector fields."""
         loss = self.loss_function(u_t_theta, u_t_ref)
         loss = loss.mean(dim=-1)  # Mean over the last dimension
         loss_without_time = loss.clone().mean().detach()
         if self.time_factor is not None:
             loss *= self.time_factor(t).view(-1)
-        loss = loss.mean()
+        if batch is not None:
+            batch_lig = batch.get("batch_lig")
+            batch_pocket = batch.get("batch_pocket")
+            lig_indices = torch.where(batch_lig != -1)[0]
+            pocket_indices = torch.where(batch_pocket != -1)[0]
+
+            loss_lig = loss[lig_indices].mean()
+            loss_pocket = loss[pocket_indices].mean()
+            loss = self.loss_lig_weight * loss_lig + loss_pocket
+        else:
+            loss = loss.mean()
         return loss, loss_without_time
 
     def _get_data(self, batch):
@@ -185,7 +196,12 @@ class FlowModel(pl.LightningModule):
             x, t, u_t_ref_pocket, batch_all, batch_lig, batch_pocket
         )
 
+        # u_t_ref_lig = u_t_ref[torch.where(batch_lig != -1)[0], :]
+        # u_t_theta_lig = u_t_theta[torch.where(batch_lig != -1)[0], :]
+        # t_batched_lig = t_batched[torch.where(batch_lig != -1)[0]]
+
         return u_t_theta, u_t_ref, t_batched
+        # return u_t_theta_lig, u_t_ref_lig, t_batched_lig
 
     def training_step(self, batch, batch_idx):
         """Performs a single training step.
@@ -202,7 +218,7 @@ class FlowModel(pl.LightningModule):
         batch = self._get_data(batch)
         u_t_theta, u_t_ref, t = self.forward(batch)
         # loss = self.loss_function(u_t_theta, u_t_ref)
-        loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t)
+        loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t, batch)
 
         self.log("train/loss", loss, on_epoch=True, prog_bar=True)
         self.log(
@@ -249,7 +265,7 @@ class FlowModel(pl.LightningModule):
         batch = self._get_data(batch)
         u_t_theta, u_t_ref, t = self.forward(batch)
         # loss = self.loss_function(u_t_theta, u_t_ref)
-        loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t)
+        loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t, batch)
 
         self.log("val/loss", loss, on_epoch=True, prog_bar=False)
         self.log(
@@ -374,14 +390,14 @@ class FlowModel(pl.LightningModule):
         validity_score = num_samples / len(mols)
         connectivity_score, connected = compute_connectivity(mols)
         uniqueness_ratio, unique_smiles = compute_uniqueness(connected)
-        novelty_ratio, novel_smiles = compute_novelty(
-            connected, self.path.p_data.dataset.smiles_list
-        )
+        # novelty_ratio, novel_smiles = compute_novelty(
+        #     connected, self.path.p_data.dataset.smiles_list
+        # )
         res = {}
         res["validity"] = torch.tensor(validity_score, dtype=torch.float)
         res["connectivity"] = torch.tensor(connectivity_score, dtype=torch.float)
         res["uniqueness"] = torch.tensor(uniqueness_ratio, dtype=torch.float)
-        res["novelty"] = torch.tensor(novelty_ratio, dtype=torch.float)
+        # res["novelty"] = torch.tensor(novelty_ratio, dtype=torch.float)
 
         distances = {}
         try:
@@ -510,32 +526,28 @@ class FlowModel(pl.LightningModule):
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
 
-        z, _, batch_pocket, _ = self.path.sample_conditioning_variable(
+        z, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
             n_samples, pocket_only=True, force_batch_size=True
         )
 
-        starting_points, batch_lig, batch_pocket = self.path.sample_simple_distribution(
-            n_samples, batch_pocket=batch_pocket
+        starting_points, batch_all, batch_lig, batch_pocket = (
+            self.path.sample_simple_distribution(n_samples, batch_pocket=batch_pocket)
         )
-
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
-
         output = simulator.simulate(
-            starting_points,
-            t_eval,
-            batch_lig,
-            batch_pocket,
-            z=z,
+            starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z
         )
+
         data_trajectory = []
         for i in range(output.shape[1]):
-            x_lig = output[: batch_lig.shape[0], i, :3]
-            h_lig = output[: batch_lig.shape[0], i, 3:]
-            x_pocket = output[batch_lig.shape[0] :, i, :3]
-            h_pocket = output[batch_lig.shape[0] :, i, 3:]
+            x_lig = output[torch.where(batch_lig != -1)[0], i, :3]
+            h_lig = output[torch.where(batch_lig != -1)[0], i, 3:]
+            x_pocket = output[torch.where(batch_pocket != -1)[0], i, :3]
+            h_pocket = output[torch.where(batch_pocket != -1)[0], i, 3:]
             if self.unnorm:
                 x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
             data = Data(
+                batch_all=batch_all,
                 x_lig=x_lig,
                 h_lig=h_lig,
                 batch_lig=batch_lig,
