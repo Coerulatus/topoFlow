@@ -115,10 +115,8 @@ class FlowModel(pl.LightningModule):
                 )
             norm_params = np.load(norm_path, allow_pickle=True)
             self.normalization_params = {
-                "mean_lig": norm_params["mean_lig"],
-                "std_lig": norm_params["std_lig"],
-                "mean_pocket": norm_params["mean_pocket"],
-                "std_pocket": norm_params["std_pocket"],
+                "mean": norm_params["mean"],
+                "std": norm_params["std"],
             }
             self.unnorm = True
         self.time_factor = time_factor
@@ -457,19 +455,11 @@ class FlowModel(pl.LightningModule):
             raise ValueError(
                 "Normalization parameters are not set. Cannot unnormalize."
             )
-        mean_lig = torch.tensor(self.normalization_params["mean_pocket"]).to(
-            x_lig.device
-        )
-        std_lig = torch.tensor(self.normalization_params["std_pocket"]).to(x_lig.device)
-        mean_pocket = torch.tensor(self.normalization_params["mean_pocket"]).to(
-            x_pocket.device
-        )
-        std_pocket = torch.tensor(self.normalization_params["std_pocket"]).to(
-            x_pocket.device
-        )
+        mean = torch.tensor(self.normalization_params["mean"]).to(x_pocket.device)
+        std = torch.tensor(self.normalization_params["std"]).to(x_pocket.device)
 
-        x_lig = x_lig * std_lig + mean_lig
-        x_pocket = x_pocket * std_pocket + mean_pocket
+        x_lig = x_lig * std + mean
+        x_pocket = x_pocket * std + mean
         return x_lig, x_pocket
 
     @torch.no_grad()

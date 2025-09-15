@@ -184,7 +184,7 @@ def train_flow_model(
     # ======================================================================
     # Start Training
     # ======================================================================
-    trainer.fit(flow_model, datamodule=datamodule)
+    # trainer.fit(flow_model, datamodule=datamodule)
 
 
 if __name__ == "__main__":

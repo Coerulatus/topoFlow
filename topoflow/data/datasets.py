@@ -238,7 +238,7 @@ class CrossDocked(InMemoryDataset):
         print(f"Data split loaded successfully. Keys: {list(data_split.keys())}")
 
         # TODO: Remove this when loading whole dataset
-        # data_split["train"] = data_split["train"][:1]
+        data_split["train"] = data_split["train"][:1000]
 
         # There is no validation set, copy 300 training examples (the validation set
         # is not very important in this application)
@@ -447,21 +447,19 @@ class CrossDocked(InMemoryDataset):
             print(
                 "Normalizing coordinates for ligands and pockets in training split..."
             )
-            mean_lig = np.mean(lig_coords_all, axis=0)
-            std_lig = np.std(lig_coords_all, axis=0)
-            mean_pocket = np.mean(pocket_coords_all, axis=0)
-            std_pocket = np.std(pocket_coords_all, axis=0)
+            # mean_lig = np.mean(lig_coords_all, axis=0)
+            # std_lig = np.std(lig_coords_all, axis=0)
+            mean = np.mean(pocket_coords_all, axis=0)
+            std = np.std(pocket_coords_all, axis=0)
             # Save normalization parameters for later use
             np.savez(
                 os.path.join(self.processed_dir, "normalization_params.npz"),
-                mean_lig=mean_lig,
-                std_lig=std_lig,
-                mean_pocket=mean_pocket,
-                std_pocket=std_pocket,
+                mean=mean,
+                std=std,
             )
             # lig_coords_all = (lig_coords_all - mean_lig) / std_lig
-            lig_coords_all = (lig_coords_all - mean_pocket) / std_pocket
-            pocket_coords_all = (pocket_coords_all - mean_pocket) / std_pocket
+            lig_coords_all = (lig_coords_all - mean) / std
+            pocket_coords_all = (pocket_coords_all - mean) / std
         elif self.normalize_coords:
             print("Normalizing coordinates for validation/test splits...")
             norm_params_path = os.path.join(
@@ -473,13 +471,11 @@ class CrossDocked(InMemoryDataset):
                     "Ensure the training split was processed with normalization enabled."
                 )
             norm_params = np.load(norm_params_path)
-            mean_lig = norm_params["mean_lig"]
-            std_lig = norm_params["std_lig"]
-            mean_pocket = norm_params["mean_pocket"]
-            std_pocket = norm_params["std_pocket"]
+            mean = norm_params["mean"]
+            std = norm_params["std"]
             # lig_coords_all = (lig_coords_all - mean_lig) / std_lig
-            lig_coords_all = (lig_coords_all - mean_pocket) / std_pocket
-            pocket_coords_all = (pocket_coords_all - mean_pocket) / std_pocket
+            lig_coords_all = (lig_coords_all - mean) / std
+            pocket_coords_all = (pocket_coords_all - mean) / std
 
         # We need the histogram with the distribution of number of nodes (only for training)
         if split_name == "train":

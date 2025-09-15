@@ -90,17 +90,23 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
 
         return z, batch_all, batch_lig, batch_pocket, batch_size
 
-    def sample_conditional_path(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def sample_conditional_path(
+        self, z: torch.Tensor, t: torch.Tensor, start_points: torch.Tensor = None
+    ) -> torch.Tensor:
         """Samples from the conditional distribution p_t(x|z).
 
         Args:
             z: Conditioning variable. [batch_size, *dims]
             t: Time at which to sample the conditional distribution. [batch_size, 1]
+            start_points: (Optional) Starting points for the sampling.
 
         Returns:
             Samples `x` from p_t(x|z). [batch_size, *dims]
         """
-        x = self.alpha(t) * z + self.beta(t) * torch.randn_like(z)
+        if start_points is not None:
+            x = self.alpha(t) * z + self.beta(t) * start_points
+        else:
+            x = self.alpha(t) * z + self.beta(t) * torch.randn_like(z)
         return x.to(self.device)
 
     def conditional_vector_field(

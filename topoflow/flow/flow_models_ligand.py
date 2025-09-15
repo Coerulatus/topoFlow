@@ -115,10 +115,8 @@ class FlowModel(pl.LightningModule):
                 )
             norm_params = np.load(norm_path, allow_pickle=True)
             self.normalization_params = {
-                "mean_lig": norm_params["mean_lig"],
-                "std_lig": norm_params["std_lig"],
-                "mean_pocket": norm_params["mean_pocket"],
-                "std_pocket": norm_params["std_pocket"],
+                "mean": norm_params["mean"],
+                "std": norm_params["std"],
             }
             self.unnorm = True
         self.time_factor = time_factor
@@ -416,7 +414,7 @@ class FlowModel(pl.LightningModule):
             print(f"Error calculating distances: {e}")
             return {metric: float("nan") for metric in metrics}, res
 
-    def drift_coefficient(self, x, t, batch_all, batch_lig, batch_pocket, z=None):
+    def drift_coefficient(self, x, t, batch_all, batch_lig, batch_pocket, z):
         """Computes the drift coefficient (vector field) at time t.
 
         Args:
@@ -430,31 +428,18 @@ class FlowModel(pl.LightningModule):
         Returns:
             The drift coefficient. Shape: [num_atoms, *dims].
         """
-        if z is None:
-            # During sampling, we assume the pocket is static and its reference velocity is zero.
-            num_pocket_atoms = batch_pocket.shape[0]
-            u_t_ref_pocket = torch.zeros(
-                num_pocket_atoms, self.vector_field_model.spatial_dim, device=x.device
-            )
-        else:
-            # During training, we use the reference velocity from the path.
-            num_samples = torch.max(batch_pocket) + 1
-            t_batched = t.repeat(num_samples, 1)[
-                batch_pocket[torch.where(batch_pocket != -1)[0]]
-            ]
-            x_pocket = x[torch.where(batch_pocket != -1)[0], :]
-            u_t_ref_pocket = self.path.conditional_vector_field(x_pocket, z, t_batched)
-
         is_lig = batch_lig != -1
-        is_poc = batch_pocket != -1
+
         x_lig = x[is_lig, :]
+        x_pocket = z
+
         u_t_theta_lig = self.vector_field_model(
             x_lig, t, x_pocket, batch_lig, batch_pocket
         )
 
+        # For the pocket we already have the final positions, so the velocity is zero
         guided_vector_field = torch.zeros_like(x)
         guided_vector_field[is_lig, :] = u_t_theta_lig
-        guided_vector_field[is_poc, :] = u_t_ref_pocket
 
         return guided_vector_field
 
@@ -464,19 +449,11 @@ class FlowModel(pl.LightningModule):
             raise ValueError(
                 "Normalization parameters are not set. Cannot unnormalize."
             )
-        mean_lig = torch.tensor(self.normalization_params["mean_pocket"]).to(
-            x_lig.device
-        )
-        std_lig = torch.tensor(self.normalization_params["std_pocket"]).to(x_lig.device)
-        mean_pocket = torch.tensor(self.normalization_params["mean_pocket"]).to(
-            x_pocket.device
-        )
-        std_pocket = torch.tensor(self.normalization_params["std_pocket"]).to(
-            x_pocket.device
-        )
+        mean = torch.tensor(self.normalization_params["mean"]).to(x_pocket.device)
+        std = torch.tensor(self.normalization_params["std"]).to(x_pocket.device)
 
-        x_lig = x_lig * std_lig + mean_lig
-        x_pocket = x_pocket * std_pocket + mean_pocket
+        x_lig = x_lig * std + mean
+        x_pocket = x_pocket * std + mean
         return x_lig, x_pocket
 
     @torch.no_grad()
@@ -492,22 +469,29 @@ class FlowModel(pl.LightningModule):
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
 
-        z, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
+        z_pocket, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
             n_samples, pocket_only=True, force_batch_size=True
         )
 
         starting_points, batch_all, batch_lig, batch_pocket = (
             self.path.sample_simple_distribution(n_samples, batch_pocket=batch_pocket)
         )
+        is_lig = batch_lig != -1
+        is_poc = batch_pocket != -1
+
+        starting_points[is_poc] = z_pocket
+
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
+
         output = simulator.simulate(
-            starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z
+            starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z_pocket
         )
         output = output[:, -1]
-        x_lig = output[torch.where(batch_lig != -1)[0], :3]
-        h_lig = output[torch.where(batch_lig != -1)[0], 3:]
-        x_pocket = output[torch.where(batch_pocket != -1)[0], :3]
-        h_pocket = output[torch.where(batch_pocket != -1)[0], 3:]
+
+        x_lig = output[is_lig, :3]
+        h_lig = output[is_lig, 3:]
+        x_pocket = output[is_poc, :3]
+        h_pocket = output[is_poc, 3:]
         if self.unnorm:
             x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
         data = Data(
@@ -533,16 +517,23 @@ class FlowModel(pl.LightningModule):
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
 
-        z, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
+        z_pocket, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
             n_samples, pocket_only=True, force_batch_size=True
         )
 
         starting_points, batch_all, batch_lig, batch_pocket = (
             self.path.sample_simple_distribution(n_samples, batch_pocket=batch_pocket)
         )
+
+        is_lig = batch_lig != -1
+        is_poc = batch_pocket != -1
+
+        starting_points[is_poc] = z_pocket
+
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
+
         output = simulator.simulate(
-            starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z
+            starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z_pocket
         )
 
         data_trajectory = []
@@ -589,3 +580,55 @@ class FlowModel(pl.LightningModule):
                 "frequency": 1,
             },
         }
+
+    def _test_integration(self, n_steps=20):
+
+        class ode:
+            def __init__(self, model):
+                self.model = model
+
+            def drift_coefficient(self, x, t, batch_all, batch_lig, batch_pocket, z):
+                return self.model.path.conditional_vector_field(x, z, t)
+
+        simulator = TorchDiffEqSimulator(ode(self), solver="rk4")
+
+        z, batch_all, batch_lig, batch_pocket, batch_size = (
+            self.path.sample_conditioning_variable(1, force_batch_size=True)
+        )
+        is_lig = batch_lig != -1
+        is_poc = batch_pocket != -1
+
+        z_lig = z[is_lig]
+        z_pocket = z[is_poc]
+
+        # t, t_batched = self.path.sample_time(batch_size, batch_all)
+        ts = torch.linspace(0, 1, n_steps, device=self.path.device)
+
+        starting_points = torch.randn_like(z)
+        starting_points[is_poc] = z_pocket
+
+        # starting_points[is_lig] = z_lig
+
+        output = simulator.simulate(
+            starting_points, ts, batch_all, batch_lig, batch_pocket, z=z
+        )
+
+        data_trajectory = []
+        for i in range(output.shape[1]):
+            x_lig = output[torch.where(batch_lig != -1)[0], i, :3]
+            h_lig = output[torch.where(batch_lig != -1)[0], i, 3:]
+            x_pocket = output[torch.where(batch_pocket != -1)[0], i, :3]
+            h_pocket = output[torch.where(batch_pocket != -1)[0], i, 3:]
+            if self.unnorm:
+                x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+            data = Data(
+                batch_all=batch_all,
+                x_lig=x_lig,
+                h_lig=h_lig,
+                batch_lig=batch_lig,
+                x_pocket=x_pocket,
+                h_pocket=h_pocket,
+                batch_pocket=batch_pocket,
+            )
+            data_trajectory.append(data)
+        return data_trajectory
