@@ -15,6 +15,7 @@ from topoflow.flow.vector_field_models import (
     TransformerVectorField,
     MLPVectorField,
     TransformerVectorFieldLigand,
+    GATVectorField,
 )
 from topoflow.flow.flow_models_ligand import FlowModel
 import topoflow.utils.constants as constants
@@ -121,6 +122,14 @@ def train_flow_model(
             activation=torch.nn.SiLU,
             additional_features="add",  # Use 'add' to incorporate time and conditioning features
         )
+    elif vector_field_model == "gat":
+        vector_field = GATVectorField(
+            h_dim=hidden_dim,
+            num_heads=4,
+            num_layers=4,
+            dropout=0.1,
+            add_time_to="ligand",  # "ligand", "both", or "none"
+        )
     else:
         raise ValueError(f"Unsupported vector field model: {vector_field_model}")
 
@@ -175,16 +184,16 @@ def train_flow_model(
         callbacks=[checkpoint_callback],
         logger=logger,
         enable_progress_bar=True,
-        check_val_every_n_epoch=200,
+        check_val_every_n_epoch=5,
         gradient_clip_val=0.5,
         gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
-        num_sanity_val_steps=1,
+        num_sanity_val_steps=0,
     )
     # ======================================================================
     # Start Training
     # ======================================================================
-    # trainer.fit(flow_model, datamodule=datamodule)
+    trainer.fit(flow_model, datamodule=datamodule)
 
 
 if __name__ == "__main__":
@@ -211,8 +220,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--vector_field_model",
         type=str,
-        default="transformer",
-        choices=["transformer", "mlp"],
+        default="gat",
+        choices=["transformer", "mlp", "gat"],
         help="Type of vector field model to use.",
     )
     parser.add_argument(
@@ -237,24 +246,24 @@ if __name__ == "__main__":
         "--epochs", type=int, default=1000, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=16, help="Batch size for training."
+        "--batch_size", type=int, default=128, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",
         type=float,
-        default=0.0005,
+        default=0.01,
         help="Learning rate for the optimizer.",
     )
     parser.add_argument(
         "--max_lr",
         type=float,
-        default=0.002,
+        default=0.04,
         help="Maximum learning rate for the optimizer.",
     )
     parser.add_argument(
         "--min_lr",
         type=float,
-        default=0.0001,
+        default=0.002,
         help="Minimum learning rate for the optimizer.",
     )
     parser.add_argument(
@@ -275,7 +284,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopologicalFlow",
+        default="TopologicalFlowGAT",
         help="MLflow experiment name.",
     )
     parser.add_argument(

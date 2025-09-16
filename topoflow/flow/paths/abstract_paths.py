@@ -140,7 +140,12 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
             raise ValueError(
                 "The simple distribution must have a size distribution to sample variable-sized data."
             )
-        return z, batch_all, batch_lig, batch_pocket
+        return (
+            z.to(self.device),
+            batch_all.to(self.device),
+            batch_lig.to(self.device),
+            batch_pocket.to(self.device),
+        )
 
     @abstractmethod
     def sample_conditioning_variable(self, batch_size: int):

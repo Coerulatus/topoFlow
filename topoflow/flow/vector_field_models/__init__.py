@@ -6,3 +6,4 @@ from .transformer_xformers_ligand import (
 )
 from .transformer_xformers import TransformerVectorField
 from .mlp import MLPVectorField
+from .gat_ligand import GATVectorField
