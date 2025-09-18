@@ -70,7 +70,7 @@ def run_multiple_validations(
     )
 
     distribution_hist = np.load(
-        "./data/CrossDocked/processed/size_distribution_full.npy", allow_pickle=True
+        "./data/CrossDocked/processed/size_distribution.npy", allow_pickle=True
     )
     path = GaussianConditionalProbabilityPath(
         p_data=p_data,
@@ -88,7 +88,7 @@ def run_multiple_validations(
     model = FlowModel.load_from_checkpoint(
         checkpoint_path,
         path=path,
-        norm_path="./data/CrossDocked/processed/normalization_params_full.npz",
+        norm_path="./data/CrossDocked/processed/normalization_params.npz",
     )
     model.eval()
 

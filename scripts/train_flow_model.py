@@ -125,8 +125,8 @@ def train_flow_model(
     elif vector_field_model == "gat":
         vector_field = GATVectorField(
             h_dim=hidden_dim,
-            num_heads=4,
-            num_layers=4,
+            num_heads=8,
+            num_layers=2,
             dropout=0.1,
             add_time_to="ligand",  # "ligand", "both", or "none"
         )
@@ -180,7 +180,7 @@ def train_flow_model(
     trainer = pl.Trainer(
         max_epochs=epochs,
         accelerator="auto",
-        devices=1 if torch.cuda.is_available() else None,
+        devices=1 if torch.cuda.is_available() else 4,
         callbacks=[checkpoint_callback],
         logger=logger,
         enable_progress_bar=True,
@@ -193,7 +193,8 @@ def train_flow_model(
     # ======================================================================
     # Start Training
     # ======================================================================
-    trainer.fit(flow_model, datamodule=datamodule)
+    # trainer.fit(flow_model, datamodule=datamodule)
+    print(flow_model.normalization_params)
 
 
 if __name__ == "__main__":
@@ -227,7 +228,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hidden_dim",
         type=int,
-        default=128,
+        default=64,
         help="Dimension of the hidden layers in the model.",
     )
     parser.add_argument(
@@ -243,7 +244,7 @@ if __name__ == "__main__":
         help="Directory to save the trained model.",
     )
     parser.add_argument(
-        "--epochs", type=int, default=1000, help="Number of training epochs."
+        "--epochs", type=int, default=200, help="Number of training epochs."
     )
     parser.add_argument(
         "--batch_size", type=int, default=128, help="Batch size for training."
@@ -251,19 +252,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--start_lr",
         type=float,
-        default=0.01,
+        default=0.001,
         help="Learning rate for the optimizer.",
     )
     parser.add_argument(
         "--max_lr",
         type=float,
-        default=0.04,
+        default=0.004,
         help="Maximum learning rate for the optimizer.",
     )
     parser.add_argument(
         "--min_lr",
         type=float,
-        default=0.002,
+        default=0.0002,
         help="Minimum learning rate for the optimizer.",
     )
     parser.add_argument(

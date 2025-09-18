@@ -63,6 +63,9 @@ class GATVectorField(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        self.layers_norm = nn.ModuleList(
+            [nn.LayerNorm(h_dim) for _ in range(num_layers)]
+        )
 
         # output ligand velocity only
         self.out_vel = nn.Sequential(
@@ -140,8 +143,11 @@ class GATVectorField(nn.Module):
         x = torch.cat([lig_h, poc_h], dim=0)
 
         # Encoder
-        for layer in self.layers:
-            x = layer(x, edge_index)
+        for layer, norm in zip(self.layers, self.layers_norm):
+            x_new = layer(x, edge_index)
+            x_new = norm(x_new)
+            x = x + x_new  # Residual connection
+            x = F.silu(x)  # Nonlinear activation after residual sum
 
         N1 = lig_h.size(0)
         x_lig = x[:N1, :]

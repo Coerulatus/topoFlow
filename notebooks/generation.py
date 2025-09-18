@@ -9,14 +9,33 @@ from topoflow.utils.visualization import (
     visualize_trajectory,
     visualize_data_matplotlib,
 )
-from topoflow.flow.flow_models import FlowModel
+from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.data.dataloader_adj import DataLoaderSampleable
+from topoflow.data.datasets import CrossDocked
+from topoflow.flow.schedulers import LinearAlpha, LinearBeta, SineAlpha, CosineBeta
 
-alpha = LinearAlpha()
+batch_size = 32
+data_dir = "./data/CrossDocked"
+train_dataset = CrossDocked(
+    root=data_dir,
+    split="train",
+)
+val_dataset = CrossDocked(root=data_dir, split="val")
+
+alpha = SineAlpha()
+beta = CosineBeta()
+
+p_data = DataLoaderSampleable(
+    train_dataset,
+    batch_size=batch_size,
+    shuffle=True,
+    num_workers=8,
+)
+
+
 distribution_hist = np.load(
     "./data/CrossDocked/processed/size_distribution.npy", allow_pickle=True
 )
-beta = LinearBeta()
-p_data = None
 path = GaussianConditionalProbabilityPath(
     p_data=p_data,
     alpha=alpha,
@@ -24,7 +43,7 @@ path = GaussianConditionalProbabilityPath(
     target_dim=14,
     distribution_hist=distribution_hist,
 )
-checkpoint_path = "./checkpoints/topoflow/topoflow-1k-e783.ckpt"
+checkpoint_path = "./checkpoints/topoflow/run_200e_16_09_gat/topoflow-epoch=199.ckpt"
 
 # Load the model from the checkpoint
 model = FlowModel.load_from_checkpoint(
@@ -33,11 +52,12 @@ model = FlowModel.load_from_checkpoint(
     norm_path="./data/CrossDocked/processed/normalization_params.npz",
 )
 
-res_traj = model.sample_with_trajectory(1, n_steps=20)
 
-visualize_data(
-    res_traj[0],
-    image_path="outputs/trajectory/0.png",
-    session_path="outputs/trajectory/0.pse",
+res_traj = model.sample_with_trajectory(1, n_steps=100)
+
+visualize_trajectory(
+    res_traj,
+    image_path="outputs/trajectory/mol_traj.png",
+    gif_path="outputs/trajectory/mol_traj.gif",
 )
-visualize_data_matplotlib(res_traj[0].to("cpu"))
+# visualize_data_matplotlib(res_traj[0].to("cpu"))
