@@ -108,7 +108,7 @@ def compute_connectivity(valid, connectivity_thresh=0.5):  # TODO:choose thresho
     Consider molecule connected if its largest fragment contains at least x% of all atoms, where x is determined by self.connectivity_thresh (defaults to 1).
     """
     if len(valid) < 1:
-        return [], 0.0
+        return 0.0, []
 
     connected_smiles = []
     for mol in valid:

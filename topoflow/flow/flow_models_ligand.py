@@ -120,7 +120,7 @@ class FlowModel(pl.LightningModule):
             }
             self.unnorm = True
         self.time_factor = time_factor
-        self.sample_steps = 20
+        self.sample_steps = 80
         self.max_batched_samples = max_batched_samples
         self.loss_lig_weight = 100
 
@@ -497,20 +497,24 @@ class FlowModel(pl.LightningModule):
         data = Data(
             x_lig=x_lig,
             h_lig=h_lig,
-            batch_all=batch_all,
-            batch_lig=batch_lig,
             x_pocket=x_pocket,
             h_pocket=h_pocket,
+            batch_all=batch_all,
+            batch_lig=batch_lig,
             batch_pocket=batch_pocket,
         )
         return data
 
-    def sample_with_trajectory(self, n_samples, n_steps=20):
+    def sample_with_trajectory(
+        self, n_samples, n_steps=20, force_connected=False, max_attempts=10
+    ):
         """Samples data by simulating the learned flow from the simple distribution and returns the trajectory.
 
         Args:
             n_samples: Number of samples to generate.
             n_steps: Number of integration steps for the simulator. Defaults to 20.
+            force_connected: If True, generate molecules until it is connected. Defaults to False.
+            max_attempts: Maximum number of attempts to generate a connected molecule. Defaults to 10.
 
         Returns:
             The generated samples after simulating the flow, along with the trajectory.
@@ -535,6 +539,52 @@ class FlowModel(pl.LightningModule):
         output = simulator.simulate(
             starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z_pocket
         )
+
+        attempts = 0
+        while force_connected:
+            final_output = output[:, -1]
+            final_mol = Data(
+                x_lig=final_output[is_lig, :3],
+                h_lig=final_output[is_lig, 3:],
+                x_pocket=final_output[is_poc, :3],
+                h_pocket=final_output[is_poc, 3:],
+                batch_all=batch_all,
+                batch_lig=batch_lig,
+                batch_pocket=batch_pocket,
+            )
+            final_rdmol = data_to_rdmol(
+                final_mol, atom_decoder=self.atom_decoder, sanitize=True
+            )
+            connected = compute_connectivity(final_rdmol)[0]
+            if connected > 0 or attempts > max_attempts:
+                break
+            else:
+                print(
+                    f"Regenerating sample to get a connected molecule ({attempts}/{max_attempts})"
+                )
+                starting_points, batch_all, batch_lig, batch_pocket = (
+                    self.path.sample_simple_distribution(
+                        n_samples, batch_pocket=batch_pocket
+                    )
+                )
+                is_lig = batch_lig != -1
+                is_poc = batch_pocket != -1
+                starting_points[is_poc] = z_pocket
+                output = simulator.simulate(
+                    starting_points,
+                    t_eval,
+                    batch_all,
+                    batch_lig,
+                    batch_pocket,
+                    z=z_pocket,
+                )
+                attempts += 1
+
+        if attempts > max_attempts:
+            print(
+                f"Failed to generate a connected molecule after {max_attempts} attempts."
+            )
+            return []
 
         data_trajectory = []
         for i in range(output.shape[1]):

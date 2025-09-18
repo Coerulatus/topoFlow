@@ -161,6 +161,9 @@ def run_multiple_validations(
     # ======================================================================
     # Save Results
     # ======================================================================
+    root_folder = os.path.dirname(output_file)
+    if root_folder and not os.path.exists(root_folder):
+        os.makedirs(root_folder)
     print(f"Saving aggregated results to {output_file}")
     with open(output_file, "w") as f:
         f.write("# Validation Results\n\n")

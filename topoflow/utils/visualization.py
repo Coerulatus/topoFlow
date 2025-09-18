@@ -3,6 +3,7 @@
 import pymol
 import os
 import numpy as np
+from tqdm import tqdm
 from torch_geometric.data import Data
 import rdkit.Chem as Chem
 from rdkit.Chem import AllChem
@@ -131,6 +132,7 @@ def plot_molecular_complex(
     output_image_path: str = None,
     session_file_path: str = None,
     dataset_param: dict = None,
+    verbose: bool = False,
 ):
     """Plot a protein-ligand complex in PyMOL.
 
@@ -147,6 +149,7 @@ def plot_molecular_complex(
         dataset_param (dict, optional): Dictionary containing dataset parameters,
                                         specifically 'idx_to_atom_map' and 'colors_dic'
                                         for ligand atom coloring.
+        verbose (bool, optional): If True, prints additional information during processing.
     """
     # Initialize PyMOL and clear previous objects for a fresh start
     pymol.finish_launching()  # Ensure PyMOL's environment is ready
@@ -154,12 +157,14 @@ def plot_molecular_complex(
 
     # Load protein (pocket)
     # The object name in PyMOL will be "protein"
-    print(f"Loading protein from: {pdb_path} as 'protein'")
+    if verbose:
+        print(f"Loading protein from: {pdb_path} as 'protein'")
     pymol.cmd.load(pdb_path, "protein")
 
     # Load ligand
     # The object name in PyMOL will be "ligand"
-    print(f"Loading ligand from: {ligand_path} as 'ligand'")
+    if verbose:
+        print(f"Loading ligand from: {ligand_path} as 'ligand'")
     if ligand_path.endswith(".sdf"):
         pymol.cmd.load(ligand_path, "ligand", format="sdf")
     elif ligand_path.endswith(".mol2"):
@@ -189,8 +194,8 @@ def plot_molecular_complex(
         idx_to_atom_map = dataset_param["idx_to_atom_map"]
         colors_dic = dataset_param["colors_dic_pymol"]
         sizes = dataset_param.get("radius_dic", None)  # Optional sizes for spheres
-
-        print("Applying custom ligand coloring based on dataset_param...")
+        if verbose:
+            print("Applying custom ligand coloring based on dataset_param...")
         for idx, atom_symbol in idx_to_atom_map.items():
             # Ensure the index exists in colors_dic to prevent IndexError
             if idx < len(colors_dic):
@@ -199,9 +204,10 @@ def plot_molecular_complex(
                 # For example: "ligand and elem C"
                 pymol.cmd.color(color_hex, f"ligand and elem {atom_symbol}")
             else:
-                print(
-                    f"Warning: No color defined for index {idx} ('{atom_symbol}') in colors_dic."
-                )
+                if verbose:
+                    print(
+                        f"Warning: No color defined for index {idx} ('{atom_symbol}') in colors_dic."
+                    )
                 # Fallback: Use a default color for unmapped elements in ligand if necessary
                 pymol.cmd.color("gray", f"ligand and elem {atom_symbol}")
             if idx < len(sizes) and sizes is not None:
@@ -209,9 +215,10 @@ def plot_molecular_complex(
                     "sphere_scale", sizes[idx], f"ligand and elem {atom_symbol}"
                 )
     else:
-        print(
-            "dataset_param not provided or missing 'idx_to_atom_map'/'colors_dic'. Using default CPK coloring for ligand."
-        )
+        if verbose:
+            print(
+                "dataset_param not provided or missing 'idx_to_atom_map'/'colors_dic'. Using default CPK coloring for ligand."
+            )
         # Fallback to PyMOL's default coloring if custom parameters are not available
         pymol.cmd.util.cbag("ligand")  # Color ligand by atom type (CPK)
 
@@ -230,14 +237,19 @@ def plot_molecular_complex(
     # Save the image if output_image_path is provided
     if output_image_path:
         pymol.cmd.png(output_image_path, dpi=300, ray=1)  # Ray trace for PNG
-        print(f"Image saved to: {output_image_path}")
+        if verbose:
+            print(f"Image saved to: {output_image_path}")
 
     # Save the session if session_file_path is provided
     if session_file_path:
         pymol.cmd.save(session_file_path)
-        print(f"Session saved to: {session_file_path}")
+        if verbose:
+            print(f"Session saved to: {session_file_path}")
 
-    print("\nPyMOL visualization setup complete. You can now interact with the window.")
+    if verbose:
+        print(
+            "\nPyMOL visualization setup complete. You can now interact with the window."
+        )
 
 
 def _get_elements_from_x_data(x_data, atom_decoder):
@@ -252,7 +264,9 @@ def _get_elements_from_x_data(x_data, atom_decoder):
     return [atom_decoder[idx.item()] for idx in atom_indices]
 
 
-def save_ligand_to_sdf(data_object, file_path: str, atom_decoder: dict = None):
+def save_ligand_to_sdf(
+    data_object, file_path: str, atom_decoder: dict = None, verbose: bool = False
+):
     """Saves the ligand information from a Data object to an SDF file.
 
     If the data_object is a Chem.Mol, it saves directly to the file.
@@ -263,12 +277,14 @@ def save_ligand_to_sdf(data_object, file_path: str, atom_decoder: dict = None):
         data_object (Data or Chem.Mol): A PyTorch Geometric Data object or an RDKit Chem.Mol object containing ligand information.
         file_path (str): Path to save the SDF file.
         atom_decoder (dict, optional): A list that maps atom indices to their chemical symbols.
+        verbose (bool, optional): If True, prints additional information during processing.
     """
     if isinstance(data_object, Chem.Mol):
         writer = Chem.SDWriter(file_path)
         writer.write(data_object)
         writer.close()
-        print(f"Successfully saved ligand to: {file_path}")
+        if verbose:
+            print(f"Successfully saved ligand to: {file_path}")
         return
 
     if atom_decoder is None:
@@ -305,12 +321,15 @@ def save_ligand_to_sdf(data_object, file_path: str, atom_decoder: dict = None):
     try:
         with open(file_path, "w") as f:
             f.write("\n".join(molfile_lines))
-        print(f"Successfully saved ligand to: {file_path}")
+        if verbose:
+            print(f"Successfully saved ligand to: {file_path}")
     except IOError as e:
         print(f"Error saving ligand file {file_path}: {e}")
 
 
-def save_pocket_to_pdb(data_object: Data, file_path: str, atom_decoder: dict = None):
+def save_pocket_to_pdb(
+    data_object: Data, file_path: str, atom_decoder: dict = None, verbose: bool = False
+):
     """Saves the pocket information from a Data object to a PDB file.
 
     Each atom is treated as a separate ATOM record.
@@ -349,7 +368,8 @@ def save_pocket_to_pdb(data_object: Data, file_path: str, atom_decoder: dict = N
     try:
         with open(file_path, "w") as f:
             f.write("\n".join(pdb_lines))
-        print(f"Successfully saved pocket to: {file_path}")
+        if verbose:
+            print(f"Successfully saved pocket to: {file_path}")
     except IOError as e:
         print(f"Error saving pocket file {file_path}: {e}")
 
@@ -361,6 +381,7 @@ def visualize_data(
     dataset_name: str = "crossdock_full",
     add_ligand_bonds: bool = True,
     norm_params: dict = None,
+    versbose: bool = False,
 ):
     """Visualization function for a Data object containing ligand and pocket information.
 
@@ -380,6 +401,7 @@ def visualize_data(
                                            Defaults to True.
         norm_params (dict, optional): Normalization parameters used for the data object. They are used to unnormalize
                                       the ligand and pocket coordinates before visualization.
+        versbose (bool, optional): If True, prints additional information during processing.
     """
     data_object = data_object.to(torch.device("cpu"))  # Ensure data is on CPU for PyMOL
     if norm_params is not None:
@@ -401,10 +423,10 @@ def visualize_data(
         rdmol = make_mol_openbabel(
             data_object.x_lig, data_object.h_lig, atom_decoder=atom_decoder
         )
-        save_ligand_to_sdf(rdmol, ligand_file, atom_decoder)
+        save_ligand_to_sdf(rdmol, ligand_file, atom_decoder, versbose)
     else:
-        save_ligand_to_sdf(data_object, ligand_file, atom_decoder)
-    save_pocket_to_pdb(data_object, pocket_file, atom_decoder)
+        save_ligand_to_sdf(data_object, ligand_file, atom_decoder, versbose)
+    save_pocket_to_pdb(data_object, pocket_file, atom_decoder, versbose)
 
     # Plot the molecular complex
     if image_path and not os.path.isdir(os.path.dirname(image_path)):
@@ -413,7 +435,7 @@ def visualize_data(
         os.makedirs(os.path.dirname(session_path))
 
     plot_molecular_complex(
-        pocket_file, ligand_file, image_path, session_path, dataset_params
+        pocket_file, ligand_file, image_path, session_path, dataset_params, versbose
     )
 
     # Clean up temporary files
@@ -469,6 +491,7 @@ def visualize_trajectory(
     add_ligand_bonds: bool = True,
     gif_path: str = None,
     plot_every: int = 1,
+    verbose: bool = False,
 ):
     """Visualizes a list of Data objects representing a trajectory of molecular complexes.
 
@@ -488,16 +511,21 @@ def visualize_trajectory(
                                    If None, no GIF is saved.
         plot_every (int, optional): Interval at which to plot the trajectory frames.
                                     Defaults to 1 (plot every frame).
+        verbose (bool, optional): If True, prints additional information during processing.
     """
     if not isinstance(data_list, list) or not all(
         isinstance(d, Data) for d in data_list
     ):
         raise ValueError("data_list must be a list of PyTorch Geometric Data objects.")
+    if len(data_list) == 0:
+        raise ValueError("data_list is empty.")
     if image_path and not os.path.isdir(os.path.dirname(image_path)):
         os.makedirs(os.path.dirname(image_path))
     if image_path and image_path.endswith(".png"):
         image_path = image_path[:-4]
-    for idx, data_object in enumerate(data_list):
+    for idx, data_object in tqdm(
+        enumerate(data_list), total=len(data_list), desc="Visualizing trajectory"
+    ):
         if idx % plot_every != 0:
             continue
         data_object = data_object.to(
@@ -510,6 +538,7 @@ def visualize_trajectory(
             session_path=f"{image_path}_{idx}.pse",
             dataset_name=dataset_name,
             add_ligand_bonds=add_ligand_bonds,
+            versbose=verbose,
         )
 
     if gif_path is not None:

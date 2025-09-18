@@ -125,7 +125,7 @@ def train_flow_model(
     elif vector_field_model == "gat":
         vector_field = GATVectorField(
             h_dim=hidden_dim,
-            num_heads=8,
+            num_heads=16,
             num_layers=2,
             dropout=0.1,
             add_time_to="ligand",  # "ligand", "both", or "none"
@@ -228,7 +228,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hidden_dim",
         type=int,
-        default=64,
+        default=128,
         help="Dimension of the hidden layers in the model.",
     )
     parser.add_argument(
