@@ -207,3 +207,4 @@ __marimo__/
 /mlruns/
 /results/
 /notebooks/outputs/trajectory/
+/wandb-importer/
