@@ -16,6 +16,7 @@ from topoflow.flow.vector_field_models import (
     MLPVectorField,
     TransformerVectorFieldLigand,
     GATVectorField,
+    AllSetTransformerVectorField,
 )
 from topoflow.flow.flow_models_ligand import FlowModel
 import topoflow.utils.constants as constants
@@ -130,6 +131,14 @@ def train_flow_model(
             dropout=0.1,
             add_time_to="ligand",  # "ligand", "both", or "none"
         )
+    elif vector_field_model == "ast":
+        vector_field = AllSetTransformerVectorField(
+            h_dim=hidden_dim,
+            num_heads=16,
+            num_layers=2,
+            dropout=0.1,
+            add_time_to="ligand",  # "ligand", "both", or "none"
+        )
     else:
         raise ValueError(f"Unsupported vector field model: {vector_field_model}")
 
@@ -193,8 +202,7 @@ def train_flow_model(
     # ======================================================================
     # Start Training
     # ======================================================================
-    # trainer.fit(flow_model, datamodule=datamodule)
-    print(flow_model.normalization_params)
+    trainer.fit(flow_model, datamodule=datamodule)
 
 
 if __name__ == "__main__":
@@ -221,8 +229,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--vector_field_model",
         type=str,
-        default="gat",
-        choices=["transformer", "mlp", "gat"],
+        default="ast",
+        choices=["transformer", "mlp", "gat", "ast"],
         help="Type of vector field model to use.",
     )
     parser.add_argument(
@@ -285,7 +293,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopologicalFlowGAT",
+        default="TopologicalFlowAST",
         help="MLflow experiment name.",
     )
     parser.add_argument(
