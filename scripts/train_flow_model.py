@@ -149,7 +149,7 @@ def train_flow_model(
         )
 
     time_factor = InverseTimeFactorNoClamping(
-        max_value=10.0,
+        max_value=50.0,
         min_value=0.05,
     )
 
@@ -255,24 +255,24 @@ if __name__ == "__main__":
         "--epochs", type=int, default=200, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=128, help="Batch size for training."
+        "--batch_size", type=int, default=32, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",
         type=float,
-        default=0.001,
+        default=0.0002,
         help="Learning rate for the optimizer.",
     )
     parser.add_argument(
         "--max_lr",
         type=float,
-        default=0.004,
+        default=0.0008,
         help="Maximum learning rate for the optimizer.",
     )
     parser.add_argument(
         "--min_lr",
         type=float,
-        default=0.0002,
+        default=0.00004,
         help="Minimum learning rate for the optimizer.",
     )
     parser.add_argument(
