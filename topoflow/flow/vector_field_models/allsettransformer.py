@@ -883,14 +883,20 @@ class AllSetTransformerVectorField(nn.Module):
         self.add_time_to = add_time_to
 
         self.cutoff_lig = 10.0
-        self.cutoff_poc = 2.0
+        self.cutoff_poc = 1.0
         self.cutoff_cross = 1.0
 
         self.lig_embed = nn.Sequential(
-            nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
+            nn.Linear(self.x_dim, h_dim),
+            nn.SiLU(),
+            nn.LayerNorm(h_dim),
+            nn.Linear(h_dim, h_dim),
         )
         self.poc_embed = nn.Sequential(
-            nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
+            nn.Linear(self.x_dim, h_dim),
+            nn.SiLU(),
+            nn.LayerNorm(h_dim),
+            nn.Linear(h_dim, h_dim),
         )
         self.time_embed = SimpleTimeEmbedding(h_dim)
 
@@ -906,8 +912,33 @@ class AllSetTransformerVectorField(nn.Module):
 
         # output ligand velocity only
         self.out_vel = nn.Sequential(
-            nn.LayerNorm(h_dim), nn.Linear(h_dim, self.x_dim, bias=False)
+            nn.LayerNorm(h_dim),
+            nn.Linear(h_dim, self.h_dim),
+            nn.SiLU(),
+            nn.Linear(self.h_dim, self.x_dim),
         )
+
+    def check_batch_separation(
+        self, row, col, n_hyperedges, n_values, n_nodes, device, batch_lig, batch_pocket
+    ):
+        """Check that batches of ligand and pocket are not mixed in hyperedges."""
+        value = torch.ones(n_values, dtype=torch.long, device=device)
+        incidence1 = torch.sparse_coo_tensor(
+            torch.stack([row, col], dim=0),
+            value,
+            (n_nodes, n_hyperedges),
+            device=device,
+        )
+        incidence1 = incidence1.coalesce()
+        i1 = incidence1.to_dense()
+        batch_total = torch.cat([batch_lig, batch_pocket], dim=0)
+        for i in range(i1.shape[1]):
+            non_zeros = i1[:, i].nonzero(as_tuple=False).view(-1)
+            idxs = batch_total[non_zeros]
+            if torch.unique(idxs).size(0) > 1:
+                raise ValueError(
+                    "Batches of ligand and pocket are not separated in hyperedges."
+                )
 
     def create_incidence(self, x_lig, x_pocket, batch_lig, batch_pocket):
         """Create hyperedges."""
@@ -917,7 +948,8 @@ class AllSetTransformerVectorField(nn.Module):
         n_nodes = n_lig + n_poc
         n_hyperedges = 0
         n_values = 0
-
+        is_lig = batch_lig != -1
+        is_poc = batch_pocket != -1
         # Hyperedges with all ligand atoms in same batch
         valid = torch.unique(batch_lig)
         non_zeros = (batch_lig.unsqueeze(1) == valid.unsqueeze(0)).nonzero(
@@ -927,7 +959,7 @@ class AllSetTransformerVectorField(nn.Module):
         col = non_zeros[:, 1]
         n_hyperedges += valid.size(0)
         n_values += row.size(0)
-
+        # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
         # Hyperedges with all pocket atoms in same batch
         valid = torch.unique(batch_pocket)
         non_zeros = (batch_pocket.unsqueeze(1) == valid.unsqueeze(0)).nonzero(
@@ -937,7 +969,7 @@ class AllSetTransformerVectorField(nn.Module):
         col = torch.cat([col, non_zeros[:, 1] + n_hyperedges], dim=0)
         n_hyperedges += valid.size(0)
         n_values += non_zeros.size(0)
-
+        # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
         # Hyperedges with ligand atoms within cutoff_lig
         pos_lig = x_lig[:, :3]
         if self.cutoff_lig < torch.norm(
@@ -959,7 +991,7 @@ class AllSetTransformerVectorField(nn.Module):
 
             n_hyperedges += torch.max(col_radius).item() + 1
             n_values += row_radius.size(0)
-
+        # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
         # Hyperedges with pocket atoms within cutoff_poc
         pos_poc = x_pocket[:, :3]
         row_radius, col_radius = radius(
@@ -977,7 +1009,7 @@ class AllSetTransformerVectorField(nn.Module):
         col = torch.cat([col, col_radius + n_hyperedges], dim=0)
         n_hyperedges += torch.max(col_radius).item() + 1
         n_values += row_radius.size(0)
-
+        # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
         # Hyperedges with ligand and pocket atoms within cutoff_cross
         row_radius, col_radius = radius(
             pos_lig,
@@ -994,7 +1026,8 @@ class AllSetTransformerVectorField(nn.Module):
         col = torch.cat([col, col_radius + n_hyperedges], dim=0)
         n_hyperedges += torch.max(col_radius).item() + 1
         n_values += row_radius.size(0)
-
+        # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+        # Create incidence matrix
         value = torch.ones(n_values, dtype=torch.long, device=device)
         incidence1 = torch.sparse_coo_tensor(
             torch.stack([row, col], dim=0),
@@ -1043,5 +1076,5 @@ class AllSetTransformerVectorField(nn.Module):
         x_lig = x[:N1, :]
 
         # Predict ligand velocities only
-        vel_lig = self.out_vel(x_lig)  # [N_lig, spatial_dim]
+        vel_lig = self.out_vel(x_lig)  # [N_lig, x_dim]
         return vel_lig

@@ -255,7 +255,7 @@ if __name__ == "__main__":
         "--epochs", type=int, default=200, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=128, help="Batch size for training."
+        "--batch_size", type=int, default=8, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",
