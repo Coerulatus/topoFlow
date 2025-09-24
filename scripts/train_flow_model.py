@@ -43,6 +43,7 @@ def train_flow_model(
     mlflow_tracking_uri,
     experiment_name,
     run_name=None,
+    previous_checkpoint=None,
 ):
     """Train a Topological Flow model on the specified dataset.
 
@@ -64,6 +65,7 @@ def train_flow_model(
         mlflow_tracking_uri (str): MLflow tracking URI.
         experiment_name (str): MLflow experiment name.
         run_name (str, optional): Name of the MLflow run. Defaults to None.
+        previous_checkpoint (str, optional): Path to a checkpoint to resume training from. Defaults to None.
     """
     pl.seed_everything(seed)  # For reproducibility
     # ======================================================================
@@ -202,7 +204,11 @@ def train_flow_model(
     # ======================================================================
     # Start Training
     # ======================================================================
-    trainer.fit(flow_model, datamodule=datamodule)
+    trainer.fit(
+        flow_model,
+        datamodule=datamodule,
+        ckpt_path=previous_checkpoint if previous_checkpoint is not None else None,
+    )
 
 
 if __name__ == "__main__":
@@ -250,6 +256,12 @@ if __name__ == "__main__":
         type=str,
         default="./checkpoints/topoflow/",
         help="Directory to save the trained model.",
+    )
+    parser.add_argument(
+        "--previous_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a checkpoint to resume training from (optional).",
     )
     parser.add_argument(
         "--epochs", type=int, default=200, help="Number of training epochs."
@@ -322,4 +334,5 @@ if __name__ == "__main__":
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         experiment_name=args.mlflow_experiment_name,
         run_name=args.run_name if args.run_name else None,
+        previous_checkpoint=args.previous_checkpoint,
     )
