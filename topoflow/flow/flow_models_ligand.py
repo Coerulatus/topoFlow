@@ -147,6 +147,8 @@ class FlowModel(pl.LightningModule):
                 t[last_step_loss_idxs],
                 batch_lig[last_step_loss_idxs],
                 verbose=verbose,
+                mean=torch.tensor(self.normalization_params["mean"]).to(x_lig.device),
+                std=torch.tensor(self.normalization_params["std"]).to(x_lig.device),
             )
             loss_last_step = loss_last_step.mean(dim=-1) * self.w_loss_last_step
             loss_last_step_without_time = loss_last_step.clone().mean().detach()

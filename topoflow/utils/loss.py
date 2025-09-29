@@ -72,10 +72,13 @@ class UFFBoundGuidance(InterpolantGuidance):
 
         return torch.from_numpy(bounds).to(dtype=torch.float32)
 
-    def __call__(self, u_t_theta_lig, lig, t, batch_lig, verbose=True):
+    def __call__(
+        self, u_t_theta_lig, lig, t, batch_lig, verbose=True, mean=None, std=None
+    ):
         """Return a steered version of `x_t` after `n_steps` bound-guided updates."""
         endpoint = lig + u_t_theta_lig * (1 - t)
-
+        if mean is not None and std is not None:
+            endpoint[:, :3] = endpoint[:, :3] * std + mean
         data = Data(x_lig=lig[:, :3], h_lig=lig[:, 3:], batch_lig=batch_lig)
         endpoint_mols = data_to_rdmol(
             data, atom_decoder=self.atom_decoder, sanitize=True, verbose=verbose
