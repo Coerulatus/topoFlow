@@ -115,6 +115,9 @@ class UFFBoundGuidance(InterpolantGuidance):
             tensor_repr[:, :3],
             tensor_repr[:, :3],
         )
+        if pairwise_dist.shape != bounds.shape:
+            print("Shapes do not match in loss_from_bounds. Returning 0 loss.")
+            return torch.tensor(0.0, device=tensor_repr.device, requires_grad=True)
 
         bounds = bounds.to(device=pairwise_dist.device)
 
@@ -153,7 +156,7 @@ class UFFBoundGuidance(InterpolantGuidance):
         """Aggregate distance-bound loss over a batch, skipping None bounds."""
         len_valid_bounds = sum(1 for bound in bounds if bound is not None)
         if len_valid_bounds == 0:
-            return torch.tensor(0.0, device=pred.device)
+            return torch.tensor(0.0, device=pred.device, requires_grad=True)
         batch_ids = torch.unique(batch)
         loss_sum = 0
         for i, tensor_bound in enumerate(bounds):

@@ -918,6 +918,67 @@ class AllSetTransformerVectorField(nn.Module):
             nn.Linear(self.h_dim, self.x_dim),
         )
 
+    def stack_padded(
+        self, x: torch.Tensor, batch: torch.Tensor, pad_value: float = 0.0
+    ):
+        """Vectorized stacking with padding by batch id.
+
+        Args:
+        x:      [N, h] features
+        batch:  [N] int64/long batch ids (can be non-contiguous, e.g., [3,7,3,7,...])
+        pad_value: value to pad with (default 0.0)
+
+        Returns:
+        out:    [B, max_N, h] padded tensor where B = number of unique batch ids (sorted),
+                rows within each B slice keep the original relative order from x.
+        lengths:[B] tensor with actual counts per batch.
+        uniq:   [B] tensor of the unique batch ids in sorted order (so caller can map back).
+        """
+        assert x.dim() == 2 and batch.dim() == 1 and x.size(0) == batch.size(0)
+        device = x.device
+        N, h = x.size()
+
+        # Unique batch ids (sorted) and map each element to its group index 0..B-1
+        uniq, inv = torch.unique(
+            batch, sorted=True, return_inverse=True
+        )  # uniq:[B], inv:[N]
+        B = uniq.numel()
+
+        # Sort by group to make each batch contiguous
+        order = torch.argsort(inv, stable=True)  # [N]
+        x_sorted = x[order]  # [N, h]
+        inv_sorted = inv[order]  # [N]
+
+        # Counts and row offsets per group
+        counts = torch.bincount(inv, minlength=B)  # [B]
+        lengths = counts  # [B]
+        ptr = torch.zeros(B + 1, device=device, dtype=torch.long)
+        ptr[1:] = torch.cumsum(counts, dim=0)  # CSR-style pointers, ptr[b]:ptr[b+1]
+
+        # Max length across groups and destination index per row
+        max_N = int(counts.max().item()) if B > 0 else 0
+        if max_N == 0:
+            out = torch.empty(B, 0, h, device=device, dtype=x.dtype)
+            return out, lengths, uniq
+
+        # Compute per-row position inside its group: pos = arange(N) - ptr[group]
+        arangeN = torch.arange(N, device=device, dtype=torch.long)
+        pos_in_group = arangeN - ptr[inv_sorted]  # [N], 0..(len_b-1)
+
+        # Build destination indices in the padded tensor
+        dest_b = inv_sorted  # [N]
+        dest_i = pos_in_group  # [N]
+        dest_j = (
+            torch.arange(h, device=device).view(1, -1).expand(N, -1)
+        )  # broadcast later
+
+        # Allocate output with padding
+        out = x_sorted.new_full((B, max_N, h), fill_value=pad_value)
+
+        # Write all rows in one scatter using advanced indexing
+        out[dest_b, dest_i] = x_sorted
+        return out, lengths, uniq
+
     def check_batch_separation(
         self, row, col, n_hyperedges, n_values, n_nodes, device, batch_lig, batch_pocket
     ):
@@ -1067,22 +1128,25 @@ class AllSetTransformerVectorField(nn.Module):
         col_graph = torch.arange(edge_ll.shape[1], device=device).repeat(2)
         row = torch.cat([row, row_graph], dim=0)
         col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-        n_hyperedges += torch.max(col_graph).item() + 1
-        n_values += row_graph.size(0)
+        if col_graph.numel() > 0:
+            n_hyperedges += torch.max(col_graph).item() + 1
+            n_values += row_graph.size(0)
 
         row_graph = edge_pp_global.view(-1)
         col_graph = torch.arange(edge_pp_global.shape[1], device=device).repeat(2)
         row = torch.cat([row, row_graph], dim=0)
         col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-        n_hyperedges += torch.max(col_graph).item() + 1
-        n_values += row_graph.size(0)
+        if col_graph.numel() > 0:
+            n_hyperedges += torch.max(col_graph).item() + 1
+            n_values += row_graph.size(0)
 
         row_graph = edge_lp_global.view(-1)
         col_graph = torch.arange(edge_lp_global.shape[1], device=device).repeat(2)
         row = torch.cat([row, row_graph], dim=0)
         col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-        n_hyperedges += torch.max(col_graph).item() + 1
-        n_values += row_graph.size(0)
+        if col_graph.numel() > 0:
+            n_hyperedges += torch.max(col_graph).item() + 1
+            n_values += row_graph.size(0)
         # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
         # Create incidence matrix
         value = torch.ones(n_values, dtype=torch.long, device=device)
@@ -1094,6 +1158,242 @@ class AllSetTransformerVectorField(nn.Module):
         )
         incidence1 = incidence1.coalesce()
         return incidence1
+
+    def create_incidence_batched(self, x_lig, x_pocket, batch_lig, batch_pocket):
+        """Return a batched sparse incidence of shape [B, max_N, max_H].
+
+        The first dim (B) indexes batches, the second dim indexes nodes
+        within each batch (0..N_b-1), and the third dim indexes hyperedges
+        within each batch (0..H_b-1). Values are 1s (long).
+        """
+        device = x_lig.device
+        # Keep only valid nodes if -1 is used as sentinel
+        lig_mask = batch_lig >= 0
+        poc_mask = batch_pocket >= 0
+
+        x_lig = x_lig[lig_mask]
+        x_pocket = x_pocket[poc_mask]
+        batch_lig = batch_lig[lig_mask]
+        batch_pocket = batch_pocket[poc_mask]
+
+        # Unique batch ids and compact mapping 0..B-1
+        uniq_lig, inv_lig = torch.unique(
+            batch_lig, sorted=True, return_inverse=True
+        )  # [N_lig]
+        uniq_poc, inv_poc = torch.unique(
+            batch_pocket, sorted=True, return_inverse=True
+        )  # [N_poc]
+        # Align pockets to the same batch id set as ligands:
+        # Require that uniq_lig == uniq_poc; if not, align via mapping
+        assert uniq_lig.numel() == uniq_poc.numel()
+        assert torch.equal(uniq_lig, uniq_poc), "Ligand and pocket batches must match"
+        B = uniq_lig.numel()
+
+        Nl = x_lig.size(0)
+        Np = x_pocket.size(0)
+
+        # Compute per-batch CSR pointers for lig/poc to get local node ids 0..N_b-1
+        # Ligands
+        order_l = torch.argsort(inv_lig, stable=True)
+        inv_l_sorted = inv_lig[order_l]
+        counts_l = torch.bincount(inv_lig, minlength=B)
+        ptr_l = torch.zeros(B + 1, device=device, dtype=torch.long)
+        ptr_l[1:] = counts_l.cumsum(0)
+        pos_l = torch.arange(Nl, device=device) - ptr_l[inv_l_sorted]  # 0..(len_b-1)
+        # Pocket
+        order_p = torch.argsort(inv_poc, stable=True)
+        inv_p_sorted = inv_poc[order_p]
+        counts_p = torch.bincount(inv_poc, minlength=B)
+        ptr_p = torch.zeros(B + 1, device=device, dtype=torch.long)
+        ptr_p[1:] = counts_p.cumsum(0)
+        pos_p = torch.arange(Np, device=device) - ptr_p[inv_p_sorted]
+
+        # Build per-batch incidence coordinates (node_i, hyperedge_j) for three blocks:
+        # Note: replace the following three helper builders with your original logic,
+        # but ensure they return per-batch coordinates and hyperedge ids that are COMPACT
+        # (0..H_b-1) per batch. Use torch.unique(..., return_inverse=True) to compact j.
+        rows_all = []
+        cols_all = []
+        batch_all = []
+
+        # Block 1: "all ligand atoms in same batch" — one hyperedge per batch, include all ligand nodes of that batch
+        # Build rows = local ligand node ids, cols = hyperedge id (0..B-1) local
+        if Nl > 0:
+            # For each ligand row in sorted order, batch = inv_l_sorted, local node = pos_l
+            rows1 = pos_l.clone()  # [Nl]
+            cols1 = (
+                inv_l_sorted.clone()
+            )  # [Nl] hyperedge index == batch (one per batch)
+            batch1 = inv_l_sorted.clone()  # [Nl]
+            rows_all.append(rows1)
+            cols_all.append(cols1)
+            batch_all.append(batch1)
+
+        # Block 2: "all pocket atoms in same batch" — another one hyperedge per batch (offset by H1)
+        if Np > 0:
+            rows2 = pos_p.clone()  # [Np]
+            cols2 = inv_p_sorted.clone()  # [Np] local hyperedge (0..B-1)
+            batch2 = inv_p_sorted.clone()  # [Np]
+            # We will offset pocket hyperedges by +B locally in each batch later.
+            rows_all.append(rows2)
+            cols_all.append(cols2)  # mark as second family
+            batch_all.append(batch2)
+
+        # Block 3+: Graph/radius-based hyperedges
+        # Use your existing create_edge_index or radius(...) calls, but ensure per-batch constraints.
+        # Example for a generic per-batch edge set E producing incidence:
+        # Suppose we have per-batch arrays row_nodes (node ids) and hedges (non-compact ids).
+        # Do: _, compact = torch.unique(hedges, return_inverse=True) to get local 0..H_b'-1
+        # and append rows/cols/batch similarly.
+
+        # Concatenate all blocks’ coordinates
+        if len(rows_all) == 0:
+            # No nodes: return empty sparse [B, 0, 0]
+            return torch.sparse_coo_tensor(
+                torch.zeros((3, 0), dtype=torch.long, device=device),
+                torch.ones(0, dtype=torch.long, device=device),
+                size=(B, 0, 0),
+                device=device,
+            )
+
+        rows_cat = torch.cat(
+            rows_all, dim=0
+        )  # node indices local per-batch (to be padded later)
+        cols_cat = torch.cat(
+            cols_all, dim=0
+        )  # local hyperedge family ids (not yet globally compact)
+        batch_cat = torch.cat(batch_all, dim=0)  # which batch each entry belongs to
+
+        # Now compact hyperedge ids per batch and compute per-batch H_b
+        # To compact per-batch, combine (batch, cols_cat) pairs and unique them
+        key = batch_cat.to(torch.int64) * (
+            cols_cat.max().item() + 1 if cols_cat.numel() > 0 else 1
+        ) + cols_cat.to(torch.int64)
+        # unique keys → per-entry compact id in 0..(total unique per batch across families) - 1 (global compact, not per batch)
+        uniq_keys, inv_keys = torch.unique(key, sorted=True, return_inverse=True)
+        # Recover per-batch hyperedge ids by compacting within each batch:
+        # Map uniq_keys back to (batch, original col)
+        uniq_batch = uniq_keys // (
+            cols_cat.max().item() + 1 if cols_cat.numel() > 0 else 1
+        )
+        # Get counts per batch to determine H_b
+        Hb = torch.bincount(uniq_batch, minlength=B)  # [B]
+        max_H = int(Hb.max().item()) if B > 0 else 0
+        max_N = (
+            int(
+                torch.max(torch.stack([counts_l, counts_p], dim=0), dim=0)
+                .values.max()
+                .item()
+            )
+            if B > 0
+            else 0
+        )
+
+        # Build a per-batch offset for hyperedges so that each batch occupies 0..H_b-1 within max_H
+        # Compute the position within its batch for each uniq_key by cumulative counts:
+        order_u = torch.argsort(uniq_batch, stable=True)
+        uniq_batch_sorted = uniq_batch[order_u]
+        # pos_in_batch = torch.arange(uniq_batch.numel(), device=device) - torch.cumsum(
+        #     torch.bincount(uniq_batch_sorted, minlength=B)[uniq_batch_sorted == uniq_batch_sorted], dim=0)  # placeholder, see note below
+        # Simpler: compute local ids by hashing (batch, col) pairs again with unique(return_inverse=True) per batch:
+        # We can do this vectorized by grouping indices by batch via sorting:
+        # Sort entries by batch
+        ord_e = torch.argsort(batch_cat, stable=True)
+        b_sorted = batch_cat[ord_e]
+        c_sorted = cols_cat[ord_e]
+        # Within each batch, compact c_sorted
+        # Compute CSR pointers for entries per batch
+        cnt_e = torch.bincount(b_sorted, minlength=B)
+        ptr_e = torch.zeros(B + 1, device=device, dtype=torch.long)
+        ptr_e[1:] = cnt_e.cumsum(0)
+        # Create a global array of local hyperedge ids (0..H_b'-1) per batch
+        # Use unique with consecutive segments: unique_consecutive requires sorting by c_sorted inside each batch
+        # So sort by (batch, c_sorted):
+        # pair_order = torch.argsort(c_sorted, stable=True)
+        # But we need segmented unique; for simplicity, do a two-step:
+        # Build a compressed key per entry: k = b_sorted * K + c_sorted
+        K = int(c_sorted.max().item()) + 1 if c_sorted.numel() > 0 else 1
+        k = b_sorted.to(torch.int64) * K + c_sorted.to(torch.int64)
+        _, inv_global = torch.unique(k, sorted=True, return_inverse=True)
+        # Derive per-batch local ids by subtracting per-batch minima of inv_global:
+        min_per_batch = torch.full((B,), 0, device=device, dtype=torch.long)
+        # Compute the minimum inv_global for each batch
+        # We can do it with scatter_reduce
+        min_per_batch = torch.full(
+            (B,),
+            inv_global.max().item() + 1 if inv_global.numel() > 0 else 0,
+            device=device,
+            dtype=torch.long,
+        )
+        min_per_batch.scatter_reduce_(
+            0, b_sorted, inv_global, reduce="amin", include_self=True
+        )
+        local_col_ids = (
+            inv_global - min_per_batch[b_sorted]
+        )  # 0..H_b'-1 per batch, aligned with b_sorted
+
+        # Undo sorting to original entry order
+        inv_ord_e = torch.empty_like(ord_e)
+        inv_ord_e[ord_e] = torch.arange(ord_e.numel(), device=device)
+        local_cols = local_col_ids[
+            inv_ord_e
+        ]  # aligned with batch_cat / rows_cat / cols_cat
+
+        # Now we have, for each non-zero entry:
+        #   batch index: batch_cat
+        #   local node index in that batch: need to map rows_cat back to local 0..N_b-1 correctly
+        # rows_cat already holds local ligand or pocket ids depending on the block.
+        # Next, compute per-batch max_N and max_H:
+        Hb = torch.bincount(
+            (
+                torch.unique(
+                    batch_cat * (local_cols.max() + 1 if local_cols.numel() > 0 else 1)
+                    + local_cols
+                )[0]
+                if False
+                else batch_cat
+            ),
+            minlength=B,
+        )  # placeholder to keep types
+        # Simpler: H_b is the number of unique (batch, local_cols) pairs:
+        uniq_pair = torch.unique(
+            batch_cat.to(torch.int64)
+            * (local_cols.max().item() + 1 if local_cols.numel() > 0 else 1)
+            + local_cols.to(torch.int64)
+        )
+        # But we need per-batch counts:
+        # Use a stable method:
+        key2 = batch_cat.to(torch.int64) * (
+            local_cols.max().item() + 1 if local_cols.numel() > 0 else 1
+        ) + local_cols.to(torch.int64)
+        uniq2 = torch.unique(key2, sorted=True, return_inverse=False)
+        # Extract batch back:
+        Hb = torch.bincount(
+            (
+                uniq2 // (local_cols.max().item() + 1 if local_cols.numel() > 0 else 1)
+            ).to(torch.long),
+            minlength=B,
+        )
+
+        max_N = int(torch.maximum(counts_l, counts_p).max().item()) if B > 0 else 0
+        max_H = int(Hb.max().item()) if B > 0 else 0
+
+        # Construct 3D sparse COO indices [3, nnz]: [batch, node, hedge]
+        # Values are ones
+        if max_N == 0 or max_H == 0:
+            return torch.sparse_coo_tensor(
+                torch.zeros((3, 0), dtype=torch.long, device=device),
+                torch.ones(0, dtype=torch.long, device=device),
+                size=(B, max_N, max_H),
+                device=device,
+            )
+
+        idx = torch.stack([batch_cat, rows_cat, local_cols], dim=0)  # [3, nnz]
+        val = torch.ones(idx.size(1), dtype=torch.long, device=device)
+        inc = torch.sparse_coo_tensor(
+            idx, val, size=(B, max_N, max_H), device=device
+        ).coalesce()
+        return inc
 
     def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket):
         """Forward pass."""
@@ -1126,11 +1426,17 @@ class AllSetTransformerVectorField(nn.Module):
         # Creates features
         x = torch.cat([lig_h, poc_h], dim=0)
 
+        batch_all = torch.zeros_like(batch_lig)
+        batch_all[is_lig] = batch_lig[is_lig]
+        batch_all[is_poc] = batch_pocket[is_poc]
+        # x_stacked, _, _ = self.stack_padded(x, batch_all)
+        # incidence1_stacked = self.create_incidence_batched(
+        #     x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
+        # )  # [B, max_N, max_H]
         # Encoder
         x = self.model(x, incidence1)[0]
 
-        N1 = lig_h.size(0)
-        x_lig = x[:N1, :]
+        x_lig = x[batch_lig != -1, :]
 
         # Predict ligand velocities only
         vel_lig = self.out_vel(x_lig)  # [N_lig, x_dim]
