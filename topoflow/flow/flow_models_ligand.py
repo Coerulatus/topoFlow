@@ -129,7 +129,15 @@ class FlowModel(pl.LightningModule):
 
         # self.forward = torch.compile(self.forward)
 
-    def _get_loss(self, u_t_theta_lig, u_t_ref_lig, t=None, x_lig=None, batch_lig=None):
+    def _get_loss(
+        self,
+        u_t_theta_lig,
+        u_t_ref_lig,
+        t=None,
+        x_lig=None,
+        batch_lig=None,
+        verbose=True,
+    ):
         """Calculates the loss only on the ligand vector field."""
         last_step_loss_idxs = (t > self.t_last_step).squeeze()
         if torch.any(last_step_loss_idxs) and x_lig is not None:
@@ -138,6 +146,7 @@ class FlowModel(pl.LightningModule):
                 x_lig[last_step_loss_idxs],
                 t[last_step_loss_idxs],
                 batch_lig[last_step_loss_idxs],
+                verbose=verbose,
             )
             loss_last_step = loss_last_step.mean(dim=-1) * self.w_loss_last_step
             loss_last_step_without_time = loss_last_step.clone().mean().detach()
@@ -260,7 +269,7 @@ class FlowModel(pl.LightningModule):
             loss_without_time,
             loss_mse_without_time,
             loss_last_step_without_time,
-        ) = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig)
+        ) = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig, verbose=False)
 
         self.log("train/loss", loss, on_epoch=True, prog_bar=True, on_step=False)
         self.log(

@@ -7,6 +7,8 @@ from openbabel import openbabel
 from tqdm import tqdm
 import torch
 
+openbabel.cvar.obErrorLog.StopLogging()
+
 
 def make_mol_openbabel(positions, atom_types, atom_decoder):
     """Build an RDKit molecule using openbabel for creating bonds.
@@ -83,7 +85,9 @@ def mol_to_data(mol, atom_encoder, batch_id=0):
     return coords, one_hot, batch
 
 
-def data_to_rdmol(data, atom_decoder, sanitize=False, show_progress=False):
+def data_to_rdmol(
+    data, atom_decoder, sanitize=False, show_progress=False, verbose=True
+):
     """Convert PyTorch Geometric Data object to RDKit molecule."""
     rdkit_logger = RDLogger.logger()
     rdkit_logger.setLevel(RDLogger.CRITICAL)
@@ -110,7 +114,8 @@ def data_to_rdmol(data, atom_decoder, sanitize=False, show_progress=False):
                 try:
                     Chem.SanitizeMol(rdmol)
                 except Exception as e:
-                    print(f"Sanitization failed for batch {batch_id}: {e}")
+                    if verbose:
+                        print(f"Sanitization failed for batch {batch_id}: {e}")
                     rd_mols.append(None)
                     continue
             rd_mols.append(rdmol)
