@@ -195,7 +195,7 @@ def train_flow_model(
         callbacks=[checkpoint_callback],
         logger=logger,
         enable_progress_bar=True,
-        check_val_every_n_epoch=100,
+        check_val_every_n_epoch=5,
         gradient_clip_val=0.5,
         gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
