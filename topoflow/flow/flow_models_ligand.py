@@ -12,6 +12,7 @@ from tqdm import tqdm
 from topoflow.flow.simulator import TorchDiffEqSimulator
 from topoflow.flow.utils_plot import plot_results
 from topoflow.flow.utils import CustomScheduler
+from topoflow.utils.loss import UFFBoundGuidance
 from topoflow.evaluators import RDKitEvaluator, GATEvaluator
 from topoflow.utils.metrics import (
     wasserstein_1d,
@@ -89,7 +90,7 @@ class FlowModel(pl.LightningModule):
         self.val_distribution = val_distribution
         self.atom_decoder = atom_decoder
         self.loss_function = torch.nn.MSELoss(reduction="none")
-        # self.atom_loss_function = torch.nn.CrossEntropyLoss(reduction='none')
+        self.loss_function_last_step = UFFBoundGuidance(atom_decoder=atom_decoder)
         self.train_loss = []
         self.start_lr = start_lr
         self.max_lr = max_lr
@@ -120,21 +121,56 @@ class FlowModel(pl.LightningModule):
             }
             self.unnorm = True
         self.time_factor = time_factor
+        self.t_last_step = 0.9
+        self.w_loss_last_step = 0.2
         self.sample_steps = 80
         self.max_batched_samples = max_batched_samples
         self.loss_lig_weight = 100
 
         # self.forward = torch.compile(self.forward)
 
-    def _get_loss(self, u_t_theta_lig, u_t_ref_lig, t=None, batch=None):
+    def _get_loss(self, u_t_theta_lig, u_t_ref_lig, t=None, x_lig=None, batch_lig=None):
         """Calculates the loss only on the ligand vector field."""
-        loss = self.loss_function(u_t_theta_lig, u_t_ref_lig)
-        loss = loss.mean(dim=-1)  # Mean over the last dimension
+        last_step_loss_idxs = (t > self.t_last_step).squeeze()
+        if torch.any(last_step_loss_idxs) and x_lig is not None:
+            loss_last_step = self.loss_function_last_step(
+                u_t_theta_lig[last_step_loss_idxs],
+                x_lig[last_step_loss_idxs],
+                t[last_step_loss_idxs],
+                batch_lig[last_step_loss_idxs],
+            )
+            loss_last_step = loss_last_step.mean(dim=-1) * self.w_loss_last_step
+            loss_last_step_without_time = loss_last_step.clone().mean().detach()
+        else:
+            loss_last_step = 0
+            loss_last_step_without_time = 0
+
+        if torch.any(~last_step_loss_idxs):
+            loss_mse = self.loss_function(
+                u_t_theta_lig[~last_step_loss_idxs], u_t_ref_lig[~last_step_loss_idxs]
+            )
+            loss_mse = loss_mse.mean(dim=-1)  # Mean over the last dimension
+            loss_mse_without_time = loss_mse.clone().mean().detach()
+        else:
+            loss_mse = 0
+            loss_mse_without_time = 0
+
+        loss = torch.zeros(u_t_theta_lig.shape[0], device=u_t_theta_lig.device)
+        loss[last_step_loss_idxs] = loss_last_step
+        loss[~last_step_loss_idxs] = loss_mse
         loss_without_time = loss.clone().mean().detach()
-        if self.time_factor is not None:
+
+        if self.time_factor is not None and t is not None:
             loss *= self.time_factor(t).view(-1)
         loss = loss.mean()
-        return loss, loss_without_time
+        return (
+            loss,
+            loss_mse,
+            loss_last_step,
+            loss_without_time,
+            loss_mse_without_time,
+            loss_last_step_without_time,
+        )
 
     def _get_data(self, batch):
         """Extracts data from p_data."""
@@ -198,7 +234,7 @@ class FlowModel(pl.LightningModule):
 
         t_batched_lig = t_batched[lig_indices]
 
-        return u_t_theta_lig, u_t_ref_lig, t_batched_lig
+        return u_t_theta_lig, u_t_ref_lig, t_batched_lig, x_lig
 
     def training_step(self, batch, batch_idx):
         """Performs a single training step.
@@ -213,13 +249,40 @@ class FlowModel(pl.LightningModule):
             The training loss for the current step.
         """
         batch = self._get_data(batch)
-        u_t_theta, u_t_ref, t = self.forward(batch)
+        batch_lig = batch["batch_lig"]
+        batch_lig = batch_lig[batch_lig != -1]
+        u_t_theta, u_t_ref, t, x_lig = self.forward(batch)
         # loss = self.loss_function(u_t_theta, u_t_ref)
-        loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t, batch)
+        (
+            loss,
+            loss_mse,
+            loss_last_step,
+            loss_without_time,
+            loss_mse_without_time,
+            loss_last_step_without_time,
+        ) = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig)
 
-        self.log("train/loss", loss, on_epoch=True, prog_bar=True)
+        self.log("train/loss", loss, on_epoch=True, prog_bar=True, on_step=False)
         self.log(
-            "train/loss_without_time", loss_without_time, on_epoch=True, prog_bar=False
+            "train/loss_without_time",
+            loss_without_time,
+            on_epoch=True,
+            prog_bar=False,
+            on_step=False,
+        )
+        self.log(
+            "train/loss_last_step",
+            loss_last_step,
+            on_epoch=True,
+            prog_bar=False,
+            on_step=False,
+        )
+        self.log(
+            "train/loss_last_step_without_time",
+            loss_last_step_without_time,
+            on_epoch=True,
+            prog_bar=False,
+            on_step=False,
         )
         self.train_loss.append(loss.item())
 
@@ -260,9 +323,18 @@ class FlowModel(pl.LightningModule):
             The validation loss for the current step.
         """
         batch = self._get_data(batch)
-        u_t_theta, u_t_ref, t = self.forward(batch)
+        batch_lig = batch["batch_lig"]
+        batch_lig = batch_lig[batch_lig != -1]
+        u_t_theta, u_t_ref, t, x_lig = self.forward(batch)
         # loss = self.loss_function(u_t_theta, u_t_ref)
-        loss, loss_without_time = self._get_loss(u_t_theta, u_t_ref, t, batch)
+        (
+            loss,
+            loss_mse,
+            loss_last_step,
+            loss_without_time,
+            loss_mse_without_time,
+            loss_last_step_without_time,
+        ) = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig)
 
         self.log("val/loss", loss, on_epoch=True, prog_bar=False)
         self.log(
@@ -305,25 +377,6 @@ class FlowModel(pl.LightningModule):
                 self.log(f"val/{metric}", value, on_epoch=True, prog_bar=False)
 
         self.n_epoch += 1
-        return loss
-
-    def test_step(self, batch, batch_idx):
-        """Performs a single test step.
-
-        Calculates the MSE loss.
-
-        Args:
-            batch: The current batch of data.
-            batch_idx: The index of the current batch.
-
-        Returns:
-            The test loss for the current step.
-        """
-        u_t_theta, u_t_ref = self.forward(batch)
-        loss = self.loss_function(u_t_theta, u_t_ref)
-
-        self.log("test/loss", loss)
-
         return loss
 
     @torch.no_grad()

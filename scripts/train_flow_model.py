@@ -195,7 +195,7 @@ def train_flow_model(
         callbacks=[checkpoint_callback],
         logger=logger,
         enable_progress_bar=True,
-        check_val_every_n_epoch=5,
+        check_val_every_n_epoch=100,
         gradient_clip_val=0.5,
         gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
@@ -267,7 +267,7 @@ if __name__ == "__main__":
         "--epochs", type=int, default=200, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=32, help="Batch size for training."
+        "--batch_size", type=int, default=4, help="Batch size for training."
     )
     parser.add_argument(
         "--start_lr",
@@ -305,7 +305,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopologicalFlowAST",
+        default="TopologicalFlowAST_guidance",
         help="MLflow experiment name.",
     )
     parser.add_argument(

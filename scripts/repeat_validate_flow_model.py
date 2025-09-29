@@ -91,6 +91,7 @@ def run_multiple_validations(
         norm_path="./data/CrossDocked/processed/normalization_params.npz",
     )
     model.eval()
+    model.max_batched_samples = batch_size
 
     # The val_distribution and atom_decoder are needed for the validation step.
     # They should be saved as hyperparameters, but we ensure they are set correctly.
@@ -202,7 +203,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=16,
+        default=4,
         help="Batch size for validation.",
     )
     parser.add_argument(
@@ -232,7 +233,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_file",
         type=str,
-        default="./results/results.md",
+        default="./results/results3.md",
         help="File to save the aggregated results.",
     )
 

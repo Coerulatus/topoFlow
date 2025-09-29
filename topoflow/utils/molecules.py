@@ -2,7 +2,7 @@
 
 import tempfile
 import numpy as np
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from openbabel import openbabel
 from tqdm import tqdm
 import torch
@@ -85,6 +85,9 @@ def mol_to_data(mol, atom_encoder, batch_id=0):
 
 def data_to_rdmol(data, atom_decoder, sanitize=False, show_progress=False):
     """Convert PyTorch Geometric Data object to RDKit molecule."""
+    rdkit_logger = RDLogger.logger()
+    rdkit_logger.setLevel(RDLogger.CRITICAL)
+
     coords = data["x_lig"].to("cpu")
     atom_types = data["h_lig"].to("cpu")
     batch = data["batch_lig"].to("cpu")
@@ -108,6 +111,8 @@ def data_to_rdmol(data, atom_decoder, sanitize=False, show_progress=False):
                     Chem.SanitizeMol(rdmol)
                 except Exception as e:
                     print(f"Sanitization failed for batch {batch_id}: {e}")
+                    rd_mols.append(None)
+                    continue
             rd_mols.append(rdmol)
 
     return rd_mols
