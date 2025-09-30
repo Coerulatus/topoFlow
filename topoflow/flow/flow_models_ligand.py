@@ -156,19 +156,11 @@ class FlowModel(pl.LightningModule):
             loss_last_step = 0
             loss_last_step_without_time = 0
 
-        if torch.any(~last_step_loss_idxs):
-            loss_mse = self.loss_function(
-                u_t_theta_lig[~last_step_loss_idxs], u_t_ref_lig[~last_step_loss_idxs]
-            )
-            loss_mse = loss_mse.mean(dim=-1)  # Mean over the last dimension
-            loss_mse_without_time = loss_mse.clone().mean().detach()
-        else:
-            loss_mse = 0
-            loss_mse_without_time = 0
+        loss_mse = self.loss_function(u_t_theta_lig, u_t_ref_lig)
+        loss_mse = loss_mse.mean(dim=-1)  # Mean over the last dimension
+        loss_mse_without_time = loss_mse.clone().mean().detach()
 
-        loss = torch.zeros(u_t_theta_lig.shape[0], device=u_t_theta_lig.device)
-        loss[last_step_loss_idxs] = loss_last_step
-        loss[~last_step_loss_idxs] = loss_mse
+        loss = loss_mse + loss_last_step
         loss_without_time = loss.clone().mean().detach()
 
         if self.time_factor is not None and t is not None:
