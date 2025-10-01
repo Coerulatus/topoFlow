@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import time
 
 import torch
+import torch.nn.functional as F
 from torchdiffeq import odeint
 
 
@@ -170,7 +171,7 @@ class EulerSimulator(Simulator):
         return xt + drift * dt
 
 
-class TorchDiffEqSimulator(Simulator):
+class TorchDiffEqSimulator:
     """Class for simulating ODEs using torchdiffeq."""
 
     def __init__(self, ode: ODE, solver: str = "rk4"):
