@@ -1,0 +1,1 @@
+python scripts/train_flow_model_discrete.py --vector_field_model ast --hidden_dim 128 --epochs 200 --batch_size 8 --mlflow_experiment_name TopoFlow_AST_Discrete --run_name 10_01_200e_ast_discrete

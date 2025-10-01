@@ -122,7 +122,7 @@ class FlowModel(pl.LightningModule):
             self.unnorm = True
         self.time_factor = time_factor
         self.t_last_step = 0.9
-        self.w_loss_last_step = 0.2
+        self.w_loss_last_step = 1.0
         self.sample_steps = 80
         self.max_batched_samples = max_batched_samples
         self.loss_lig_weight = 100

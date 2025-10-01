@@ -1,1 +1,1 @@
-python scripts/train_flow_model.py --vector_field_model ast --hidden_dim 128 --epochs 200 --batch_size 8 --mlflow_experiment_name TopoFlow_AST_Last_Step --run_name 09_29_200e_ast_last_step
+python scripts/train_flow_model.py --vector_field_model ast --hidden_dim 128 --epochs 200 --batch_size 8 --mlflow_experiment_name TopoFlow_AST_Last_Step --run_name 09_30_200e_ast_last_step2

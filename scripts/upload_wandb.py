@@ -22,6 +22,11 @@ def main():
         help="W&B entity (team/org or username) to import into.",
     )
     parser.add_argument(
+        "--api-key",
+        default=None,
+        help="W&B API key (or set WANDB_API_KEY environment variable).",
+    )
+    parser.add_argument(
         "--project", required=True, help="W&B project name to import into."
     )
     parser.add_argument(
@@ -70,8 +75,16 @@ def main():
     ):
         tracking_uri = f"file:{os.path.abspath(tracking_uri)}"
 
-    dst_base_url = "https://api.wandb.ai"
-    dst_api_key = wandb.api.api_key
+    dst_base_url = os.environ.get(
+        "WANDB_BASE_URL", "https://api.wandb.ai"
+    )  # or your on-prem URL
+    if args.api_key:
+        dst_api_key = args.api_key.strip()
+    else:
+        dst_api_key = os.environ.get("WANDB_API_KEY", "").strip()
+
+    wandb.login(key=dst_api_key, relogin=True, host=dst_base_url)
+
     importer = MlflowImporter(
         dst_base_url=dst_base_url,
         dst_api_key=dst_api_key,
