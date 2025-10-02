@@ -181,9 +181,6 @@ class FlowModel(pl.LightningModule):
             "loss_atoms": loss_atoms.mean(),
             "loss_last_step": loss_last_step.mean(),
             "loss_without_time": loss_without_time.mean(),
-            "loss_mse_without_time": loss_mse_without_time,
-            "loss_atoms_without_time": loss_atoms_without_time,
-            "loss_last_step_without_time": loss_last_step_without_time,
         }
 
     def _get_data(self, batch):
