@@ -52,6 +52,8 @@ class FlowModel(pl.LightningModule):
         min_lr=1e-5,
         max_epochs=1000,
         max_frac=0.1,
+        w_loss_last_step=0.2,
+        w_loss_atom=0.2,
         time_factor=None,
     ):
         """Initializes the FlowModel.
@@ -76,6 +78,8 @@ class FlowModel(pl.LightningModule):
             min_lr: Minimum learning rate for the scheduler. Defaults to 1e-5.
             max_epochs: Maximum number of epochs for training. Defaults to 1000.
             max_frac: Fraction of the maximum learning rate to use. Defaults to 0.1.
+            w_loss_last_step: Weight for the loss at the last time step. Defaults to 0.2.
+            w_loss_atom: Weight for the atom type loss. Defaults to 0.2.
             time_factor: Optional function to scale the loss by time.
         """
         super().__init__()
@@ -126,7 +130,8 @@ class FlowModel(pl.LightningModule):
             self.unnorm = True
         self.time_factor = time_factor
         self.t_last_step = 0.9
-        self.w_loss_last_step = 0.2
+        self.w_loss_last_step = w_loss_last_step
+        self.w_loss_atom = w_loss_atom
         self.sample_steps = 80
         self.max_batched_samples = max_batched_samples
         self.gumbel_temp = 1.0
@@ -155,19 +160,14 @@ class FlowModel(pl.LightningModule):
                 std=torch.tensor(self.normalization_params["std"]).to(x_lig.device),
             )
             loss_last_step = loss_last_step.mean(dim=-1) * self.w_loss_last_step
-            loss_last_step_without_time = loss_last_step.clone().mean().detach()
         else:
             loss_last_step = torch.tensor(0, dtype=torch.float32)
-            loss_last_step_without_time = torch.tensor(0, dtype=torch.float32)
 
         loss_mse = self.loss_function_coords(u_t_theta_lig[:, :3], u_t_ref_lig[:, :3])
         loss_atoms = self.loss_function_atoms(u_t_theta_lig[:, 3:], u_t_ref_lig[:, 3:])
 
-        loss_mse = loss_mse.mean(dim=-1)  # Mean over the last dimension
-        loss_atoms = loss_atoms.mean(dim=-1)
-
-        loss_mse_without_time = loss_mse.clone().mean().detach()
-        loss_atoms_without_time = loss_atoms.clone().mean().detach()
+        loss_mse = loss_mse.mean(dim=-1)
+        loss_atoms = loss_atoms.mean(dim=-1) * self.w_loss_atom
 
         loss = loss_mse + loss_atoms + loss_last_step
         loss_without_time = loss.clone().mean().detach()

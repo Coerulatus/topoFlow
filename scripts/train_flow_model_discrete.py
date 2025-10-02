@@ -43,6 +43,10 @@ def train_flow_model(
     max_lr,
     min_lr,
     max_frac,
+    min_time_factor,
+    max_time_factor,
+    w_loss_last_step,
+    w_loss_atom,
     seed,
     mlflow_tracking_uri,
     experiment_name,
@@ -64,7 +68,11 @@ def train_flow_model(
         start_lr (float): Initial learning rate for the optimizer.
         max_lr (float): Maximum learning rate for the scheduler.
         min_lr (float): Minimum learning rate for the scheduler.
-        max_frac (float): Fraction of the maximum learning rate to use.
+        max_frac (float): When to stop increasing the learning rate.
+        min_time_factor (float): Minimum time factor for the flow model.
+        max_time_factor (float): Maximum time factor for the flow model.
+        w_loss_last_step (float): Weight for the loss at the last time step.
+        w_loss_atom (float): Weight for the atom type loss.
         seed (int): Random seed for reproducibility.
         mlflow_tracking_uri (str): MLflow tracking URI.
         experiment_name (str): MLflow experiment name.
@@ -158,8 +166,7 @@ def train_flow_model(
         )
 
     time_factor = InverseTimeFactorNoClamping(
-        max_value=50.0,
-        min_value=0.05,
+        max_value=max_time_factor, min_value=min_time_factor
     )
 
     flow_model = FlowModel(
@@ -179,6 +186,8 @@ def train_flow_model(
         max_epochs=epochs,
         max_frac=max_frac,
         time_factor=time_factor,
+        w_loss_last_step=w_loss_last_step,
+        w_loss_atom=w_loss_atom,
     )
     # ======================================================================
     # Training Setup
@@ -303,6 +312,30 @@ if __name__ == "__main__":
         help="Fraction of epochs to use for warmup of learning rate.",
     )
     parser.add_argument(
+        "--min_time_factor",
+        type=float,
+        default=0.05,
+        help="Minimum time factor for the flow model.",
+    )
+    parser.add_argument(
+        "--max_time_factor",
+        type=float,
+        default=50.0,
+        help="Maximum time factor for the flow model.",
+    )
+    parser.add_argument(
+        "--w_loss_last_step",
+        type=float,
+        default=0.2,
+        help="Weight for the loss at the last time step.",
+    )
+    parser.add_argument(
+        "--w_loss_atom",
+        type=float,
+        default=0.2,
+        help="Weight for the atom type loss.",
+    )
+    parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
     )
     parser.add_argument(
@@ -339,6 +372,10 @@ if __name__ == "__main__":
         max_lr=args.max_lr,
         min_lr=args.min_lr,
         max_frac=args.max_frac_lr,
+        min_time_factor=args.min_time_factor,
+        max_time_factor=args.max_time_factor,
+        w_loss_last_step=args.w_loss_last_step,
+        w_loss_atom=args.w_loss_atom,
         seed=args.seed,
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         experiment_name=args.mlflow_experiment_name,

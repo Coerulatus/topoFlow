@@ -39,6 +39,8 @@ def train_flow_model(
     max_lr,
     min_lr,
     max_frac,
+    min_time_factor,
+    max_time_factor,
     seed,
     mlflow_tracking_uri,
     experiment_name,
@@ -60,7 +62,9 @@ def train_flow_model(
         start_lr (float): Initial learning rate for the optimizer.
         max_lr (float): Maximum learning rate for the scheduler.
         min_lr (float): Minimum learning rate for the scheduler.
-        max_frac (float): Fraction of the maximum learning rate to use.
+        max_frac (float): When to stop increasing the learning rate.
+        min_time_factor (float): Minimum time factor for the flow model.
+        max_time_factor (float): Maximum time factor for the flow model.
         seed (int): Random seed for reproducibility.
         mlflow_tracking_uri (str): MLflow tracking URI.
         experiment_name (str): MLflow experiment name.
@@ -151,8 +155,8 @@ def train_flow_model(
         )
 
     time_factor = InverseTimeFactorNoClamping(
-        max_value=50.0,
-        min_value=0.05,
+        max_value=max_time_factor,
+        min_value=min_time_factor,
     )
 
     flow_model = FlowModel(
@@ -292,6 +296,18 @@ if __name__ == "__main__":
         type=float,
         default=0.1,
         help="Fraction of epochs to use for warmup of learning rate.",
+    )
+    parser.add_argument(
+        "--min_time_factor",
+        type=float,
+        default=0.05,
+        help="Minimum time factor for the flow model.",
+    )
+    parser.add_argument(
+        "--max_time_factor",
+        type=float,
+        default=50.0,
+        help="Maximum time factor for the flow model.",
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
