@@ -9,7 +9,7 @@ import lightning.pytorch as pl
 from topoflow.data.dataloader_adj import DataLoaderSampleable
 from topoflow.data.datasets import CrossDocked
 from topoflow.data import MockDatamodule
-from topoflow.flow.schedulers import LinearAlpha, LinearBeta, SineAlpha, CosineBeta
+from topoflow.flow.schedulers import LinearAlpha, LinearBeta, CosineAlpha, CosineBeta
 from topoflow.flow.paths import (
     GaussianConditionalProbabilityPath,
     DiscreteConditionalProbabilityPath,
@@ -101,8 +101,10 @@ def train_flow_model(
     )
     # alpha = LinearAlpha()
     # beta = LinearBeta()
-    alpha = SineAlpha()
+    alpha = CosineAlpha()
     beta = CosineBeta()
+
+    discrete_alpha = CosineAlpha(t_max=0.9)
 
     p_data = DataLoaderSampleable(
         train_dataset,
@@ -112,7 +114,7 @@ def train_flow_model(
     )
     path = GaussianConditionalProbabilityPath(p_data=p_data, alpha=alpha, beta=beta)
     discrete_path = DiscreteConditionalProbabilityPath(
-        p_data=p_data, alpha=alpha, device="cuda", n_classes=11
+        p_data=p_data, alpha=discrete_alpha, device="cuda", n_classes=11
     )
 
     val_metric_dist_path = os.path.join(data_dir, "processed", "val_distribution.npy")

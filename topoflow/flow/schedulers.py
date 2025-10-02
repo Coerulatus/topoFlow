@@ -8,8 +8,9 @@ import torch
 class Scheduler(ABC):
     """Abstract base class for schedulers."""
 
-    def __init__(self):
+    def __init__(self, t_max=1):
         """Initializes the scheduler and performs validation."""
+        self.t_max = t_max
         self.validate()
 
     @abstractmethod
@@ -109,36 +110,39 @@ class LinearAlpha(Alpha):
         return torch.ones_like(t)
 
 
-class SineAlpha(Alpha):
-    """Sine-based alpha scheduler, where Alpha(t) = sin(pi*t/2).
+class CosineAlpha(Alpha):
+    """Cosine-based alpha scheduler, where Alpha(t) = 0.5 * (1- cos(pi*t/2)).
 
     This schedule ensures the noise term goes from 0 to 1, and in combination
     with CosineAlpha, it maintains a constant variance.
     """
 
     def __call__(self, t: torch.Tensor) -> torch.Tensor:
-        """Computes Alpha(t) = sin(pi*t/2).
+        """Compute Alpha(t).
 
         Args:
             t: Time. [batch_size, *1s]
 
         Returns:
-            The value of the sine schedule at time t. [batch_size, *1s]
+            Alpha(t) in [0,1].
         """
-        return torch.sin(t * torch.pi / 2.0).to(t.device)
+        t_scaled = (t / self.t_max).clamp(max=1.0)
+        return 0.5 * (1 - torch.cos(t_scaled * torch.pi))
 
     def dt(self, t: torch.Tensor) -> torch.Tensor:
-        """Computes the derivative of SineAlpha(t).
-
-        The derivative is pi/2 * cos(pi*t/2).
+        """Compute derivative dAlpha/dt.
 
         Args:
             t: Time. [batch_size, *1s]
 
         Returns:
-            The derivative of the sine schedule at time t. [batch_size, *1s]
+            dAlpha/dt.
         """
-        return torch.pi / 2.0 * torch.cos(t * torch.pi / 2.0).to(t.device)
+        t_scaled = (t / self.t_max).clamp(max=1.0)
+        # derivative wrt original t, so chain rule factor 1/t_max
+        d_alpha = (0.5 * torch.pi / self.t_max) * torch.sin(torch.pi * t_scaled)
+        # zero out derivative after t_max
+        return torch.where(t <= self.t_max, d_alpha, torch.zeros_like(t))
 
 
 class SquareRootBeta(Beta):
