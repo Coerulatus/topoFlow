@@ -686,27 +686,32 @@ class MultiHeadAttention(MessagePassing):
         self.heads = heads
         self.number_queries = number_queries
 
-        self.K_weight = torch.nn.Parameter(
-            torch.randn(self.heads, self.in_channels, self.hidden_channels)
-        )
+        # self.K_weight = torch.nn.Parameter(
+        #     torch.randn(self.heads, self.in_channels, self.hidden_channels)
+        # )
         self.Q_weight = torch.nn.Parameter(
             torch.randn(self.heads, self.number_queries, self.hidden_channels)
         )
-        self.V_weight = torch.nn.Parameter(
-            torch.randn(self.heads, self.in_channels, self.hidden_channels)
+        # self.V_weight = torch.nn.Parameter(
+        #     torch.randn(self.heads, self.in_channels, self.hidden_channels)
+        # )
+        self.KV_weight = torch.nn.Parameter(
+            torch.randn(self.heads, self.in_channels, 2 * self.hidden_channels)
         )
 
     def reset_parameters(self):
         r"""Reset learnable parameters."""
         if self.initialization == "xavier_uniform":
-            torch.nn.init.xavier_uniform_(self.K_weight, gain=self.initialization_gain)
+            # torch.nn.init.xavier_uniform_(self.K_weight, gain=self.initialization_gain)
             torch.nn.init.xavier_uniform_(self.Q_weight, gain=self.initialization_gain)
-            torch.nn.init.xavier_uniform_(self.V_weight, gain=self.initialization_gain)
+            # torch.nn.init.xavier_uniform_(self.V_weight, gain=self.initialization_gain)
+            torch.nn.init.xavier_uniform_(self.KV_weight, gain=self.initialization_gain)
 
         elif self.initialization == "xavier_normal":
-            torch.nn.init.xavier_normal_(self.K_weight, gain=self.initialization_gain)
+            # torch.nn.init.xavier_normal_(self.K_weight, gain=self.initialization_gain)
             torch.nn.init.xavier_normal_(self.Q_weight, gain=self.initialization_gain)
-            torch.nn.init.xavier_normal_(self.V_weight, gain=self.initialization_gain)
+            # torch.nn.init.xavier_normal_(self.V_weight, gain=self.initialization_gain)
+            torch.nn.init.xavier_normal_(self.KV_weight, gain=self.initialization_gain)
 
         else:
             raise RuntimeError(
@@ -747,14 +752,33 @@ class MultiHeadAttention(MessagePassing):
         # Transformer-based attention mechanism
         neighborhood = neighborhood.coalesce()
         self.target_index_i, self.source_index_j = neighborhood.indices()
-        attention_values = self.attention(x_source, neighborhood)
 
-        x_message = torch.matmul(x_source, self.V_weight)
+        # attention_values = self.attention(x_source, neighborhood)
 
-        x_message = x_message.permute(1, 0, 2)[
-            self.source_index_j
-        ] * attention_values.unsqueeze(-1)
-        return pyg_scatter(x_message, self.target_index_i, dim=0, reduce="sum")
+        # x_message_old = torch.matmul(x_source, self.V_weight)
+
+        # x_message_old = x_message_old.permute(1, 0, 2)[
+        #     self.source_index_j
+        # ] * attention_values.unsqueeze(-1)
+
+        # return pyg_scatter(x_message, self.target_index_i, dim=0, reduce="sum")
+        x_KV = torch.matmul(x_source, self.KV_weight).permute(1, 0, 2)
+        x_K, x_V = torch.split(x_KV, self.hidden_channels, dim=-1)  # each [N, H, d]
+
+        # Compute attention scores with global queries (broadcast over N)
+        alpha = (x_K * self.Q_weight.permute(1, 0, 2)).sum(-1)  # [N, Q, H]
+        alpha = F.leaky_relu(alpha, 0.2)
+        attention_values = softmax(
+            alpha[self.source_index_j], index=self.target_index_i
+        )  # [E, Q, H]
+
+        # Apply attention to V on edges and aggregate
+        x_message = x_V[self.source_index_j] * attention_values.unsqueeze(
+            -1
+        )  # [E, Q, H, d]
+        return pyg_scatter(
+            x_message, self.target_index_i, dim=0, reduce="sum"
+        )  # [N_tgt, Q, H, d]
 
 
 class MLP(nn.Sequential):
@@ -917,6 +941,10 @@ class AllSetTransformerVectorField(nn.Module):
             nn.SiLU(),
             nn.Linear(self.h_dim, self.x_dim),
         )
+
+        # TODO: check if this optimization helps on the server
+        self.model = torch.compile(self.model)
+        self.out_vel = torch.compile(self.out_vel)
 
     def check_batch_separation(
         self, row, col, n_hyperedges, n_values, n_nodes, device, batch_lig, batch_pocket
@@ -1105,11 +1133,9 @@ class AllSetTransformerVectorField(nn.Module):
 
         is_lig = batch_lig != -1
         is_poc = batch_pocket != -1
-
         # Embed tokens
         lig_h = self.lig_embed(x_lig)
         poc_h = self.poc_embed(x_pocket)
-
         # Time embeddings
         if not torch.is_tensor(t):
             t = torch.tensor(t, device=device)
@@ -1120,12 +1146,10 @@ class AllSetTransformerVectorField(nn.Module):
             lig_h = lig_h + t_emb[batch_lig[is_lig], :]
         if self.add_time_to in ("both",):
             poc_h = poc_h + t_emb[batch_pocket[is_poc], :]
-
         # Create incidence matrix
         incidence1 = self.create_incidence(
             x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
         )
-
         # Creates features
         x = torch.cat([lig_h, poc_h], dim=0)
 
@@ -1135,7 +1159,6 @@ class AllSetTransformerVectorField(nn.Module):
 
         # Encoder
         x = self.model(x, incidence1)[0]
-
         x_lig = x[batch_lig != -1, :]
 
         # Predict ligand velocities only
