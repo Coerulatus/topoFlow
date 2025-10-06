@@ -8,7 +8,7 @@ from torch import nn
 from torch_geometric.utils import softmax
 from torch_geometric.utils import scatter as pyg_scatter
 from torch_geometric.utils import to_undirected, to_dense_adj
-from torch_geometric.nn import radius, radius_graph
+from torch_geometric.nn.pool import radius, radius_graph
 
 
 def dedup_columns(row: torch.LongTensor, col: torch.LongTensor, num_rows: int):
@@ -908,7 +908,7 @@ class AllSetTransformerVectorField(nn.Module):
 
         self.cutoff_lig = 10.0
         self.cutoff_poc = 1.0
-        self.cutoff_cross = 1.0
+        self.cutoff_cross = 1.5
 
         self.lig_embed = nn.Sequential(
             nn.Linear(self.x_dim, h_dim),
@@ -968,21 +968,43 @@ class AllSetTransformerVectorField(nn.Module):
                     "Batches of ligand and pocket are not separated in hyperedges."
                 )
 
+    # def create_edge_index(self, x_lig, x_pocket, batch_lig, batch_pocket):
+    #     """Create edge index."""
+    #     lig_pos = x_lig[:, :3]
+    #     poc_pos = x_pocket[:, :3]
+
+    #     N1, N2 = lig_pos.size(0), poc_pos.size(0)
+
+    #     edge_ll = radius_graph(
+    #         lig_pos, r=self.cutoff_lig, batch=batch_lig, loop=False
+    #     )  # [2, E_ll]
+    #     # Intra-pocket edges
+    #     edge_pp = radius_graph(
+    #         poc_pos, r=self.cutoff_poc, batch=batch_pocket, loop=False
+    #     )  # [2, E_pp]
+
+    #     # Cross edges using bipartite radius:
+    #     # radius(x=poc, y=lig) returns [row_y, col_x] = [lig_idx, poc_idx]
+    #     edge_lp = radius(
+    #         poc_pos,
+    #         lig_pos,
+    #         r=self.cutoff_cross,
+    #         batch_x=batch_pocket,
+    #         batch_y=batch_lig,
+    #     )  # [2, E_lp] with row in [0..N1-1], col in [0..N2-1]
+
+    #     # Offset pocket node ids by N1 to form one homogeneous graph:
+    #     # lig->lig stays as-is; poc->poc gets +N1 on both ends
+    #     edge_pp_global = edge_pp + N1
+    #     # lig->poc: src=lig, dst=poc+N1
+    #     edge_lp_global = torch.stack([edge_lp[0], edge_lp[1] + N1], dim=0)
+
+    #     return edge_ll, edge_pp_global, edge_lp_global
     def create_edge_index(self, x_lig, x_pocket, batch_lig, batch_pocket):
         """Create edge index."""
         lig_pos = x_lig[:, :3]
         poc_pos = x_pocket[:, :3]
-
-        N1, N2 = lig_pos.size(0), poc_pos.size(0)
-
-        edge_ll = radius_graph(
-            lig_pos, r=self.cutoff_lig, batch=batch_lig, loop=False
-        )  # [2, E_ll]
-        # Intra-pocket edges
-        edge_pp = radius_graph(
-            poc_pos, r=self.cutoff_poc, batch=batch_pocket, loop=False
-        )  # [2, E_pp]
-
+        n_poc = poc_pos.shape[0]
         # Cross edges using bipartite radius:
         # radius(x=poc, y=lig) returns [row_y, col_x] = [lig_idx, poc_idx]
         edge_lp = radius(
@@ -991,15 +1013,9 @@ class AllSetTransformerVectorField(nn.Module):
             r=self.cutoff_cross,
             batch_x=batch_pocket,
             batch_y=batch_lig,
+            max_num_neighbors=n_poc,
         )  # [2, E_lp] with row in [0..N1-1], col in [0..N2-1]
-
-        # Offset pocket node ids by N1 to form one homogeneous graph:
-        # lig->lig stays as-is; poc->poc gets +N1 on both ends
-        edge_pp_global = edge_pp + N1
-        # lig->poc: src=lig, dst=poc+N1
-        edge_lp_global = torch.stack([edge_lp[0], edge_lp[1] + N1], dim=0)
-
-        return edge_ll, edge_pp_global, edge_lp_global
+        return edge_lp
 
     def create_incidence(self, x_lig, x_pocket, batch_lig, batch_pocket):
         """Create hyperedges."""
@@ -1021,6 +1037,7 @@ class AllSetTransformerVectorField(nn.Module):
         n_hyperedges += valid.size(0)
         n_values += row.size(0)
         # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+
         # Hyperedges with all pocket atoms in same batch
         valid = torch.unique(batch_pocket)
         non_zeros = (batch_pocket.unsqueeze(1) == valid.unsqueeze(0)).nonzero(
@@ -1031,6 +1048,7 @@ class AllSetTransformerVectorField(nn.Module):
         n_hyperedges += valid.size(0)
         n_values += non_zeros.size(0)
         # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+
         # Hyperedges with ligand atoms within cutoff_lig
         # pos_lig = x_lig[:, :3]
         # if self.cutoff_lig < torch.norm(
@@ -1053,6 +1071,7 @@ class AllSetTransformerVectorField(nn.Module):
         #     n_hyperedges += torch.max(col_radius).item() + 1
         #     n_values += row_radius.size(0)
         # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+
         # Hyperedges with pocket atoms within cutoff_poc
         # pos_poc = x_pocket[:, :3]
         # row_radius, col_radius = radius(
@@ -1071,6 +1090,7 @@ class AllSetTransformerVectorField(nn.Module):
         # n_hyperedges += torch.max(col_radius).item() + 1
         # n_values += row_radius.size(0)
         # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+
         # Hyperedges with ligand and pocket atoms within cutoff_cross
         # row_radius, col_radius = radius(
         #     pos_lig,
@@ -1088,33 +1108,55 @@ class AllSetTransformerVectorField(nn.Module):
         # n_hyperedges += torch.max(col_radius).item() + 1
         # n_values += row_radius.size(0)
         # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
-        edge_ll, edge_pp_global, edge_lp_global = self.create_edge_index(
+
+        # edge_ll, edge_pp_global, edge_lp_global = self.create_edge_index(
+        #     x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
+        # )
+        edge_lp = self.create_edge_index(
             x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
         )
-        row_graph = edge_ll.view(-1)
-        col_graph = torch.arange(edge_ll.shape[1], device=device).repeat(2)
-        row = torch.cat([row, row_graph], dim=0)
-        col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-        if col_graph.numel() > 0:
-            n_hyperedges += torch.max(col_graph).item() + 1
-            n_values += row_graph.size(0)
 
-        row_graph = edge_pp_global.view(-1)
-        col_graph = torch.arange(edge_pp_global.shape[1], device=device).repeat(2)
-        row = torch.cat([row, row_graph], dim=0)
-        col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-        if col_graph.numel() > 0:
-            n_hyperedges += torch.max(col_graph).item() + 1
-            n_values += row_graph.size(0)
+        # This creates hyperedges with degree 2
+        # row_graph = edge_ll.view(-1)
+        # col_graph = torch.arange(edge_ll.shape[1], device=device).repeat(2)
+        # row = torch.cat([row, row_graph], dim=0)
+        # col = torch.cat([col, col_graph + n_hyperedges], dim=0)
+        # if col_graph.numel() > 0:
+        #     n_hyperedges += torch.max(col_graph).item() + 1
+        #     n_values += row_graph.size(0)
 
-        row_graph = edge_lp_global.view(-1)
-        col_graph = torch.arange(edge_lp_global.shape[1], device=device).repeat(2)
-        row = torch.cat([row, row_graph], dim=0)
-        col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-        if col_graph.numel() > 0:
-            n_hyperedges += torch.max(col_graph).item() + 1
-            n_values += row_graph.size(0)
+        # row_graph = edge_pp_global.view(-1)
+        # col_graph = torch.arange(edge_pp_global.shape[1], device=device).repeat(2)
+        # row = torch.cat([row, row_graph], dim=0)
+        # col = torch.cat([col, col_graph + n_hyperedges], dim=0)
+        # if col_graph.numel() > 0:
+        #     n_hyperedges += torch.max(col_graph).item() + 1
+        #     n_values += row_graph.size(0)
+
+        # row_graph = edge_lp_global.view(-1)
+        # col_graph = torch.arange(edge_lp_global.shape[1], device=device).repeat(2)
+        # row = torch.cat([row, row_graph], dim=0)
+        # col = torch.cat([col, col_graph + n_hyperedges], dim=0)
+        # if col_graph.numel() > 0:
+        #     n_hyperedges += torch.max(col_graph).item() + 1
+        #     n_values += row_graph.size(0)
         # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+
+        # Create incidence matrix with lp hyperedges
+        rows_lp = edge_lp[0]
+        cols_lp = edge_lp[1]
+
+        # Ligand self-connections: each ligand belongs to its own hyperedge
+        rows_lig = torch.arange(n_lig, device=device)
+        cols_lig = torch.arange(n_lig, device=device)
+
+        # Concatenate all
+        rows = torch.cat([rows_lig, cols_lp + n_lig], dim=0)
+        cols = torch.cat([cols_lig, rows_lp], dim=0)
+        row = torch.cat([row, rows], dim=0)
+        col = torch.cat([col, cols + n_hyperedges], dim=0)
+        n_values += rows.size(0)
+        n_hyperedges += n_lig
         # Create incidence matrix
         value = torch.ones(n_values, dtype=torch.long, device=device)
         incidence1 = torch.sparse_coo_tensor(
