@@ -9,7 +9,7 @@ import lightning.pytorch as pl
 from topoflow.data.dataloader_adj import DataLoaderSampleable
 from topoflow.data.datasets import CrossDocked
 from topoflow.data import MockDatamodule
-from topoflow.flow.schedulers import LinearAlpha, LinearBeta, SineAlpha, CosineBeta
+from topoflow.flow.schedulers import LinearAlpha, LinearBeta, CosineAlpha, CosineBeta
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.vector_field_models import (
     TransformerVectorField,
@@ -93,7 +93,7 @@ def train_flow_model(
     )
     # alpha = LinearAlpha()
     # beta = LinearBeta()
-    alpha = SineAlpha()
+    alpha = CosineAlpha()
     beta = CosineBeta()
 
     p_data = DataLoaderSampleable(

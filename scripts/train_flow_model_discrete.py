@@ -52,6 +52,7 @@ def train_flow_model(
     experiment_name,
     run_name=None,
     previous_checkpoint=None,
+    skip_validation=False,
 ):
     """Train a Topological Flow model on the specified dataset.
 
@@ -78,6 +79,7 @@ def train_flow_model(
         experiment_name (str): MLflow experiment name.
         run_name (str, optional): Name of the MLflow run. Defaults to None.
         previous_checkpoint (str, optional): Path to a checkpoint to resume training from. Defaults to None.
+        skip_validation (bool, optional): Whether to skip validation during training. Defaults to False.
     """
     pl.seed_everything(seed)  # For reproducibility
     # ======================================================================
@@ -216,6 +218,7 @@ def train_flow_model(
         logger=logger,
         enable_progress_bar=True,
         check_val_every_n_epoch=5,
+        limit_val_batches=1.0 if not skip_validation else 0.0,
         gradient_clip_val=0.5,
         gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
@@ -357,7 +360,11 @@ if __name__ == "__main__":
         type=str,
         help="Name of the MLflow run (optional).",
     )
-
+    parser.add_argument(
+        "--skip_validation",
+        action="store_true",
+        help="Whether to skip validation during training.",
+    )
     args = parser.parse_args()
 
     train_flow_model(
@@ -383,4 +390,5 @@ if __name__ == "__main__":
         experiment_name=args.mlflow_experiment_name,
         run_name=args.run_name if args.run_name else None,
         previous_checkpoint=args.previous_checkpoint,
+        skip_validation=args.skip_validation,
     )
