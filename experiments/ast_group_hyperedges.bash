@@ -1,0 +1,1 @@
+python scripts/train_flow_model_discrete.py --vector_field_model ast --hidden_dim 128 --epochs 200 --batch_size 8 --start_lr 0.001 --max_lr 0.005 --min_lr 0.0002 --mlflow_experiment_name TopoFlow_AST_hyperedges --run_name 10_06_200e_ast_hyperedges
