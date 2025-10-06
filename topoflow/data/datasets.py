@@ -238,11 +238,11 @@ class CrossDocked(InMemoryDataset):
         print(f"Data split loaded successfully. Keys: {list(data_split.keys())}")
 
         # TODO: Remove this when loading whole dataset
-        data_split["train"] = data_split["train"][:1000]
+        data_split["train"] = data_split["train"][:256]
 
         # There is no validation set, copy 300 training examples (the validation set
         # is not very important in this application)
-        data_split["val"] = random.sample(data_split["train"], 256)
+        data_split["val"] = random.sample(data_split["train"], 32)
 
         n_train_before = len(data_split["train"])
         n_val_before = len(data_split["val"])

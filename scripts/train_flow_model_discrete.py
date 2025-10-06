@@ -155,7 +155,7 @@ def train_flow_model(
     elif vector_field_model == "ast":
         vector_field = AllSetTransformerVectorField(
             h_dim=hidden_dim,
-            num_heads=16,
+            num_heads=128,
             num_layers=2,
             dropout=0.1,
             add_time_to="ligand",  # "ligand", "both", or "none"
@@ -219,8 +219,8 @@ def train_flow_model(
         enable_progress_bar=True,
         check_val_every_n_epoch=5,
         limit_val_batches=1.0 if not skip_validation else 0.0,
-        gradient_clip_val=0.5,
-        gradient_clip_algorithm="norm",
+        # gradient_clip_val=0.5,
+        # gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
         num_sanity_val_steps=0,
     )
@@ -325,7 +325,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_time_factor",
         type=float,
-        default=50.0,
+        default=10.0,
         help="Maximum time factor for the flow model.",
     )
     parser.add_argument(

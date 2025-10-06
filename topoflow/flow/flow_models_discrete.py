@@ -96,8 +96,8 @@ class FlowModel(pl.LightningModule):
         self.n_val_samples = n_val_samples
         self.val_distribution = val_distribution
         self.atom_decoder = atom_decoder
-        self.loss_function_coords = torch.nn.MSELoss(reduction="none")
-        self.loss_function_atoms = torch.nn.CrossEntropyLoss(reduction="none")
+        self.loss_function = torch.nn.MSELoss(reduction="none")
+        # self.loss_function_atoms = torch.nn.CrossEntropyLoss(reduction="none")
         self.loss_function_last_step = UFFBoundGuidance(atom_decoder=atom_decoder)
         self.train_loss = []
         self.start_lr = start_lr
@@ -163,8 +163,8 @@ class FlowModel(pl.LightningModule):
         else:
             loss_last_step = torch.tensor(0, dtype=torch.float32)
 
-        loss_mse = self.loss_function_coords(u_t_theta_lig[:, :3], u_t_ref_lig[:, :3])
-        loss_atoms = self.loss_function_atoms(u_t_theta_lig[:, 3:], u_t_ref_lig[:, 3:])
+        loss_mse = self.loss_function(u_t_theta_lig[:, :3], u_t_ref_lig[:, :3])
+        loss_atoms = self.loss_function(u_t_theta_lig[:, 3:], u_t_ref_lig[:, 3:])
 
         loss_mse = loss_mse.mean(dim=-1)
         loss_atoms = loss_atoms.mean(dim=-1) * self.w_loss_atom
@@ -284,7 +284,12 @@ class FlowModel(pl.LightningModule):
             self.log(
                 f"train/{name}", value, on_epoch=True, prog_bar=False, on_step=False
             )
-
+        self.log(
+            "train/lr",
+            self.optimizers().param_groups[0]["lr"],
+            on_epoch=True,
+            on_step=False,
+        )
         return losses["loss"]
 
     def validation_step(self, batch, batch_idx):
@@ -343,23 +348,23 @@ class FlowModel(pl.LightningModule):
     def on_after_backward(self):
         """Logs the gradients after the backward pass."""
         # TODO: remove this after debugging
-        # for name, param in self.named_parameters():
-        #     if param.grad is not None:
-        #         # Log the L2 norm of the gradient
-        #         self.log(
-        #             f"gradients/{name}_norm",
-        #             param.grad.norm(),
-        #             on_epoch=True,
-        #             on_step=False,
-        #         )
+        for name, param in self.named_parameters():
+            if param.grad is not None:
+                # Log the L2 norm of the gradient
+                self.log(
+                    f"gradients/{name}_norm",
+                    param.grad.norm(),
+                    on_epoch=True,
+                    on_step=False,
+                )
 
-        #         # Log the average absolute value of the gradient
-        #         self.log(
-        #             f"gradients/{name}_mean_abs",
-        #             param.grad.abs().mean(),
-        #             on_epoch=True,
-        #             on_step=False,
-        #         )
+                # Log the average absolute value of the gradient
+                # self.log(
+                #     f"gradients/{name}_mean_abs",
+                #     param.grad.abs().mean(),
+                #     on_epoch=True,
+                #     on_step=False,
+                # )
         pass
 
     @torch.no_grad()
