@@ -67,7 +67,6 @@ class GATVectorField(nn.Module):
             [nn.LayerNorm(h_dim) for _ in range(num_layers)]
         )
 
-        # output ligand velocity only
         self.out_vel = nn.Sequential(
             nn.LayerNorm(h_dim), nn.Linear(h_dim, self.x_dim, bias=False)
         )

@@ -5,6 +5,7 @@ import math
 from typing import Literal
 import torch.nn.functional as F
 from torch import nn
+from torch_geometric.nn import GATv2Conv
 from torch_geometric.utils import softmax
 from torch_geometric.utils import scatter as pyg_scatter
 from torch_geometric.utils import to_undirected, to_dense_adj
@@ -885,6 +886,38 @@ class AllSetTransformer(torch.nn.Module):
         return x_0, x_1
 
 
+class GATModel(nn.Module):
+    """GAT model."""
+
+    def __init__(
+        self,
+        h_dim,
+        num_heads,
+        num_layers,
+        dropout,
+    ):
+        """Initialize GAT model."""
+        super().__init__()
+        self.layers = nn.ModuleList(
+            [
+                GATv2Conv(h_dim, h_dim // num_heads, heads=num_heads, dropout=dropout)
+                for _ in range(num_layers)
+            ]
+        )
+        self.layers_norm = nn.ModuleList(
+            [nn.LayerNorm(h_dim) for _ in range(num_layers)]
+        )
+
+    def forward(self, x, edge_index):
+        """Forward pass."""
+        for layer, norm in zip(self.layers, self.layers_norm):
+            x_new = layer(x, edge_index)
+            x_new = norm(x_new)
+            x = x + x_new  # Residual connection
+            x = F.silu(x)  # Nonlinear activation after residual sum
+        return x
+
+
 class AllSetTransformerVectorField(nn.Module):
     """Ligand-only prediction with AllSetTransformer model."""
 
@@ -907,20 +940,14 @@ class AllSetTransformerVectorField(nn.Module):
         self.add_time_to = add_time_to
 
         self.cutoff_lig = 10.0
-        self.cutoff_poc = 1.0
-        self.cutoff_cross = 2.0
+        self.cutoff_poc = 3.0
+        self.cutoff_cross = 3.0
 
         self.lig_embed = nn.Sequential(
-            nn.Linear(self.x_dim, h_dim),
-            nn.SiLU(),
-            nn.LayerNorm(h_dim),
-            nn.Linear(h_dim, h_dim),
+            nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
         self.poc_embed = nn.Sequential(
-            nn.Linear(self.x_dim, h_dim),
-            nn.SiLU(),
-            nn.LayerNorm(h_dim),
-            nn.Linear(h_dim, h_dim),
+            nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
         self.time_embed = SimpleTimeEmbedding(h_dim)
 
@@ -933,17 +960,16 @@ class AllSetTransformerVectorField(nn.Module):
             mlp_num_layers=2,
             mlp_dropout=dropout,
         )
-
-        # output ligand velocity only
-        self.out_vel = nn.Sequential(
-            nn.Linear(h_dim, self.h_dim),
-            nn.SiLU(),
-            nn.Linear(self.h_dim, self.x_dim, bias=False),
+        self.gat_model = GATModel(
+            h_dim=h_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            dropout=dropout,
         )
 
-        # TODO: check if this optimization helps on the server
-        # self.model = torch.compile(self.model)
-        # self.out_vel = torch.compile(self.out_vel)
+        self.out_vel = nn.Sequential(
+            nn.LayerNorm(h_dim), nn.Linear(h_dim, self.x_dim, bias=False)
+        )
 
     def check_batch_separation(
         self, row, col, n_hyperedges, n_values, n_nodes, device, batch_lig, batch_pocket
@@ -999,11 +1025,22 @@ class AllSetTransformerVectorField(nn.Module):
     #     edge_lp_global = torch.stack([edge_lp[0], edge_lp[1] + N1], dim=0)
 
     #     return edge_ll, edge_pp_global, edge_lp_global
+
     def create_edge_index(self, x_lig, x_pocket, batch_lig, batch_pocket):
-        """Create edge index."""
+        """Create edge index for GATv2Conv."""
         lig_pos = x_lig[:, :3]
         poc_pos = x_pocket[:, :3]
-        n_poc = poc_pos.shape[0]
+
+        N1, N2 = lig_pos.size(0), poc_pos.size(0)
+
+        edge_ll = radius_graph(
+            lig_pos, r=self.cutoff_lig, batch=batch_lig, loop=False
+        )  # [2, E_ll]
+        # Intra-pocket edges
+        edge_pp = radius_graph(
+            poc_pos, r=self.cutoff_poc, batch=batch_pocket, loop=False
+        )  # [2, E_pp]
+
         # Cross edges using bipartite radius:
         # radius(x=poc, y=lig) returns [row_y, col_x] = [lig_idx, poc_idx]
         edge_lp = radius(
@@ -1012,9 +1049,21 @@ class AllSetTransformerVectorField(nn.Module):
             r=self.cutoff_cross,
             batch_x=batch_pocket,
             batch_y=batch_lig,
-            max_num_neighbors=n_poc,
         )  # [2, E_lp] with row in [0..N1-1], col in [0..N2-1]
-        return edge_lp
+
+        # Offset pocket node ids by N1 to form one homogeneous graph:
+        # lig->lig stays as-is; poc->poc gets +N1 on both ends
+        edge_pp_global = edge_pp + N1
+        # lig->poc: src=lig, dst=poc+N1
+        edge_lp_global = torch.stack([edge_lp[0], edge_lp[1] + N1], dim=0)
+
+        # Final edge index (directed); deduplicate if desired
+        edge_index = torch.cat([edge_ll, edge_pp_global, edge_lp_global], dim=1)
+
+        # Make undirected
+        edge_index = to_undirected(edge_index, num_nodes=N1 + N2)
+
+        return edge_lp, edge_index
 
     def create_incidence(self, x_lig, x_pocket, batch_lig, batch_pocket):
         """Create hyperedges."""
@@ -1111,7 +1160,7 @@ class AllSetTransformerVectorField(nn.Module):
         # edge_ll, edge_pp_global, edge_lp_global = self.create_edge_index(
         #     x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
         # )
-        edge_lp = self.create_edge_index(
+        edge_lp, edge_index = self.create_edge_index(
             x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
         )
 
@@ -1165,7 +1214,7 @@ class AllSetTransformerVectorField(nn.Module):
             device=device,
         )
         incidence1 = incidence1.coalesce()
-        return incidence1
+        return incidence1, edge_index
 
     def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket):
         """Forward pass."""
@@ -1188,22 +1237,22 @@ class AllSetTransformerVectorField(nn.Module):
         if self.add_time_to in ("both",):
             poc_h = poc_h + t_emb[batch_pocket[is_poc], :]
         # Create incidence matrix
-        incidence1 = self.create_incidence(
+        incidence1, edge_index = self.create_incidence(
             x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
         )
         # Creates features
         x = torch.cat([lig_h, poc_h], dim=0)
 
-        batch_all = torch.zeros_like(batch_lig)
-        batch_all[is_lig] = batch_lig[is_lig]
-        batch_all[is_poc] = batch_pocket[is_poc]
+        # AllSetTransformer
+        x_ast = x + self.model(x, incidence1)[0]
 
-        # Encoder
-        # x = self.model(x, incidence1)[0]
-        # add skip connection
-        x = x + self.model(x, incidence1)[0]
+        # GAT
+        x_gat = self.gat_model(x, edge_index)
 
-        x_lig = x[batch_lig != -1, :]
+        x = x_gat + x_ast  # GAT + AST
+
+        N1 = lig_h.size(0)
+        x_lig = x[:N1, :]
 
         # Predict ligand velocities only
         vel_lig = self.out_vel(x_lig)  # [N_lig, x_dim]

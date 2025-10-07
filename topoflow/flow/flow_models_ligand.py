@@ -52,6 +52,7 @@ class FlowModel(pl.LightningModule):
         max_epochs=1000,
         max_frac=0.1,
         time_factor=None,
+        w_loss_last_step=0.2,
     ):
         """Initializes the FlowModel.
 
@@ -75,6 +76,7 @@ class FlowModel(pl.LightningModule):
             max_epochs: Maximum number of epochs for training. Defaults to 1000.
             max_frac: Fraction of the maximum learning rate to use. Defaults to 0.1.
             time_factor: Optional function to scale the loss by time.
+            w_loss_last_step: Weight for the loss component at the last time step. Defaults to 0.2.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["path"])
@@ -122,7 +124,7 @@ class FlowModel(pl.LightningModule):
             self.unnorm = True
         self.time_factor = time_factor
         self.t_last_step = 0.9
-        self.w_loss_last_step = 1.0
+        self.w_loss_last_step = w_loss_last_step
         self.sample_steps = 80
         self.max_batched_samples = max_batched_samples
         self.loss_lig_weight = 100
@@ -151,14 +153,11 @@ class FlowModel(pl.LightningModule):
                 std=torch.tensor(self.normalization_params["std"]).to(x_lig.device),
             )
             loss_last_step = loss_last_step.mean(dim=-1) * self.w_loss_last_step
-            loss_last_step_without_time = loss_last_step.clone().mean().detach()
         else:
-            loss_last_step = 0
-            loss_last_step_without_time = 0
+            loss_last_step = torch.tensor(0, dtype=torch.float32)
 
         loss_mse = self.loss_function(u_t_theta_lig, u_t_ref_lig)
         loss_mse = loss_mse.mean(dim=-1)  # Mean over the last dimension
-        loss_mse_without_time = loss_mse.clone().mean().detach()
 
         loss = loss_mse + loss_last_step
         loss_without_time = loss.clone().mean().detach()
@@ -166,14 +165,12 @@ class FlowModel(pl.LightningModule):
         if self.time_factor is not None and t is not None:
             loss *= self.time_factor(t).view(-1)
         loss = loss.mean()
-        return (
-            loss,
-            loss_mse,
-            loss_last_step,
-            loss_without_time,
-            loss_mse_without_time,
-            loss_last_step_without_time,
-        )
+        return {
+            "loss": loss,
+            "loss_mse": loss_mse.mean(),
+            "loss_last_step": loss_last_step.mean(),
+            "loss_without_time": loss_without_time.mean(),
+        }
 
     def _get_data(self, batch):
         """Extracts data from p_data."""
@@ -255,41 +252,19 @@ class FlowModel(pl.LightningModule):
         batch_lig = batch["batch_lig"]
         batch_lig = batch_lig[batch_lig != -1]
         u_t_theta, u_t_ref, t, x_lig = self.forward(batch)
-        # loss = self.loss_function(u_t_theta, u_t_ref)
-        (
-            loss,
-            loss_mse,
-            loss_last_step,
-            loss_without_time,
-            loss_mse_without_time,
-            loss_last_step_without_time,
-        ) = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig, verbose=False)
+        losses = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig, verbose=False)
 
-        self.log("train/loss", loss, on_epoch=True, prog_bar=True, on_step=False)
+        for name, value in losses.items():
+            self.log(
+                f"train/{name}", value, on_epoch=True, prog_bar=False, on_step=False
+            )
         self.log(
-            "train/loss_without_time",
-            loss_without_time,
+            "train/lr",
+            self.optimizers().param_groups[0]["lr"],
             on_epoch=True,
-            prog_bar=False,
             on_step=False,
         )
-        self.log(
-            "train/loss_last_step",
-            loss_last_step,
-            on_epoch=True,
-            prog_bar=False,
-            on_step=False,
-        )
-        self.log(
-            "train/loss_last_step_without_time",
-            loss_last_step_without_time,
-            on_epoch=True,
-            prog_bar=False,
-            on_step=False,
-        )
-        self.train_loss.append(loss.item())
-
-        return loss
+        return losses["loss"]
 
     def on_after_backward(self):
         """Logs the gradients after the backward pass."""
@@ -329,32 +304,16 @@ class FlowModel(pl.LightningModule):
         batch_lig = batch["batch_lig"]
         batch_lig = batch_lig[batch_lig != -1]
         u_t_theta, u_t_ref, t, x_lig = self.forward(batch)
-        # loss = self.loss_function(u_t_theta, u_t_ref)
-        (
-            loss,
-            loss_mse,
-            loss_last_step,
-            loss_without_time,
-            loss_mse_without_time,
-            loss_last_step_without_time,
-        ) = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig)
+        losses = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig)
 
-        self.log("val/loss", loss, on_epoch=True, prog_bar=False)
+        self.log("val/loss", losses["loss"], on_epoch=True, prog_bar=False)
         self.log(
-            "val/loss_without_time", loss_without_time, on_epoch=True, prog_bar=False
+            "val/loss_without_time",
+            losses["loss_without_time"],
+            on_epoch=True,
+            prog_bar=False,
         )
-        # if (
-        #     self.n_val_samples > 0
-        #     and batch_idx == 0
-        #     and self.n_epoch % self.sample_every == 0
-        # ):
-        #     samples = self.sample(self.n_val_samples, n_steps=20)
-        #     # self.val_samples.append(samples)
 
-        #     if self.evaluator is not None:
-        #         results = self.evaluator.evaluate(samples)
-        #         prefixed = {f"val/{k}": v for k, v in results.items()}
-        #         self.log_dict(prefixed, on_epoch=True, prog_bar=False)
         if (
             self.val_distribution is not None
             and batch_idx == 0
@@ -380,7 +339,7 @@ class FlowModel(pl.LightningModule):
                 self.log(f"val/{metric}", value, on_epoch=True, prog_bar=False)
 
         self.n_epoch += 1
-        return loss
+        return losses["loss"]
 
     @torch.no_grad()
     def test_distribution(

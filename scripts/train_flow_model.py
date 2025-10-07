@@ -41,11 +41,13 @@ def train_flow_model(
     max_frac,
     min_time_factor,
     max_time_factor,
+    w_loss_last_step,
     seed,
     mlflow_tracking_uri,
     experiment_name,
     run_name=None,
     previous_checkpoint=None,
+    skip_validation=False,
 ):
     """Train a Topological Flow model on the specified dataset.
 
@@ -65,11 +67,13 @@ def train_flow_model(
         max_frac (float): When to stop increasing the learning rate.
         min_time_factor (float): Minimum time factor for the flow model.
         max_time_factor (float): Maximum time factor for the flow model.
+        w_loss_last_step (float): Weight for the loss at the last time step.
         seed (int): Random seed for reproducibility.
         mlflow_tracking_uri (str): MLflow tracking URI.
         experiment_name (str): MLflow experiment name.
         run_name (str, optional): Name of the MLflow run. Defaults to None.
         previous_checkpoint (str, optional): Path to a checkpoint to resume training from. Defaults to None.
+        skip_validation (bool, optional): Whether to skip validation during training. Defaults to False.
     """
     pl.seed_everything(seed)  # For reproducibility
     # ======================================================================
@@ -175,6 +179,7 @@ def train_flow_model(
         max_epochs=epochs,
         max_frac=max_frac,
         time_factor=time_factor,
+        w_loss_last_step=w_loss_last_step,
     )
     # ======================================================================
     # Training Setup
@@ -200,8 +205,9 @@ def train_flow_model(
         logger=logger,
         enable_progress_bar=True,
         check_val_every_n_epoch=5,
-        gradient_clip_val=0.5,
-        gradient_clip_algorithm="norm",
+        limit_val_batches=1.0 if not skip_validation else 0.0,
+        # gradient_clip_val=0.5,
+        # gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
         num_sanity_val_steps=0,
     )
@@ -306,8 +312,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_time_factor",
         type=float,
-        default=50.0,
+        default=10.0,
         help="Maximum time factor for the flow model.",
+    )
+    parser.add_argument(
+        "--w_loss_last_step",
+        type=float,
+        default=0.2,
+        help="Weight for the loss at the last time step.",
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
@@ -329,7 +341,11 @@ if __name__ == "__main__":
         type=str,
         help="Name of the MLflow run (optional).",
     )
-
+    parser.add_argument(
+        "--skip_validation",
+        action="store_true",
+        help="Whether to skip validation during training.",
+    )
     args = parser.parse_args()
 
     train_flow_model(
@@ -346,9 +362,13 @@ if __name__ == "__main__":
         max_lr=args.max_lr,
         min_lr=args.min_lr,
         max_frac=args.max_frac_lr,
+        min_time_factor=args.min_time_factor,
+        max_time_factor=args.max_time_factor,
+        w_loss_last_step=args.w_loss_last_step,
         seed=args.seed,
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         experiment_name=args.mlflow_experiment_name,
         run_name=args.run_name if args.run_name else None,
         previous_checkpoint=args.previous_checkpoint,
+        skip_validation=args.skip_validation,
     )
