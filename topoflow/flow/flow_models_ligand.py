@@ -53,6 +53,7 @@ class FlowModel(pl.LightningModule):
         max_frac=0.1,
         time_factor=None,
         w_loss_last_step=0.2,
+        w_loss_atom=0.02,
     ):
         """Initializes the FlowModel.
 
@@ -77,6 +78,7 @@ class FlowModel(pl.LightningModule):
             max_frac: Fraction of the maximum learning rate to use. Defaults to 0.1.
             time_factor: Optional function to scale the loss by time.
             w_loss_last_step: Weight for the loss component at the last time step. Defaults to 0.2.
+            w_loss_atom: Weight for the atom type loss component. Defaults to 0.02.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["path"])
@@ -125,6 +127,7 @@ class FlowModel(pl.LightningModule):
         self.time_factor = time_factor
         self.t_last_step = 0.9
         self.w_loss_last_step = w_loss_last_step
+        self.w_loss_atom = w_loss_atom
         self.sample_steps = 80
         self.max_batched_samples = max_batched_samples
         self.loss_lig_weight = 100
@@ -157,8 +160,10 @@ class FlowModel(pl.LightningModule):
             loss_last_step = torch.tensor(0, dtype=torch.float32)
 
         loss_mse = self.loss_function(u_t_theta_lig, u_t_ref_lig)
+        loss_pos = loss_mse[:, :3].mean()
+        loss_atom = loss_mse[:, 3:].mean()
+        loss_mse[:, :3] *= self.w_loss_atom  # Higher weight on position
         loss_mse = loss_mse.mean(dim=-1)  # Mean over the last dimension
-
         loss = loss_mse + loss_last_step
         loss_without_time = loss.clone().mean().detach()
 
@@ -170,6 +175,8 @@ class FlowModel(pl.LightningModule):
             "loss_mse": loss_mse.mean(),
             "loss_last_step": loss_last_step.mean(),
             "loss_without_time": loss_without_time.mean(),
+            "loss_pos": loss_pos.mean(),
+            "loss_atom": loss_atom.mean() * self.w_loss_atom,
         }
 
     def _get_data(self, batch):
@@ -263,6 +270,10 @@ class FlowModel(pl.LightningModule):
             self.optimizers().param_groups[0]["lr"],
             on_epoch=True,
             on_step=False,
+        )
+        self.log("u_t/ref", u_t_ref.norm(dim=-1).mean(), on_epoch=True, on_step=True)
+        self.log(
+            "u_t/theta", u_t_theta.norm(dim=-1).mean(), on_epoch=True, on_step=True
         )
         return losses["loss"]
 
