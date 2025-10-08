@@ -24,6 +24,10 @@ dev = [
     "pydocstyle"
 ]
 
+all = [
+    "topoflow[dev]"
+]
+
 [tool.setuptools]
 packages = ["topoflow"]
 
