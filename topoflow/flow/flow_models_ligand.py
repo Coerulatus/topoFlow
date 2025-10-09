@@ -162,7 +162,7 @@ class FlowModel(pl.LightningModule):
         loss_mse = self.loss_function(u_t_theta_lig, u_t_ref_lig)
         loss_pos = loss_mse[:, :3].mean()
         loss_atom = loss_mse[:, 3:].mean()
-        loss_mse[:, :3] *= self.w_loss_atom  # Higher weight on position
+        loss_mse[:, 3:] *= self.w_loss_atom  # Higher weight on position
         loss_mse = loss_mse.mean(dim=-1)  # Mean over the last dimension
         loss = loss_mse + loss_last_step
         loss_without_time = loss.clone().mean().detach()
