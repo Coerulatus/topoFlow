@@ -104,8 +104,8 @@ def train_flow_model(
     alpha = CosineAlpha()
     beta = CosineBeta()
     if max_atom_time is not None and max_atom_time != 1.0:
-        alpha_atom = CosineAlpha(max_value=max_atom_time)
-        beta_atom = CosineBeta(max_value=max_atom_time)
+        alpha_atom = CosineAlpha(t_max=max_atom_time)
+        beta_atom = CosineBeta(t_max=max_atom_time)
     else:
         alpha_atom = None
         beta_atom = None
