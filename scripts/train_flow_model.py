@@ -41,7 +41,9 @@ def train_flow_model(
     max_frac,
     min_time_factor,
     max_time_factor,
+    max_atom_time,
     w_loss_last_step,
+    velocity_scale,
     seed,
     mlflow_tracking_uri,
     experiment_name,
@@ -67,7 +69,9 @@ def train_flow_model(
         max_frac (float): When to stop increasing the learning rate.
         min_time_factor (float): Minimum time factor for the flow model.
         max_time_factor (float): Maximum time factor for the flow model.
+        max_atom_time (float): Maximum atom time for the flow model.
         w_loss_last_step (float): Weight for the loss at the last time step.
+        velocity_scale (float): Scaling factor for the velocity in the loss computation.
         seed (int): Random seed for reproducibility.
         mlflow_tracking_uri (str): MLflow tracking URI.
         experiment_name (str): MLflow experiment name.
@@ -99,6 +103,12 @@ def train_flow_model(
     # beta = LinearBeta()
     alpha = CosineAlpha()
     beta = CosineBeta()
+    if max_atom_time is not None and max_atom_time != 1.0:
+        alpha_atom = CosineAlpha(max_value=max_atom_time)
+        beta_atom = CosineBeta(max_value=max_atom_time)
+    else:
+        alpha_atom = None
+        beta_atom = None
 
     p_data = DataLoaderSampleable(
         train_dataset,
@@ -106,7 +116,13 @@ def train_flow_model(
         shuffle=True,
         num_workers=len(psutil.Process().cpu_affinity()),
     )
-    path = GaussianConditionalProbabilityPath(p_data=p_data, alpha=alpha, beta=beta)
+    path = GaussianConditionalProbabilityPath(
+        p_data=p_data,
+        alpha=alpha,
+        beta=beta,
+        alpha_atom=alpha_atom,
+        beta_atom=beta_atom,
+    )
 
     val_metric_dist_path = os.path.join(data_dir, "processed", "val_distribution.npy")
     if os.path.exists(val_metric_dist_path):
@@ -180,6 +196,7 @@ def train_flow_model(
         max_frac=max_frac,
         time_factor=time_factor,
         w_loss_last_step=w_loss_last_step,
+        velocity_scale=velocity_scale,
     )
     # ======================================================================
     # Training Setup
@@ -316,10 +333,22 @@ if __name__ == "__main__":
         help="Maximum time factor for the flow model.",
     )
     parser.add_argument(
+        "--max_atom_time",
+        type=float,
+        default=1.0,
+        help="Maximum time factor for atom type updates in the flow model.",
+    )
+    parser.add_argument(
         "--w_loss_last_step",
         type=float,
         default=0.2,
         help="Weight for the loss at the last time step.",
+    )
+    parser.add_argument(
+        "--velocity_scale",
+        type=float,
+        default=1.0,
+        help="Scaling factor for the velocity in the loss computation.",
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
@@ -364,7 +393,9 @@ if __name__ == "__main__":
         max_frac=args.max_frac_lr,
         min_time_factor=args.min_time_factor,
         max_time_factor=args.max_time_factor,
+        max_atom_time=args.max_atom_time,
         w_loss_last_step=args.w_loss_last_step,
+        velocity_scale=args.velocity_scale,
         seed=args.seed,
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         experiment_name=args.mlflow_experiment_name,

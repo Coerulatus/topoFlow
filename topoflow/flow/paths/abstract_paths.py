@@ -35,8 +35,8 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
         self.p_data = p_data
         self.device = device
         # Determine the target shape for time tensors based on the simple distribution's samples.
-        z = p_simple.sample(1)
-        n_dim = z.dim()
+        x = p_simple.sample(1)
+        n_dim = x.dim()
         self.t_target_shape = [-1] + [1] * (n_dim - 1)
 
     def __len__(self):

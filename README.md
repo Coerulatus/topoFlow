@@ -42,6 +42,20 @@ bash env_setup.sh
 
 -----
 
+## Running the Project
+
+### MLFlow Tracking
+
+To view and manage experiment results using MLFlow, run the UI backend and access the provided address:
+
+```bash
+mlflow ui --backend-store-uri ./mlruns
+```
+
+The terminal will display the local tracking server address (e.g., `Listening at: http://127.0.0.1:5000`). Use this link to view your experiments in a web browser.
+
+-----
+
 ## Troubleshooting
 
 ### PyTorch Geometric GPU Errors
@@ -54,17 +68,3 @@ You can manually resolve this by running the following command **after activatin
 # This command forces the installation from the dedicated PyG wheel index
 pip install torch-cluster -f https://data.pyg.org/whl/torch-{TORCH}+{CUDA}.html
 ```
-
------
-
-## Running the Project
-
-### MLFlow Tracking
-
-To view and manage experiment results using MLFlow, run the UI backend and access the provided address:
-
-```bash
-mlflow ui --backend-store-uri ./mlruns
-```
-
-The terminal will display the local tracking server address (e.g., `Listening at: http://127.0.0.1:5000`). Use this link to view your experiments in a web browser.

@@ -544,14 +544,17 @@ def visualize_trajectory(
     if gif_path is not None:
         # Create a GIF from the saved images
         import imageio
+        from PIL import Image
 
         images = []
         for idx in range(len(data_list)):
             if idx % plot_every != 0:
                 continue
             img_path = f"{image_path}_{idx}.png"
-            images.append(imageio.imread(img_path))
-        imageio.mimsave(gif_path, images, duration=1, disposal=2, loop=1)
+            img_data = imageio.imread(img_path)
+            pil_img = Image.fromarray(img_data)
+            images.append(pil_img.convert("RGB"))
+        imageio.mimsave(gif_path, images, duration=1, disposal=1, loop=1, optimize=True)
 
 
 if __name__ == "__main__":
