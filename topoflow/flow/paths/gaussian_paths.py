@@ -21,7 +21,16 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
     """
 
     def __init__(
-        self, p_data, alpha, beta, device="cpu", target_dim=None, distribution_hist=None
+        self,
+        p_data,
+        alpha,
+        beta,
+        alpha_atom=None,
+        beta_atom=None,
+        n_coords=3,
+        device="cpu",
+        target_dim=None,
+        distribution_hist=None,
     ):
         """Initializes the GaussianConditionalProbabilityPath.
 
@@ -30,6 +39,11 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
             alpha: Function that defines the time-dependent scaling of the
                 conditioning variable.
             beta: Function that defines the time-dependent scaling of the noise.
+            alpha_atom: Optional function for scaling of the
+                conditioning variable for the atom type. If None, `alpha` is used. Defaults to None.
+            beta_atom: Optional function for scaling of the noise for the atom type. If
+                None, `beta` is used. Defaults to None.
+            n_coords: Number of coordinates per atom (e.g., 3 for 3D data).
             device: The device to perform computations on (e.g., 'cpu' or 'cuda').
                 Defaults to 'cpu'.
             target_dim: The target dimension of the data. If None, it's inferred
@@ -45,6 +59,11 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
         self.alpha.device = device
         self.beta = beta
         self.beta.device = device
+        self.alpha_atom = alpha_atom if alpha_atom is not None else alpha
+        self.alpha_atom.device = device
+        self.beta_atom = beta_atom if beta_atom is not None else beta
+        self.beta_atom.device = device
+        self.n_coords = n_coords
         if distribution_hist is not None:
             self.size_distribution = DistributionNodes(distribution_hist)
         else:
@@ -103,10 +122,25 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
         Returns:
             Samples `x` from p_t(x|z). [batch_size, *dims]
         """
-        if start_points is not None:
-            x = self.alpha(t) * z + self.beta(t) * start_points
+        batch_size = z.shape[0]
+
+        if start_points is None:
+            w = self.p_simple.sample(num_samples=batch_size).to(self.device)
+            w_coords = w[:, : self.n_coords]
+            w_atoms = w[:, self.n_coords :]
         else:
-            x = self.alpha(t) * z + self.beta(t) * torch.randn_like(z)
+            # If start_points are provided, they replace the noise sampling (w)
+            w_coords = start_points[:, : self.n_coords]
+            w_atoms = start_points[:, self.n_coords :]
+
+        # Apply the scaling factors
+        x_coords = self.alpha(t) * z[:, : self.n_coords] + self.beta(t) * w_coords
+        x_atoms = (
+            self.alpha_atom(t) * z[:, self.n_coords :] + self.beta_atom(t) * w_atoms
+        )
+
+        x = torch.cat([x_coords, x_atoms], dim=-1)
+
         return x.to(self.device)
 
     def conditional_vector_field(
@@ -126,13 +160,27 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
         beta_t = self.beta(t)
         dt_alpha_t = self.alpha.dt(t)
         dt_beta_t = self.beta.dt(t)
-        u = (dt_alpha_t - dt_beta_t / beta_t * alpha_t) * z + dt_beta_t / beta_t * x
+
+        alpha_t_atom = self.alpha_atom(t)
+        beta_t_atom = self.beta_atom(t)
+        dt_alpha_t_atom = self.alpha_atom.dt(t)
+        dt_beta_t_atom = self.beta_atom.dt(t)
+
+        u_coords = (dt_alpha_t - dt_beta_t / beta_t * alpha_t) * z[
+            :, : self.n_coords
+        ] + dt_beta_t / beta_t * x[:, : self.n_coords]
+        u_atoms = (dt_alpha_t_atom - dt_beta_t_atom / beta_t_atom * alpha_t_atom) * z[
+            :, self.n_coords :
+        ] + dt_beta_t_atom / beta_t_atom * x[:, self.n_coords :]
+        u = torch.cat([u_coords, u_atoms], dim=-1)
         return u.to(self.device)
 
     def conditional_score(
         self, x: torch.Tensor, z: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
-        """Evaluates the conditional score function of p_t(x|z).
+        """Deprecated. Here for compatibility.
+
+        Evaluates the conditional score function of p_t(x|z).
 
         Args:
             x: Sample. [batch_size, *dims]

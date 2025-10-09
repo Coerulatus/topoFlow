@@ -54,6 +54,7 @@ class FlowModel(pl.LightningModule):
         time_factor=None,
         w_loss_last_step=0.2,
         w_loss_atom=0.02,
+        velocity_scale=1.0,
     ):
         """Initializes the FlowModel.
 
@@ -79,6 +80,7 @@ class FlowModel(pl.LightningModule):
             time_factor: Optional function to scale the loss by time.
             w_loss_last_step: Weight for the loss component at the last time step. Defaults to 0.2.
             w_loss_atom: Weight for the atom type loss component. Defaults to 0.02.
+            velocity_scale: Scaling factor for the velocity in the loss computation. Defaults to 1.0.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["path"])
@@ -130,7 +132,7 @@ class FlowModel(pl.LightningModule):
         self.w_loss_atom = w_loss_atom
         self.sample_steps = 80
         self.max_batched_samples = max_batched_samples
-        self.loss_lig_weight = 100
+        self.velocity_scale = velocity_scale
 
         # self.forward = torch.compile(self.forward)
 
@@ -222,6 +224,7 @@ class FlowModel(pl.LightningModule):
         t_batched = batch.get("t_batched")
         x = batch.get("x")
         u_t_ref = batch.get("u_t_ref")
+        u_t_ref *= self.velocity_scale
 
         # Get ligand and pocket indices
         lig_indices = torch.where(batch_lig != -1)[0]
@@ -466,6 +469,8 @@ class FlowModel(pl.LightningModule):
         # For the pocket we already have the final positions, so the velocity is zero
         guided_vector_field = torch.zeros_like(x)
         guided_vector_field[is_lig, :] = u_t_theta_lig
+        # We need to rescale the velocity because the reference vector field is also rescaled
+        guided_vector_field *= self.velocity_scale
 
         return guided_vector_field
 

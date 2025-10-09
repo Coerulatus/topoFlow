@@ -205,13 +205,13 @@ class LinearBeta(Beta):
 
 
 class CosineBeta(Beta):
-    """Cosine-based beta scheduler, where Beta(t) = cos(pi*t/2).
+    """Cosine-based beta scheduler, where Beta(t) = cos(pi*t/(2*t_max)).
 
-    This schedule ensures the signal term goes from 1 to 0.
+    This schedule ensures the signal term goes from 1 (at t=0) to 0 (at t=t_max).
     """
 
     def __call__(self, t: torch.Tensor) -> torch.Tensor:
-        """Computes Beta(t) = cos(pi*t/2).
+        """Computes Beta(t) = cos(pi*t/(2*t_max)).
 
         Args:
             t: Time. [batch_size, *1s]
@@ -219,12 +219,15 @@ class CosineBeta(Beta):
         Returns:
             The value of the cosine schedule at time t. [batch_size, *1s]
         """
-        return torch.cos(t * torch.pi / 2.0).to(t.device)
+        t_scaled = (t / self.t_max).clamp(max=1.0)
+
+        # Beta(t) = cos(pi/2 * t/t_max)
+        return torch.cos(t_scaled * torch.pi / 2.0).to(t.device)
 
     def dt(self, t: torch.Tensor) -> torch.Tensor:
         """Computes the derivative of CosineBeta(t).
 
-        The derivative is -pi/2 * sin(pi*t/2).
+        The derivative is -(pi/(2*t_max)) * sin(pi*t/(2*t_max)).
 
         Args:
             t: Time. [batch_size, *1s]
@@ -232,4 +235,12 @@ class CosineBeta(Beta):
         Returns:
             The derivative of the cosine schedule at time t. [batch_size, *1s]
         """
-        return -torch.pi / 2.0 * torch.sin(t * torch.pi / 2.0).to(t.device)
+        t_scaled = (t / self.t_max).clamp(max=1.0)
+
+        # Derivative pre-factor: -(pi/2) * (1/t_max)
+        pre_factor = -torch.pi / (2.0 * self.t_max)
+
+        # dBeta/dt (Derivative wrt original t)
+        d_beta = pre_factor * torch.sin(t_scaled * torch.pi / 2.0)
+        # Zero out derivative after t_max
+        return torch.where(t <= self.t_max, d_beta, torch.zeros_like(t))

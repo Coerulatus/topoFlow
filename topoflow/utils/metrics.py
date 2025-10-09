@@ -7,8 +7,7 @@ import numpy as np
 from rdkit import Chem
 import torch
 
-sys.path.append(os.path.join(os.environ["CONDA_PREFIX"], "share", "RDKit", "Contrib"))
-from SA_Score import sascorer
+from topoflow.utils import sascorer
 from topoflow.utils.molecules import data_to_rdmol, rdmol_to_smiles
 
 

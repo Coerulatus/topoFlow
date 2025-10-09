@@ -1,0 +1,11 @@
+name: topoflow
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - anaconda::ipykernel
+  - conda-forge::pre_commit
+  - numpy 
+  - openbabel
+  - pymol-open-source
