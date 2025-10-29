@@ -18,7 +18,7 @@ from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.flow_models_ligand import FlowModel
 from topoflow.data.dataloader_adj import DataLoaderSampleable
 from topoflow.data.datasets import CrossDocked
-from topoflow.flow.schedulers import SineAlpha, CosineBeta
+from topoflow.flow.schedulers import CosineAlpha, CosineBeta
 
 
 def run_multiple_validations(
@@ -59,7 +59,7 @@ def run_multiple_validations(
         test_length=1,  # Not used
         batch_size=batch_size,
     )
-    alpha = SineAlpha()
+    alpha = CosineAlpha()
     beta = CosineBeta()
 
     p_data = DataLoaderSampleable(
@@ -233,7 +233,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_file",
         type=str,
-        default="./results/results3.md",
+        default="./results/results_10_20_500e.md",
         help="File to save the aggregated results.",
     )
 

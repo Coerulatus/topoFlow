@@ -1062,11 +1062,10 @@ class AllSetTransformerVectorField(nn.Module):
         n_hyperedges += valid.size(0)
         n_values += non_zeros.size(0)
 
+        # Create incidence matrix with lp hyperedges
         edge_lp, edge_index = self.create_edge_index(
             x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
         )
-
-        # Create incidence matrix with lp hyperedges
         rows_lp = edge_lp[0]
         cols_lp = edge_lp[1]
 
@@ -1081,6 +1080,7 @@ class AllSetTransformerVectorField(nn.Module):
         col = torch.cat([col, cols + n_hyperedges], dim=0)
         n_values += rows.size(0)
         n_hyperedges += n_lig
+
         # Create incidence matrix
         value = torch.ones(n_values, dtype=torch.long, device=device)
         incidence1 = torch.sparse_coo_tensor(

@@ -1,0 +1,1 @@
+python scripts/train_flow_model.py --vector_field_model ast --hidden_dim 128 --epochs 200 --batch_size 8 --start_lr 0.0005 --max_lr 0.001 --min_lr 0.0002 --w_loss_last_step 0.02 --max_atom_time 0.9 --velocity_scale 0.25 --mlflow_experiment_name TopoFlow_AST_GAT --run_name 10_10_200e_ast_scaled_vel 

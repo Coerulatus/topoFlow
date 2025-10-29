@@ -266,7 +266,7 @@ class FlowModel(pl.LightningModule):
 
         for name, value in losses.items():
             self.log(
-                f"train/{name}", value, on_epoch=True, prog_bar=False, on_step=False
+                f"train/{name}", value, on_epoch=True, prog_bar=False, on_step=True
             )
         self.log(
             "train/lr",
@@ -274,10 +274,10 @@ class FlowModel(pl.LightningModule):
             on_epoch=True,
             on_step=False,
         )
-        self.log("u_t/ref", u_t_ref.norm(dim=-1).mean(), on_epoch=True, on_step=True)
-        self.log(
-            "u_t/theta", u_t_theta.norm(dim=-1).mean(), on_epoch=True, on_step=True
-        )
+        # self.log("u_t/ref", u_t_ref.norm(dim=-1).mean(), on_epoch=True, on_step=True)
+        # self.log(
+        #     "u_t/theta", u_t_theta.norm(dim=-1).mean(), on_epoch=True, on_step=True
+        # )
         return losses["loss"]
 
     def on_after_backward(self):
@@ -344,7 +344,7 @@ class FlowModel(pl.LightningModule):
             )
             for metric, distance in distances.items():
                 self.log(
-                    f"val/{metric}_wasserstein_distance",
+                    f"val/{metric}",
                     distance,
                     on_epoch=True,
                     prog_bar=False,
@@ -413,7 +413,7 @@ class FlowModel(pl.LightningModule):
                 raise ValueError(f"Unsupported metric: {metric}")
 
         # Check connectivity, uniqueness and novelty
-        validity_score = num_samples / len(mols)
+        validity_score = min(num_samples / len(mols), 1)
         connectivity_score, connected = compute_connectivity(mols)
         uniqueness_ratio, unique_smiles = compute_uniqueness(connected)
         # novelty_ratio, novel_smiles = compute_novelty(
@@ -423,6 +423,14 @@ class FlowModel(pl.LightningModule):
         res["validity"] = torch.tensor(validity_score, dtype=torch.float)
         res["connectivity"] = torch.tensor(connectivity_score, dtype=torch.float)
         res["uniqueness"] = torch.tensor(uniqueness_ratio, dtype=torch.float)
+        for metric in metrics:
+            if metric in results:
+                res[f"{metric}_mean"] = torch.tensor(
+                    np.mean(results[metric]), dtype=torch.float
+                )
+                res[f"{metric}_std"] = torch.tensor(
+                    np.std(results[metric]), dtype=torch.float
+                )
         # res["novelty"] = torch.tensor(novelty_ratio, dtype=torch.float)
 
         distances = {}
@@ -436,7 +444,7 @@ class FlowModel(pl.LightningModule):
                 if isinstance(actual, list):
                     actual = torch.tensor(actual, device=expected.device)
                 distance = wasserstein_1d(expected, actual)
-                distances[metric] = distance.item()
+                distances[metric + "_wl_distance"] = distance.item()
 
             return distances, res
         except Exception as e:

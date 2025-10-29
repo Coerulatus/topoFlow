@@ -61,8 +61,8 @@ def calculateScore(m):
     if not m.GetNumAtoms():
         return None
 
-    if _fscores is None:
-        readFragmentScores()
+    # if _fscores is None:
+    #     readFragmentScores()
 
     # fragment score
     sfp = mfpgen.GetSparseCountFingerprint(m)
