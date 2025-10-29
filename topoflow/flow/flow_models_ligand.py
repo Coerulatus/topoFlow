@@ -478,7 +478,7 @@ class FlowModel(pl.LightningModule):
         guided_vector_field = torch.zeros_like(x)
         guided_vector_field[is_lig, :] = u_t_theta_lig
         # We need to rescale the velocity because the reference vector field is also rescaled
-        guided_vector_field *= self.velocity_scale
+        guided_vector_field /= self.velocity_scale
 
         return guided_vector_field
 
