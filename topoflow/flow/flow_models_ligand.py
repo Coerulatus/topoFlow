@@ -341,6 +341,7 @@ class FlowModel(pl.LightningModule):
                     "sas",
                 ],  # TODO: add lipinski, but also in the val_dist
                 atom_decoder=self.atom_decoder,
+                biggest_fragment=True,
             )
             for metric, distance in distances.items():
                 self.log(
@@ -357,7 +358,11 @@ class FlowModel(pl.LightningModule):
 
     @torch.no_grad()
     def test_distribution(
-        self, test_distribution, metrics=["qed", "logp", "sas"], atom_decoder=None
+        self,
+        test_distribution,
+        metrics=["qed", "logp", "sas"],
+        atom_decoder=None,
+        keep_biggest_fragment=False,
     ):
         """Test is the molecules produced follow the expected distribution.
 
@@ -370,6 +375,12 @@ class FlowModel(pl.LightningModule):
             metrics: List of metrics to evaluate. Defaults to ['qed', 'logp', 'sas'].
             atom_decoder: Optional atom decoder for converting samples to RDKit molecules.
                 Defaults to None to use the model's default atom decoder.
+            keep_biggest_fragment: If True, only the biggest fragment of each molecule is considered. Defaults to False.
+
+        Returns:
+            A tuple containing:
+                - distances: A dictionary with the Wasserstein distances for each metric.
+                - results: A dictionary with the computed metrics for the generated samples.
         """
         if atom_decoder is None:
             atom_decoder = self.atom_decoder
@@ -393,6 +404,13 @@ class FlowModel(pl.LightningModule):
                 n_steps=self.sample_steps,
             )
             mols += data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
+
+        connectivity_score, connected_mols, connected_smiles = compute_connectivity(
+            mols
+        )
+        if keep_biggest_fragment:
+            mols = connected_mols
+
         results = {}
         for metric in metrics:
             if metric not in test_distribution:
@@ -414,8 +432,7 @@ class FlowModel(pl.LightningModule):
 
         # Check connectivity, uniqueness and novelty
         validity_score = min(num_samples / len(mols), 1)
-        connectivity_score, connected = compute_connectivity(mols)
-        uniqueness_ratio, unique_smiles = compute_uniqueness(connected)
+        uniqueness_ratio, unique_smiles = compute_uniqueness(connected_smiles)
         # novelty_ratio, novel_smiles = compute_novelty(
         #     connected, self.path.p_data.dataset.smiles_list
         # )
@@ -496,21 +513,28 @@ class FlowModel(pl.LightningModule):
         return x_lig, x_pocket
 
     @torch.no_grad()
-    def sample(self, n_samples, n_steps=20):
+    def sample(self, n_samples, n_steps=20, pocket=None):
         """Samples data by simulating the learned flow from the simple distribution.
 
         Args:
             n_samples: Number of samples to generate.
             n_steps: Number of integration steps for the simulator. Defaults to 20.
+            pocket: Optional pocket data to condition the sampling.
 
         Returns:
             The generated samples after simulating the flow.
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
 
-        z_pocket, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
-            n_samples, pocket_only=True, force_batch_size=True
-        )
+        if pocket is not None:
+            z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+            batch_pocket = pocket.batch_pocket
+            z_pocket = z_pocket.to(self.path.device)
+            batch_pocket = batch_pocket.to(self.path.device)
+        else:
+            z_pocket, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
+                n_samples, pocket_only=True, force_batch_size=True
+            )
 
         starting_points, batch_all, batch_lig, batch_pocket = (
             self.path.sample_simple_distribution(n_samples, batch_pocket=batch_pocket)
@@ -545,7 +569,7 @@ class FlowModel(pl.LightningModule):
         return data
 
     def sample_with_trajectory(
-        self, n_samples, n_steps=20, force_connected=False, max_attempts=10
+        self, n_samples, n_steps=20, force_connected=False, max_attempts=10, pocket=None
     ):
         """Samples data by simulating the learned flow from the simple distribution and returns the trajectory.
 
@@ -554,15 +578,22 @@ class FlowModel(pl.LightningModule):
             n_steps: Number of integration steps for the simulator. Defaults to 20.
             force_connected: If True, generate molecules until it is connected. Defaults to False.
             max_attempts: Maximum number of attempts to generate a connected molecule. Defaults to 10.
+            pocket: Optional pocket data to condition the sampling.
 
         Returns:
             The generated samples after simulating the flow, along with the trajectory.
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
 
-        z_pocket, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
-            n_samples, pocket_only=True, force_batch_size=True
-        )
+        if pocket is not None:
+            z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+            batch_pocket = pocket.batch_pocket
+            z_pocket = z_pocket.to(self.path.device)
+            batch_pocket = batch_pocket.to(self.path.device)
+        else:
+            z_pocket, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
+                n_samples, pocket_only=True, force_batch_size=True
+            )
 
         starting_points, batch_all, batch_lig, batch_pocket = (
             self.path.sample_simple_distribution(n_samples, batch_pocket=batch_pocket)

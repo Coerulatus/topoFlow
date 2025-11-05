@@ -8,7 +8,7 @@ from torch_geometric.data import Data
 class RandomRotateTranslate:
     """Randomly rotate and translate 3D coordinates in a Data object."""
 
-    def __init__(self, translate_scale: float = 0.5):
+    def __init__(self, translate_scale: float = 0):
         """Initialize the RandomRotateTranslate augmentation.
 
         Args:

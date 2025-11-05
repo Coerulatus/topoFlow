@@ -1,8 +1,3 @@
-"""Module to compute the Synthetic Accessibility Score (SAS) for molecules.
-
-Taken from Contrib/SA_Score in RDKit.
-"""
-
 #
 # calculation of synthetic accessibility score as described in:
 #
@@ -34,7 +29,6 @@ mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=2)
 
 
 def readFragmentScores(name="fpscores.pkl.gz"):
-    """Read fragment scores from a file."""
     import gzip
 
     global _fscores
@@ -50,19 +44,18 @@ def readFragmentScores(name="fpscores.pkl.gz"):
 
 
 def numBridgeheadsAndSpiro(mol, ri=None):
-    """Calculate the number of bridgehead and spiro atoms in a molecule."""
     nSpiro = rdMolDescriptors.CalcNumSpiroAtoms(mol)
     nBridgehead = rdMolDescriptors.CalcNumBridgeheadAtoms(mol)
     return nBridgehead, nSpiro
 
 
 def calculateScore(m):
-    """Calculate the Synthetic Accessibility Score (SAS) for a molecule."""
+
     if not m.GetNumAtoms():
         return None
 
-    # if _fscores is None:
-    #     readFragmentScores()
+    if _fscores is None:
+        readFragmentScores()
 
     # fragment score
     sfp = mfpgen.GetSparseCountFingerprint(m)
@@ -134,7 +127,6 @@ def calculateScore(m):
 
 
 def processMols(mols):
-    """Process a list of molecules and print their SMILES, name, and SAS score."""
     print("smiles\tName\tsa_score")
     for i, m in enumerate(mols):
         if m is None:

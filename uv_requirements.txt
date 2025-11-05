@@ -19,3 +19,4 @@ gdown
 pytest-cov
 xformers
 rdkit
+tabulate

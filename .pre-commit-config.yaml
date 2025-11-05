@@ -1,3 +1,4 @@
+exclude: ^topoflow/utils/sa_score/.*
 repos:
   - repo: https://github.com/psf/black
     rev: 25.1.0  # Check https://github.com/psf/black/tags for latest

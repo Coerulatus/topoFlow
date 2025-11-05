@@ -163,15 +163,16 @@ def plot_molecular_complex(
 
     # Load ligand
     # The object name in PyMOL will be "ligand"
-    if verbose:
-        print(f"Loading ligand from: {ligand_path} as 'ligand'")
-    if ligand_path.endswith(".sdf"):
-        pymol.cmd.load(ligand_path, "ligand", format="sdf")
-    elif ligand_path.endswith(".mol2"):
-        pymol.cmd.load(ligand_path, "ligand", format="mol2")
-    else:
-        # Fallback if extension is not .sdf or .mol2
-        pymol.cmd.load(ligand_path, "ligand")
+    if ligand_path is not None:
+        if verbose:
+            print(f"Loading ligand from: {ligand_path} as 'ligand'")
+        if ligand_path.endswith(".sdf"):
+            pymol.cmd.load(ligand_path, "ligand", format="sdf")
+        elif ligand_path.endswith(".mol2"):
+            pymol.cmd.load(ligand_path, "ligand", format="mol2")
+        else:
+            # Fallback if extension is not .sdf or .mol2
+            pymol.cmd.load(ligand_path, "ligand")
 
     # Basic Visualization Commands
     pymol.cmd.hide("all")  # Hide everything initially to control what's shown
@@ -182,9 +183,10 @@ def plot_molecular_complex(
     pymol.cmd.color("lightblue", "protein")  # Color protein surface
 
     # Ligand Visualization - Now with custom coloring
-    pymol.cmd.show(
-        "spheres", "ligand"
-    )  # Show ligand as spheres (or 'sticks' if preferred)
+    if ligand_path is not None:
+        pymol.cmd.show(
+            "spheres", "ligand"
+        )  # Show ligand as spheres (or 'sticks' if preferred)
 
     if (
         dataset_param
@@ -220,13 +222,15 @@ def plot_molecular_complex(
                 "dataset_param not provided or missing 'idx_to_atom_map'/'colors_dic'. Using default CPK coloring for ligand."
             )
         # Fallback to PyMOL's default coloring if custom parameters are not available
-        pymol.cmd.util.cbag("ligand")  # Color ligand by atom type (CPK)
+        if ligand_path is not None:
+            pymol.cmd.util.cbag("ligand")  # Color ligand by atom type (CPK)
 
     # Plot bonds if available
-    pymol.cmd.show("sticks", "ligand")  # Show ligand bonds as sticks
-    pymol.cmd.set(
-        "stick_radius", 0.4 * sizes[0], "ligand"
-    )  # Set stick radius for better visibility
+    if ligand_path is not None:
+        pymol.cmd.show("sticks", "ligand")  # Show ligand bonds as sticks
+        pymol.cmd.set(
+            "stick_radius", 0.4 * sizes[0], "ligand"
+        )  # Set stick radius for better visibility
 
     # Center and zoom on the complex
     pymol.cmd.zoom("all", 5.0)  # Zoom to all objects with a padding

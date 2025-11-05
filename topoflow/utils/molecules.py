@@ -1,11 +1,14 @@
 """Create RDKit molecules from atom positions and types using Open Babel."""
 
+import os
 import tempfile
 import numpy as np
 from rdkit import Chem, RDLogger
 from openbabel import openbabel
 from tqdm import tqdm
 import torch
+import torch_geometric
+from torch_geometric.data import Data
 
 openbabel.cvar.obErrorLog.StopLogging()
 
@@ -133,3 +136,119 @@ def rdmol_to_smiles(rdmol):
     except Exception as e:
         print(f"Error converting RDKit molecule to SMILES: {e}")
         return None
+
+
+def pdb_to_data_object(
+    pdb_file: str,
+    atom_encoder: dict,
+    save_path: str = None,
+    normalization_path: str = None,
+    remove_hydrogens: bool = True,
+    center_pocket: bool = True,
+    only_coords: bool = False,
+    verbose: bool = False,
+    force: bool = False,
+) -> Data:
+    """Reads a PDB file using RDKit and creates a PyTorch Geometric Data object for pocket atoms.
+
+    This function uses RDKit's PDB parser to load the structure, then extracts coordinates
+    and converts atomic element symbols into a one-hot feature matrix using the provided
+    atom_encoder. It checks for and saves to a cache file for optimization.
+
+    Args:
+        pdb_file (str): Path to the input PDB file (e.g., a protein pocket file).
+        atom_encoder (dict): Dictionary mapping atomic element symbols (e.g., 'C', 'N')
+                             to their corresponding index (int) used in the one-hot encoding.
+        save_path (str, optional): Path to save/load the resulting Data object (e.g., 'pocket_cache.pt').
+                                   If the file exists, it is loaded; otherwise, the parsed data is saved here.
+                                   Defaults to None (no caching).
+        normalization_path (str, optional): Path to normalization parameters file.
+        remove_hydrogens (bool): If True, all hydrogen atoms are removed from the molecule
+                                 after loading and before featurization. Defaults to True.
+        center_pocket (bool): If True, centers the pocket coordinates to the origin. Defaults to True.
+        only_coords (bool): If True, returns a feature tensor (h_pocket) containing only zeros.
+                            Defaults to False.
+        verbose (bool): If True, prints status updates and parsing details.
+        force (bool): If True, forces re-parsing and ignores any cached file at save_path. Defaults to False.
+
+    Returns:
+        Data: A PyTorch Geometric Data object containing:
+            - `x_pocket`: Coordinates (N_pocket x 3)
+            - `h_pocket`: One-hot features (N_pocket x D_features)
+            - `batch_pocket`: Batch index (constant 0 for a single file)
+    """
+    if save_path is not None and os.path.exists(save_path) and not force:
+        if verbose:
+            print(f"Loading pocket data from cache: {save_path}")
+        with torch.serialization.safe_globals(
+            [
+                torch_geometric.data.Data,
+                torch_geometric.data.data.DataEdgeAttr,
+                torch_geometric.data.data.DataTensorAttr,
+                torch_geometric.data.storage.GlobalStorage,
+            ]
+        ):
+            pocket = torch.load(save_path, weights_only=True)
+    try:
+        # Load the molecule, sanitize=False is critical for protein structures
+        # We use removeHs=False here because we will handle hydrogen removal explicitly below
+        mol = Chem.MolFromPDBFile(pdb_file, sanitize=False, removeHs=False)
+        if mol is None:
+            raise ValueError("RDKit could not parse the PDB file.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to read PDB file with RDKit: {e}")
+
+    # --- Hydrogen Removal Logic ---
+    if remove_hydrogens:
+        if verbose:
+            print("Removing hydrogen atoms from the pocket molecule...")
+        # Use Chem.RemoveHs to create a new molecule object without Hydrogens
+        mol = Chem.RemoveHs(mol)
+    # --- End Hydrogen Removal Logic ---
+
+    # Use the existing mol_to_data function to get coordinates and features.
+    # We pass batch_id=0 as a single PDB file represents one pocket.
+    coords, one_hot_features, batch_index = mol_to_data(mol, atom_encoder, batch_id=0)
+
+    num_atoms = coords.shape[0]
+    num_features = one_hot_features.shape[1]
+
+    # Apply 'only_coords' logic to set features to zero if necessary
+    if only_coords:
+        h_pocket = torch.zeros((num_atoms, num_features), dtype=torch.float32)
+    else:
+        h_pocket = one_hot_features
+
+    if normalization_path is not None:
+        if verbose:
+            print(f"Applying normalization from: {normalization_path}")
+        norm_params = np.load(normalization_path, allow_pickle=True)
+        mean = norm_params["mean"]
+        std = norm_params["std"]
+        coords = (coords - torch.tensor(mean, dtype=torch.float32)) / torch.tensor(
+            std, dtype=torch.float32
+        )
+
+    if center_pocket:
+        if verbose:
+            print("Centering pocket coordinates to the origin...")
+        centroid = coords.mean(dim=0, keepdim=True)
+        coords = coords - centroid
+    # Rename tensors for the pocket Data object
+    pocket_data = Data(
+        x_pocket=coords,
+        h_pocket=h_pocket,
+        # Use the batch index tensor, renaming to pocket context
+        batch_pocket=batch_index,
+    )
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        torch.save(pocket_data, save_path)
+        if verbose:
+            print(f"Parsed data saved to cache: {save_path}")
+
+    if verbose:
+        print(f"Successfully parsed {num_atoms} pocket atoms using RDKit.")
+
+    return pocket_data

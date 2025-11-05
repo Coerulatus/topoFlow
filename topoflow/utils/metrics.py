@@ -7,7 +7,7 @@ import numpy as np
 from rdkit import Chem
 import torch
 
-from topoflow.utils import sascorer
+from topoflow.utils.sa_score import sascorer
 from topoflow.utils.molecules import data_to_rdmol, rdmol_to_smiles
 
 
@@ -104,12 +104,13 @@ def calculate_lipinski(rdmol):
 def compute_connectivity(valid, connectivity_thresh=0.5):  # TODO:choose threshold
     """Calculate connectivity of molecules.
 
-    Consider molecule connected if its largest fragment contains at least x% of all atoms, where x is determined by self.connectivity_thresh (defaults to 1).
+    Consider molecule connected if its largest fragment contains at least x% of all atoms, where x is determined by self.connectivity_thresh (defaults to 0.5).
     """
     if len(valid) < 1:
         return 0.0, []
 
     connected_smiles = []
+    connected_mols = []
     for mol in valid:
         try:
             mol_frags = Chem.rdmolops.GetMolFrags(mol, asMols=True)
@@ -118,11 +119,12 @@ def compute_connectivity(valid, connectivity_thresh=0.5):  # TODO:choose thresho
                 smiles = rdmol_to_smiles(largest_mol)
                 if smiles is not None:
                     connected_smiles.append(smiles)
+                    connected_mols.append(largest_mol)
         except Exception as e:
             print(f"Error processing molecule: {e}")
             continue
 
-    return len(connected_smiles) / len(valid), connected_smiles
+    return len(connected_smiles) / len(valid), connected_mols, connected_smiles
 
 
 def compute_uniqueness(connected):
