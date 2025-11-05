@@ -341,7 +341,7 @@ class FlowModel(pl.LightningModule):
                     "sas",
                 ],  # TODO: add lipinski, but also in the val_dist
                 atom_decoder=self.atom_decoder,
-                biggest_fragment=True,
+                keep_biggest_fragment=True,
             )
             for metric, distance in distances.items():
                 self.log(
