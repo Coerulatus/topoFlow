@@ -198,6 +198,7 @@ class TorchDiffEqSimulator:
         batch_lig: torch.Tensor,
         batch_pocket: torch.Tensor,
         z: torch.Tensor = None,
+        mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """Simulates the dynamics over a sequence of time steps.
 
@@ -208,6 +209,7 @@ class TorchDiffEqSimulator:
             batch_lig: The ligands associated with the samples. [batch_size, *dims]
             batch_pocket: The pockets associated with the samples. [batch_size, *dims]
             z: Optional sampled data.
+            mask: Optional mask to apply during simulation to zero part of x. [batch_size, *dims]
 
         Returns:
             State at final time step.
@@ -219,33 +221,53 @@ class TorchDiffEqSimulator:
         ode_func = lambda t, x: self.ode.drift_coefficient(
             x, t, batch_all, batch_lig, batch_pocket, z=z
         )
+
+        if mask is not None:
+            x *= mask
+
         sol = odeint(ode_func, x, t, method=self.solver)
         return sol.transpose(0, 1)
 
-    # @torch.no_grad()
-    # def simulate_trajectory(
-    #     self,
-    #     x: torch.Tensor,
-    #     ts: torch.Tensor
-    # ) -> torch.Tensor:
-    #     """Simulates the dynamics over a sequence of time steps.
+    def simulate_inpaint(
+        self, x, inverse_traj, ts, batch_all, batch_lig, batch_pocket, z, mask
+    ):
+        """Generate molecule with inpainting using the inverse trajectory.
 
-    #     Args:
-    #         x: Initial state of the system. [batch_size, dim]
-    #         ts: Sequence of time steps. [batch_size, time_steps]
+        The inpainting is done by replacing the masked parts of x with the
+        corresponding parts from the inverse trajectory at each time step.
 
-    #     Returns:
-    #         Simulated states at each time step.
-    #     """
-    #     if self.solver == "dopri5":
-    #         t = torch.tensor(
-    #             [ts[0], ts[-1]], device=ts.device
-    #         )  # Added device for consistency
-    #     else:
-    #         t = ts[:]
-    #     ode_func = lambda t, x: self.ode.drift_coefficient(x, t)
-    #     sol = odeint(ode_func, x, t, method=self.solver)
-    #     return sol.transpose(0, 1)
+        Args:
+        x : torch.Tensor
+            Initial state of the system. [batch_size, *dims]
+        inverse_traj : torch.Tensor
+            Inverse trajectory obtained from the reverse simulation. [batch_size, time_steps, *dims]
+        ts : torch.Tensor
+            Sequence of time steps. [time_steps]
+        batch_all : torch.Tensor
+            The combined batch indices for all samples. [batch_size, *dims]
+        batch_lig : torch.Tensor
+            The ligands associated with the samples. [batch_size, *dims]
+        batch_pocket : torch.Tensor
+            The pockets associated with the samples. [batch_size, *dims]
+        z : torch.Tensor
+            Optional sampled data.
+        mask : torch.Tensor
+            Mask to apply during inpainting. [batch_size, *dims]
+
+        Returns:
+            torch.Tensor: Inpainted states at each time step.
+        """
+
+        def ode_func(t, x):
+            t_idx = (ts - t).abs().argmin()
+            inverse_state = inverse_traj[:, t_idx]
+            x[mask] = inverse_state[mask]
+            return self.ode.drift_coefficient(
+                x, t, batch_all, batch_lig, batch_pocket, z=z
+            )
+
+        sol = odeint(ode_func, x, ts, method=self.solver)
+        return sol.transpose(0, 1)
 
     def step(self, xt, t, dt):
         """Step method for TorchDiffEqSimulator."""

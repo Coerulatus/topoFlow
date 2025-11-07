@@ -483,7 +483,6 @@ class FlowModel(pl.LightningModule):
             The drift coefficient. Shape: [num_atoms, *dims].
         """
         is_lig = batch_lig != -1
-
         x_lig = x[is_lig, :]
         x_pocket = z
 
@@ -675,6 +674,104 @@ class FlowModel(pl.LightningModule):
             )
             data_trajectory.append(data)
         return data_trajectory
+
+    @torch.no_grad()
+    def inpainting(self, ligand, pocket, n_atoms_to_add, n_steps=80):
+        """Performs inpainting by adding atoms to a given ligand within a pocket.
+
+        Args:
+            ligand: Data object representing the initial ligand.
+            pocket: Data object representing the pocket.
+            n_atoms_to_add: Number of atoms to add to the ligand.
+            n_steps: Number of integration steps for the simulator. Defaults to 80.
+
+        Returns:
+            The inpainted molecule after simulating the flow.
+        """
+        # TODO: add max time so that the molecule can change pose
+
+        ligand = ligand.to(self.path.device)
+        pocket = pocket.to(self.path.device)
+
+        batch_size = 1
+        simulator = TorchDiffEqSimulator(self, solver="rk4")
+
+        z_ligand = torch.cat([ligand.x_lig, ligand.h_lig], dim=-1)
+        z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+        batch_pocket = pocket.batch_pocket
+        z_pocket = z_pocket.to(self.path.device)
+        batch_pocket = batch_pocket.to(self.path.device)
+
+        n_total = ligand.x_lig.shape[0] + n_atoms_to_add
+        starting_points, batch_all, batch_lig, batch_pocket = (
+            self.path.sample_simple_distribution(
+                batch_size,
+                batch_pocket=batch_pocket,
+                size_ligand=torch.tensor([n_total] * batch_size),
+            )
+        )
+
+        is_lig = batch_lig != -1
+        is_poc = batch_pocket != -1
+
+        starting_points[is_poc] = z_pocket
+        mask = torch.zeros(starting_points.shape[0], dtype=torch.bool)
+        # TODO: fix mask for batch_size > 1
+        if batch_size > 1:
+            raise NotImplementedError(
+                "Inpainting for batch_size > 1 is not implemented yet."
+            )
+        mask[: ligand.x_lig.shape[0]] = True
+
+        t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
+        t_eval_inverse = torch.flip(t_eval, dims=[0])
+        # TODO: fix for batch > 1
+        z_ligand_padded = torch.cat(
+            [
+                z_ligand,
+                torch.zeros(
+                    (n_atoms_to_add, z_ligand.shape[1]), device=z_ligand.device
+                ),
+            ],
+            dim=0,
+        )
+        end_points = torch.cat((z_ligand_padded, z_pocket), dim=0)
+        inverse_traj = simulator.simulate(
+            end_points, t_eval_inverse, batch_all, batch_lig, batch_pocket, z=z_pocket
+        ).flip(
+            1
+        )  # Flip to have time increasing
+
+        starting_points[mask] = inverse_traj[: ligand.x_lig.shape[0], 0, :]
+        output = simulator.simulate_inpaint(
+            starting_points,
+            inverse_traj,
+            t_eval,
+            batch_all,
+            batch_lig,
+            batch_pocket,
+            z=z_pocket,
+            mask=mask,
+        )
+
+        output = output[:, -1]
+
+        x_lig = output[is_lig, :3]
+        h_lig = output[is_lig, 3:]
+        x_pocket = output[is_poc, :3]
+        h_pocket = output[is_poc, 3:]
+        if self.unnorm:
+            x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+        data = Data(
+            x_lig=x_lig,
+            h_lig=h_lig,
+            x_pocket=x_pocket,
+            h_pocket=h_pocket,
+            batch_all=batch_all,
+            batch_lig=batch_lig,
+            batch_pocket=batch_pocket,
+        )
+        return data
 
     def configure_optimizers(self):
         """Configures the optimizer and learning rate scheduler for training."""

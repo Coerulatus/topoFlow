@@ -252,3 +252,53 @@ def pdb_to_data_object(
         print(f"Successfully parsed {num_atoms} pocket atoms using RDKit.")
 
     return pocket_data
+
+
+def get_largest_fragment_info(mol: Chem.Mol):
+    """Finds the largest connected fragment in an RDKit molecule.
+
+    Returns:
+        tuple: (largest_fragment_mol, largest_fragment_size)
+    """
+    if mol is None:
+        return None, 0
+
+    # Get fragments as atom indices, then convert to RDKit molecules
+    try:
+        frags = Chem.GetMolFrags(mol, asMols=True)
+
+        largest_fragment = None
+        max_size = 0
+
+        for fragment in frags:
+            size = fragment.GetNumAtoms()
+            if size > max_size:
+                max_size = size
+                largest_fragment = fragment
+
+        return largest_fragment, max_size
+    except Exception as e:
+        print(f"Error in getting largest fragment: {e}")
+        return None, 0
+
+
+def load_sdf_molecules_rdkit(file_path):
+    """Loads molecules from an SDF file using RDKit's SDMolSupplier.
+
+    Args:
+        file_path (str): The path to the SDF file.
+
+    Returns:
+        list: A list of RDKit molecule objects (Chem.Mol).
+    """
+    try:
+        # Create an SDMolSupplier object
+        supplier = Chem.SDMolSupplier(file_path)
+
+        # Iterate through the supplier to get the molecules
+        molecules = [mol for mol in supplier if mol is not None]
+
+        return molecules
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return []

@@ -17,36 +17,12 @@ import topoflow.utils.constants as constants
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.schedulers import CosineAlpha, CosineBeta
 from topoflow.data.dataloader_adj import DataLoaderSampleable
-from topoflow.utils.molecules import pdb_to_data_object, make_mol_openbabel
+from topoflow.utils.molecules import (
+    pdb_to_data_object,
+    make_mol_openbabel,
+    get_largest_fragment_info,
+)
 from topoflow.utils.visualization import visualize_trajectory
-
-
-def get_largest_fragment_info(mol: Chem.Mol):
-    """Finds the largest connected fragment in an RDKit molecule.
-
-    Returns:
-        tuple: (largest_fragment_mol, largest_fragment_size)
-    """
-    if mol is None:
-        return None, 0
-
-    # Get fragments as atom indices, then convert to RDKit molecules
-    try:
-        frags = Chem.GetMolFrags(mol, asMols=True)
-
-        largest_fragment = None
-        max_size = 0
-
-        for fragment in frags:
-            size = fragment.GetNumAtoms()
-            if size > max_size:
-                max_size = size
-                largest_fragment = fragment
-
-        return largest_fragment, max_size
-    except Exception as e:
-        print(f"Error in getting largest fragment: {e}")
-        return None, 0
 
 
 # --- Configuration ---

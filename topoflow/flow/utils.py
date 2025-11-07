@@ -243,7 +243,6 @@ class DistributionNodes:
 
         # entropy = -torch.sum(self.prob.view(-1) * torch.log(self.prob.view(-1) + 1e-30))
         entropy = self.m.entropy()
-        print("Entropy of n_nodes: H[N]", entropy.item())
 
     def sample(self, n_samples=1):
         """Sample from the distribution of number of nodes."""

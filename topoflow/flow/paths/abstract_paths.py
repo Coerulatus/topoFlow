@@ -105,12 +105,15 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
 
         return all_segment_ids, lig_segment_ids, pocket_segment_ids
 
-    def sample_simple_distribution(self, batch_size: int, batch_pocket=None):
+    def sample_simple_distribution(
+        self, batch_size: int, batch_pocket=None, size_ligand=None
+    ):
         """Samples from the simple distribution `p_simple`.
 
         Args:
             batch_size: Number of samples.
             batch_pocket: Optional tensor indicating the samples associated with the pockets.
+            size_ligand: Optional sizes for the ligands.
 
         Returns:
             A tuple containing:
@@ -118,7 +121,15 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
                 - torch.Tensor or None: Labels for the samples. [batch_size, label_dim].
                     Returns None if no labels are associated with the simple distribution.
         """
-        if hasattr(self, "size_distribution") and self.size_distribution is not None:
+        if size_ligand is not None:
+            num_nodes_lig = size_ligand
+            if batch_pocket is not None:
+                num_nodes_pocket = torch.tensor(
+                    [torch.sum(batch_pocket == i).item() for i in range(batch_size)]
+                )
+            else:
+                _, num_nodes_pocket = self.size_distribution.sample(batch_size)
+        elif hasattr(self, "size_distribution") and self.size_distribution is not None:
             if batch_pocket is not None:
                 num_nodes_lig, _ = self.size_distribution.sample(batch_size)
                 num_nodes_pocket = torch.tensor(
@@ -128,18 +139,16 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
                 num_nodes_lig, num_nodes_pocket = self.size_distribution.sample(
                     batch_size
                 )
-
-            batch_all, batch_lig, batch_pocket = self.create_mask(
-                num_nodes_lig, num_nodes_pocket
-            )
-
-            z = self.p_simple.sample(
-                torch.sum(num_nodes_lig) + torch.sum(num_nodes_pocket)
-            )
         else:
             raise ValueError(
                 "The simple distribution must have a size distribution to sample variable-sized data."
             )
+
+        batch_all, batch_lig, batch_pocket = self.create_mask(
+            num_nodes_lig, num_nodes_pocket
+        )
+
+        z = self.p_simple.sample(torch.sum(num_nodes_lig) + torch.sum(num_nodes_pocket))
         return (
             z.to(self.device),
             batch_all.to(self.device),
