@@ -30,6 +30,7 @@ if __name__ == "__main__":
     N_SAMPLES_TO_GENERATE = 256
     N_STEPS = 80  # Number of steps in the flow sampling process
     FRAGMENT_THRESHOLD_PERCENT = 0.0  # % of atoms must be in the largest fragment
+    T_MAX_INPAINTING = 0.9
 
     # New parameter for retry limit (optional but recommended to prevent infinite loops)
     MAX_ATTEMPTS = N_SAMPLES_TO_GENERATE * 5
@@ -39,9 +40,7 @@ if __name__ == "__main__":
     pdb_path = "./data/target_protein/wwp2_c2.pdb"
     data_path = "./data/target_protein/wwp2_c2_data_normalized.pt"
     normalization_path = "./data/CrossDocked/processed/normalization_params_full.npz"
-    output_folder = (
-        "./outputs/generated_ligands_wwp2_c2/"  # Folder to save passing molecules
-    )
+    output_folder = "./outputs/generated_ligands_wwp2_c2/t_max_90"  # Folder to save passing molecules
 
     # --- Environment Setup (No changes needed, keeping original imports/setup) ---
     base_ligand_smile = "c1ccc2c(c1)[nH]cc2"
@@ -126,6 +125,7 @@ if __name__ == "__main__":
             pocket=pocket,
             n_atoms_to_add=10,
             n_steps=N_STEPS,
+            t_max_inpainting=T_MAX_INPAINTING,
         )
 
         # Check for immediate sampling failure (e.g., returned an empty result)

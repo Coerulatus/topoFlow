@@ -24,10 +24,17 @@ def check_scaffold_presence(generated_mol, scaffold_mol, relaxed=True):
         bondCompare = rdFMCS.BondCompare.CompareOrderExact
 
     mcs_result = rdFMCS.FindMCS(
-        [mol_to_check, ref_scaffold], bondCompare=bondCompare, ringMatchesRingOnly=True
+        [mol_to_check, ref_scaffold],
+        bondCompare=bondCompare,
+        ringMatchesRingOnly=True,
+        atomCompare=rdFMCS.AtomCompare.CompareElements,
     )
 
     scaffold_size = ref_scaffold.GetNumAtoms()
+    scaffold_bonds = ref_scaffold.GetNumBonds()
     mcs_size = mcs_result.numAtoms
+    mcs_bonds = mcs_result.numBonds
 
-    return mcs_size == scaffold_size
+    return mcs_size == scaffold_size and mcs_bonds == scaffold_bonds
+
+    # return mol_to_check.HasSubstructMatch(ref_scaffold)

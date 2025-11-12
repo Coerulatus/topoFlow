@@ -676,7 +676,9 @@ class FlowModel(pl.LightningModule):
         return data_trajectory
 
     @torch.no_grad()
-    def inpainting(self, ligand, pocket, n_atoms_to_add, n_steps=80):
+    def inpainting(
+        self, ligand, pocket, n_atoms_to_add, n_steps=80, t_max_inpainting=1.0
+    ):
         """Performs inpainting by adding atoms to a given ligand within a pocket.
 
         Args:
@@ -684,6 +686,7 @@ class FlowModel(pl.LightningModule):
             pocket: Data object representing the pocket.
             n_atoms_to_add: Number of atoms to add to the ligand.
             n_steps: Number of integration steps for the simulator. Defaults to 80.
+            t_max_inpainting: Maximum time to consider inpainting. Defaults to 1.0.
 
         Returns:
             The inpainted molecule after simulating the flow.
@@ -724,7 +727,10 @@ class FlowModel(pl.LightningModule):
         mask[: ligand.x_lig.shape[0]] = True
 
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
-        t_eval_inverse = torch.flip(t_eval, dims=[0])
+        inverse_n_steps = int(n_steps * t_max_inpainting)
+        t_eval_inverse = torch.linspace(
+            t_max_inpainting, 0, inverse_n_steps, device=self.path.device
+        )
         # TODO: fix for batch > 1
         z_ligand_padded = torch.cat(
             [
@@ -747,6 +753,7 @@ class FlowModel(pl.LightningModule):
             starting_points,
             inverse_traj,
             t_eval,
+            t_max_inpainting,
             batch_all,
             batch_lig,
             batch_pocket,

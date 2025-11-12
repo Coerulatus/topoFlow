@@ -1,4 +1,4 @@
-"""Script to evaluate generated molecules against various metrics and check for scaffold presence."""
+"""Script to evaluate generated molecules."""
 
 import os
 import numpy as np
@@ -11,15 +11,16 @@ from topoflow.utils.metrics import (
     lipinski_scorer,
 )
 from topoflow.utils.molecules import load_sdf_molecules_rdkit
-from topoflow.utils.scaffold import check_scaffold_presence  # Your custom function
+from topoflow.utils.scaffold import check_scaffold_presence
 
-folder = "./outputs/generated_ligands_wwp2_c2/"
-results_path = "./results/molecule_evaluation/generated_ligands_wwp2_c2_metrics.md"
+folder = "./outputs/generated_ligands_wwp2_c2/t_max_100/"
+results_path = (
+    "./results/molecule_evaluation/generated_ligands_wwp2_c2_metrics_t_max_100.md"
+)
 metrics = ["qed", "logp", "sas"]
 
 # --- Define Scaffold ---
-# IMPORTANT: Update this SMILES string if your base scaffold is different!
-SCAFFOLD_SMILES = "c1ccc2c(c1)[nH]cc2"  # Example: Indole
+SCAFFOLD_SMILES = "c1ccc2c(c1)[nH]cc2"
 scaffold_mol = Chem.MolFromSmiles(SCAFFOLD_SMILES)
 if scaffold_mol is None:
     raise ValueError(
@@ -43,7 +44,6 @@ total_mols = len(all_mols)
 
 # --- 1. Molecule Validation and Filtering ---
 valid_mols = []
-# New list to store results of the scaffold check
 scaffold_present_counts = 0
 scaffold_present_counts_exact = 0
 exact_idxs = []
@@ -53,6 +53,8 @@ for idx, mol in enumerate(all_mols):
     if mol is not None:
         try:
             # Sanitize the molecule. If this fails, it's considered invalid.
+            if idx == 59:
+                pass
             Chem.SanitizeMol(mol)
             valid_mols.append(mol)
 
@@ -72,14 +74,31 @@ for idx, mol in enumerate(all_mols):
 num_valid_mols = len(valid_mols)
 validity_fraction = num_valid_mols / total_mols if total_mols > 0 else 0
 
-# Calculate the fraction of valid molecules containing the scaffold
 scaffold_fraction = scaffold_present_counts / total_mols if total_mols > 0 else 0.0
 scaffold_fraction_exact = (
     scaffold_present_counts_exact / total_mols if total_mols > 0 else 0.0
 )
-
-# The rest of the metrics are calculated only on the valid_mols list
 mols = valid_mols
+
+# --- Calculate Standard Deviations for Fractions (Binomial Error) ---
+
+
+def calculate_std_for_fraction(p, n):
+    """Calculates the standard error (std dev) for a binomial fraction."""
+    if n > 0 and 0 < p < 1:
+        return np.sqrt(p * (1 - p) / n)
+    return 0.0
+
+
+# Calculate STD for Validity Fraction
+validity_std = calculate_std_for_fraction(validity_fraction, total_mols)
+
+# Calculate STD for Scaffold Presence (Relaxed)
+scaffold_std = calculate_std_for_fraction(scaffold_fraction, total_mols)
+
+# Calculate STD for Scaffold Presence (Exact)
+scaffold_exact_std = calculate_std_for_fraction(scaffold_fraction_exact, total_mols)
+
 
 # --- Metric Calculation and Conversion ---
 results = {}
@@ -96,16 +115,12 @@ for metric in metrics:
 
     scorer_func = scorer_map[metric]
 
-    # Calculate scores on the filtered, valid molecules
     raw_scores = [scorer_func(mol) for mol in mols]
 
-    # Ensure scores are collected as standard Python numbers by using .item()
     collected_scores = []
     for s in raw_scores:
         if s is not None:
-            # Ensure proper type conversion for PyTorch/Numpy tensors to float
             try:
-                # Use .item() for Tensors, otherwise use float()
                 collected_scores.append(s.item() if hasattr(s, "item") else float(s))
             except Exception:
                 continue  # Skip scores that fail conversion
@@ -116,27 +131,34 @@ for metric in metrics:
 # --- Results Compilation ---
 res = pd.DataFrame(columns=["Metric", "Value (mean ± std)"])
 
-# Add Validity Fraction
-validity_mean_std = f"{validity_fraction:.4f} ({num_valid_mols}/{total_mols})"
+# Add Validity Fraction with STD
+validity_value = f"{validity_fraction:.4f} ± {validity_std:.4f}"
+validity_raw_counts = f"({num_valid_mols}/{total_mols})"
 validity_row = pd.DataFrame(
-    {"Metric": ["Validity Fraction"], "Value (mean ± std)": [validity_mean_std]}
+    {
+        "Metric": ["Validity Fraction"],
+        "Value (mean ± std)": [f"{validity_value} {validity_raw_counts}"],
+    }
 )
 res = pd.concat([res, validity_row], ignore_index=True)
 
-# --- Add Scaffold Presence Fraction ---
-scaffold_mean_std = f"{scaffold_fraction:.4f} ({scaffold_present_counts}/{total_mols})"
+scaffold_value = f"{scaffold_fraction:.4f} ± {scaffold_std:.4f}"
+scaffold_raw_counts = f"({scaffold_present_counts}/{total_mols})"
 scaffold_row = pd.DataFrame(
-    {"Metric": ["Scaffold Presence"], "Value (mean ± std)": [scaffold_mean_std]}
+    {
+        "Metric": ["Scaffold Presence"],
+        "Value (mean ± std)": [f"{scaffold_value} {scaffold_raw_counts}"],
+    }
 )
 res = pd.concat([res, scaffold_row], ignore_index=True)
 
-scaffold_exact_mean_std = (
-    f"{scaffold_fraction_exact:.4f} ({scaffold_present_counts_exact}/{total_mols})"
-)
+# --- Add Scaffold Presence (Exact) Fraction with STD ---
+scaffold_exact_value = f"{scaffold_fraction_exact:.4f} ± {scaffold_exact_std:.4f}"
+scaffold_exact_raw_counts = f"({scaffold_present_counts_exact}/{total_mols})"
 scaffold_exact_row = pd.DataFrame(
     {
         "Metric": ["Scaffold Presence (Exact)"],
-        "Value (mean ± std)": [scaffold_exact_mean_std],
+        "Value (mean ± std)": [f"{scaffold_exact_value} {scaffold_exact_raw_counts}"],
     }
 )
 res = pd.concat([res, scaffold_exact_row], ignore_index=True)
@@ -160,7 +182,6 @@ for metric, scores in results.items():
         )
         res = pd.concat([res, new_row], ignore_index=True)
 
-# Ensure output directory exists before writing
 if not os.path.exists(os.path.dirname(results_path)):
     os.makedirs(os.path.dirname(results_path))
 

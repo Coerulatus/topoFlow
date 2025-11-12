@@ -229,7 +229,16 @@ class TorchDiffEqSimulator:
         return sol.transpose(0, 1)
 
     def simulate_inpaint(
-        self, x, inverse_traj, ts, batch_all, batch_lig, batch_pocket, z, mask
+        self,
+        x,
+        inverse_traj,
+        ts,
+        t_max_inpaint,
+        batch_all,
+        batch_lig,
+        batch_pocket,
+        z,
+        mask,
     ):
         """Generate molecule with inpainting using the inverse trajectory.
 
@@ -243,6 +252,8 @@ class TorchDiffEqSimulator:
             Inverse trajectory obtained from the reverse simulation. [batch_size, time_steps, *dims]
         ts : torch.Tensor
             Sequence of time steps. [time_steps]
+        t_max_inpaint : float
+            Maximum time to consider for inpainting.
         batch_all : torch.Tensor
             The combined batch indices for all samples. [batch_size, *dims]
         batch_lig : torch.Tensor
@@ -259,9 +270,10 @@ class TorchDiffEqSimulator:
         """
 
         def ode_func(t, x):
-            t_idx = (ts - t).abs().argmin()
-            inverse_state = inverse_traj[:, t_idx]
-            x[mask] = inverse_state[mask]
+            if t <= t_max_inpaint:
+                t_idx = (ts - t).abs().argmin()
+                inverse_state = inverse_traj[:, t_idx]
+                x[mask] = inverse_state[mask]
             return self.ode.drift_coefficient(
                 x, t, batch_all, batch_lig, batch_pocket, z=z
             )
