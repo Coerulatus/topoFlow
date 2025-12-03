@@ -13,10 +13,8 @@ from topoflow.utils.metrics import (
 from topoflow.utils.molecules import load_sdf_molecules_rdkit
 from topoflow.utils.scaffold import check_scaffold_presence
 
-folder = "./outputs/generated_ligands_wwp2_c2/t_max_100/"
-results_path = (
-    "./results/molecule_evaluation/generated_ligands_wwp2_c2_metrics_t_max_100.md"
-)
+folder = "./outputs/generated_ligands_wwp2_c2/t_max_100_force_bonds/"
+results_path = "./results/molecule_evaluation/generated_ligands_wwp2_c2_metrics_t_max_100_force_bonds.md"
 metrics = ["qed", "logp", "sas"]
 
 # --- Define Scaffold ---

@@ -8,3 +8,5 @@ from .transformer_xformers import TransformerVectorField
 from .mlp import MLPVectorField
 from .gat_ligand import GATVectorField
 from .allsettransformer import AllSetTransformerVectorField
+
+from .transformer_distance import TransformerDistanceVectorField

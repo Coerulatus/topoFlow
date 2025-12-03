@@ -763,23 +763,6 @@ class MultiHeadAttention(MessagePassing):
         ] * attention_values.unsqueeze(-1)
 
         return pyg_scatter(x_message, self.target_index_i, dim=0, reduce="sum")
-        # x_KV = torch.matmul(x_source, self.KV_weight).permute(1, 0, 2)
-        # x_K, x_V = torch.split(x_KV, self.hidden_channels, dim=-1)  # each [N, H, d]
-
-        # # Compute attention scores with global queries (broadcast over N)
-        # alpha = (x_K * self.Q_weight.permute(1, 0, 2)).sum(-1)  # [N, Q, H]
-        # alpha = F.leaky_relu(alpha, 0.2)
-        # attention_values = softmax(
-        #     alpha[self.source_index_j], index=self.target_index_i
-        # )  # [E, Q, H]
-
-        # # Apply attention to V on edges and aggregate
-        # x_message = x_V[self.source_index_j] * attention_values.unsqueeze(
-        #     -1
-        # )  # [E, Q, H, d]
-        # return pyg_scatter(
-        #     x_message, self.target_index_i, dim=0, reduce="sum"
-        # )  # [N_tgt, Q, H, d]
 
 
 class MLP(nn.Sequential):
