@@ -142,7 +142,7 @@ class TransformerDistanceVectorField(nn.Module):
         # Add the learnable distance bias to the valid regions
         # This modulates the attention scores directly
         final_attn_mask = final_attn_mask + learnable_dist_bias
-
+        final_attn_mask.diagonal().fill_(0.0)
         # 6. Transformer Pass
         x_encoded = self.transformer(all_h.unsqueeze(0), mask=final_attn_mask).squeeze(
             0

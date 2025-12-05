@@ -300,7 +300,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint_path",
         type=str,
-        default="./checkpoints/runs_cluster/11_05_659e_ast_gat_scaled_vel.ckpt",
+        default="./checkpoints/runs_cluster/12_03_199e_distance_transformer.ckpt",
         help="Path to the trained model checkpoint (.ckpt file).",
     )
     parser.add_argument(
@@ -325,7 +325,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n_runs",
         type=int,
-        default=5,
+        default=3,
         help="Number of validation runs to perform.",
     )
     parser.add_argument(
@@ -349,7 +349,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_file",
         type=str,
-        default="./results/results_11_05_659e.md",
+        default="./results/results_12_03_199e.md",
         help="File to save the aggregated results.",
     )
 
