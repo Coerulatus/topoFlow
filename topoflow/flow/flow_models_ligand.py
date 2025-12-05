@@ -410,6 +410,9 @@ class FlowModel(pl.LightningModule):
         )
         if keep_biggest_fragment:
             mols = connected_mols
+        if len(mols) == 0:
+            print("Warning: No valid molecules generated.")
+            return {metric: float("0") for metric in metrics}, {}
 
         results = {}
         for metric in metrics:

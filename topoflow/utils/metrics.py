@@ -101,13 +101,13 @@ def calculate_lipinski(rdmol):
     return np.sum([int(a) for a in [rule_1, rule_2, rule_3, rule_4, rule_5]])
 
 
-def compute_connectivity(valid, connectivity_thresh=0.5):  # TODO:choose threshold
+def compute_connectivity(valid, connectivity_thresh=0.5):
     """Calculate connectivity of molecules.
 
     Consider molecule connected if its largest fragment contains at least x% of all atoms, where x is determined by self.connectivity_thresh (defaults to 0.5).
     """
     if len(valid) < 1:
-        return 0.0, []
+        return 0.0, [], []
 
     connected_smiles = []
     connected_mols = []
