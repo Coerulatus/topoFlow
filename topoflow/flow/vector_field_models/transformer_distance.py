@@ -126,11 +126,19 @@ class TransformerDistanceVectorField(nn.Module):
         learnable_dist_bias = -1.0 * (pairwise_slope * raw_dist + pairwise_bias)
 
         batch_mask = batch_all[:, None] != batch_all[None, :]
-        final_attn_mask = torch.zeros_like(raw_dist)
-        final_attn_mask.masked_fill_(batch_mask, float("-inf"))
-        final_attn_mask = final_attn_mask + learnable_dist_bias
+        # final_attn_mask = torch.zeros_like(raw_dist)
+        # final_attn_mask.masked_fill_(batch_mask, float("-inf"))
+        # final_attn_mask = final_attn_mask + learnable_dist_bias
 
-        # x_encoded: [N_total, h_dim]
+        # # x_encoded: [N_total, h_dim]
+        # x_encoded = self.transformer(all_h.unsqueeze(0), mask=final_attn_mask).squeeze(
+        #     0
+        # )
+
+        final_attn_mask = learnable_dist_bias.clone()
+        batch_mask = batch_all[:, None] != batch_all[None, :]
+        final_attn_mask.masked_fill_(batch_mask, -1e9)
+        final_attn_mask.diagonal().fill_(0.0)
         x_encoded = self.transformer(all_h.unsqueeze(0), mask=final_attn_mask).squeeze(
             0
         )
