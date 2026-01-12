@@ -73,6 +73,12 @@ class TransformerDistanceVectorField(nn.Module):
         )
 
         # Predicts update for atom types. Output is [N, 11]
+        self.spatial_vel_net = nn.Sequential(
+            nn.LayerNorm(h_dim),
+            nn.Linear(h_dim, h_dim),
+            nn.SiLU(),
+            nn.Linear(h_dim, spatial_dim, bias=True),  # Standard MLP is fine here
+        )
         self.feature_vel_net = nn.Sequential(
             nn.LayerNorm(h_dim),
             nn.Linear(h_dim, atom_dim, bias=True),  # Standard MLP is fine here
@@ -146,33 +152,34 @@ class TransformerDistanceVectorField(nn.Module):
         num_lig = len(lig_h)
         num_total = len(all_h)
 
-        # Prepare pairwise inputs for ligand-to-all interactions
-        # We only need velocities for the Ligand atoms
-        h_i = x_encoded[:num_lig].unsqueeze(1).repeat(1, num_total, 1)  # [Lig, All, H]
-        h_j = x_encoded.unsqueeze(0).repeat(num_lig, 1, 1)  # [Lig, All, H]
-        d_ij = raw_dist[:num_lig, :].unsqueeze(-1)  # [Lig, All, 1]
+        # # Prepare pairwise inputs for ligand-to-all interactions
+        # # We only need velocities for the Ligand atoms
+        # h_i = x_encoded[:num_lig].unsqueeze(1).repeat(1, num_total, 1)  # [Lig, All, H]
+        # h_j = x_encoded.unsqueeze(0).repeat(num_lig, 1, 1)  # [Lig, All, H]
+        # d_ij = raw_dist[:num_lig, :].unsqueeze(-1)  # [Lig, All, 1]
 
-        pair_input = torch.cat([h_i, h_j, d_ij], dim=-1)  # [Lig, All, 2H+1]
+        # pair_input = torch.cat([h_i, h_j, d_ij], dim=-1)  # [Lig, All, 2H+1]
 
-        # Predict weights for vectors
-        spatial_weights = self.spatial_weight_net(pair_input)  # [Lig, All, 1]
+        # # Predict weights for vectors
+        # spatial_weights = self.spatial_weight_net(pair_input)  # [Lig, All, 1]
 
-        # Mask weights from other batches
-        mask_slice = batch_mask[:num_lig, :]
-        spatial_weights = spatial_weights.masked_fill(mask_slice.unsqueeze(-1), 0.0)
+        # # Mask weights from other batches
+        # mask_slice = batch_mask[:num_lig, :]
+        # spatial_weights = spatial_weights.masked_fill(mask_slice.unsqueeze(-1), 0.0)
 
-        # Normalize weights (optional, helps stability)
-        spatial_weights = spatial_weights / (
-            torch.sum(torch.abs(spatial_weights), dim=1, keepdim=True) + 1e-6
-        )
+        # # Normalize weights (optional, helps stability)
+        # spatial_weights = spatial_weights / (
+        #     torch.sum(torch.abs(spatial_weights), dim=1, keepdim=True) + 1e-6
+        # )
 
-        # Weighted Sum of Vector Differences
-        # diff_vecs slice: [Lig, All, 3]
-        relevant_diffs = diff_vecs[:num_lig, :, :]
-        vel_spatial = torch.sum(relevant_diffs * spatial_weights, dim=1)  # [Lig, 3]
+        # # Weighted Sum of Vector Differences
+        # # diff_vecs slice: [Lig, All, 3]
+        # relevant_diffs = diff_vecs[:num_lig, :, :]
+        # vel_spatial = torch.sum(relevant_diffs * spatial_weights, dim=1)  # [Lig, 3]
 
         # Simple Linear projection for atom types
         lig_h_out = x_encoded[:num_lig]
+        vel_spatial = self.spatial_vel_net(lig_h_out)  # [Lig, 3]
         vel_features = self.feature_vel_net(lig_h_out)  # [Lig, 11]
 
         # Concatenate spatial [N, 3] and feature [N, 11] velocities -> [N, 14]
