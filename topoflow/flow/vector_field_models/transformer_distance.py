@@ -65,23 +65,15 @@ class TransformerDistanceVectorField(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # Predicts weights for relative differences. Output is [N, 3]
-        self.spatial_weight_net = nn.Sequential(
-            nn.Linear(h_dim * 2 + 1, h_dim),
-            nn.SiLU(),
-            nn.Linear(h_dim, 1, bias=False),  # Scalar weight per pair
+        self.direction_weight_net = nn.Sequential(
+            nn.Linear(h_dim * 2 + 1, h_dim), nn.SiLU(), nn.Linear(h_dim, 1, bias=False)
         )
 
-        # Predicts update for atom types. Output is [N, 11]
-        self.spatial_vel_net = nn.Sequential(
-            nn.LayerNorm(h_dim // 2),
-            nn.Linear(h_dim // 2, h_dim),
-            nn.SiLU(),
-            nn.Linear(h_dim, spatial_dim, bias=True),  # Standard MLP is fine here
-        )
         self.feature_vel_net = nn.Sequential(
-            nn.LayerNorm(h_dim // 2),
-            nn.Linear(h_dim // 2, atom_dim, bias=True),  # Standard MLP is fine here
+            nn.LayerNorm(h_dim),
+            nn.Linear(h_dim, h_dim),
+            nn.SiLU(),
+            nn.Linear(h_dim, atom_dim, bias=True),
         )
 
     def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket):
@@ -123,6 +115,7 @@ class TransformerDistanceVectorField(nn.Module):
         diff_vecs = all_coords[:, None, :] - all_coords[None, :, :]
         dist_sq = torch.sum(diff_vecs**2, dim=-1)
         raw_dist = torch.sqrt(dist_sq + 1e-6)
+        unit_vecs = diff_vecs / (raw_dist.unsqueeze(-1) + 1e-6)
 
         node_coeffs = self.dist_coeff_head(all_h)
         node_slope = F.softplus(node_coeffs[:, 0])
@@ -132,14 +125,6 @@ class TransformerDistanceVectorField(nn.Module):
         learnable_dist_bias = -1.0 * (pairwise_slope * raw_dist + pairwise_bias)
 
         batch_mask = batch_all[:, None] != batch_all[None, :]
-        # final_attn_mask = torch.zeros_like(raw_dist)
-        # final_attn_mask.masked_fill_(batch_mask, float("-inf"))
-        # final_attn_mask = final_attn_mask + learnable_dist_bias
-
-        # # x_encoded: [N_total, h_dim]
-        # x_encoded = self.transformer(all_h.unsqueeze(0), mask=final_attn_mask).squeeze(
-        #     0
-        # )
 
         final_attn_mask = learnable_dist_bias.clone()
         batch_mask = batch_all[:, None] != batch_all[None, :]
@@ -152,38 +137,38 @@ class TransformerDistanceVectorField(nn.Module):
         num_lig = len(lig_h)
         num_total = len(all_h)
 
-        # # Prepare pairwise inputs for ligand-to-all interactions
-        # # We only need velocities for the Ligand atoms
-        # h_i = x_encoded[:num_lig].unsqueeze(1).repeat(1, num_total, 1)  # [Lig, All, H]
-        # h_j = x_encoded.unsqueeze(0).repeat(num_lig, 1, 1)  # [Lig, All, H]
-        # d_ij = raw_dist[:num_lig, :].unsqueeze(-1)  # [Lig, All, 1]
+        # Create pairs: Ligand atoms (i) attending to All atoms (j)
+        h_i = x_encoded[:num_lig].unsqueeze(1).repeat(1, num_total, 1)  # [Lig, All, H]
+        h_j = x_encoded.unsqueeze(0).repeat(num_lig, 1, 1)  # [Lig, All, H]
+        d_ij = raw_dist[:num_lig, :].unsqueeze(-1)  # [Lig, All, 1]
 
-        # pair_input = torch.cat([h_i, h_j, d_ij], dim=-1)  # [Lig, All, 2H+1]
+        # Predict Weights
+        pair_input = torch.cat([h_i, h_j, d_ij], dim=-1)
 
-        # # Predict weights for vectors
-        # spatial_weights = self.spatial_weight_net(pair_input)  # [Lig, All, 1]
+        # Output is [Lig, All, 1]
+        # We apply Tanh here (optional but recommended) to cap the max influence
+        # This prevents "exploding" gradients if weights get too large.
+        weights = self.direction_weight_net(pair_input)
+        weights = torch.tanh(weights)
 
-        # # Mask weights from other batches
-        # mask_slice = batch_mask[:num_lig, :]
-        # spatial_weights = spatial_weights.masked_fill(mask_slice.unsqueeze(-1), 0.0)
+        # Mask interactions from other batches
+        mask_slice = batch_mask[:num_lig, :]
+        weights = weights.masked_fill(mask_slice.unsqueeze(-1), 0.0)
 
-        # # Normalize weights (optional, helps stability)
-        # spatial_weights = spatial_weights / (
-        #     torch.sum(torch.abs(spatial_weights), dim=1, keepdim=True) + 1e-6
-        # )
+        # Normalize weights by number of neighbors (optional, effectively "mean" pooling)
+        # This makes the velocity scale independent of the number of atoms.
+        N_neighbors = (~mask_slice).sum(dim=1, keepdim=True).unsqueeze(-1)
+        weights = weights / (N_neighbors + 1e-6)
 
-        # # Weighted Sum of Vector Differences
-        # # diff_vecs slice: [Lig, All, 3]
-        # relevant_diffs = diff_vecs[:num_lig, :, :]
-        # vel_spatial = torch.sum(relevant_diffs * spatial_weights, dim=1)  # [Lig, 3]
+        # Sum of Normalized Directions
+        # vel = Sum( weight * unit_vector )
+        relevant_unit_vecs = unit_vecs[:num_lig, :, :]  # [Lig, All, 3]
+        vel_spatial = torch.sum(relevant_unit_vecs * weights, dim=1)  # [Lig, 3]
 
-        # Simple Linear projection for atom types
-        lig_h_out = x_encoded[:num_lig]
-        h_dim = lig_h_out.size(-1)
-        vel_spatial = self.spatial_vel_net(lig_h_out[:, : h_dim // 2])  # [Lig, 3]
-        vel_features = self.feature_vel_net(lig_h_out[:, h_dim // 2 :])  # [Lig, 11]
+        # 7. Predict Feature Velocity (Standard MLP)
+        vel_features = self.feature_vel_net(x_encoded[:num_lig])
 
-        # Concatenate spatial [N, 3] and feature [N, 11] velocities -> [N, 14]
+        # 8. Combine
         vel_total = torch.cat([vel_spatial, vel_features], dim=-1)
 
         return vel_total
