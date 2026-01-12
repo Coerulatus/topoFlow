@@ -74,14 +74,14 @@ class TransformerDistanceVectorField(nn.Module):
 
         # Predicts update for atom types. Output is [N, 11]
         self.spatial_vel_net = nn.Sequential(
-            nn.LayerNorm(h_dim),
-            nn.Linear(h_dim, h_dim),
+            nn.LayerNorm(h_dim // 2),
+            nn.Linear(h_dim // 2, h_dim),
             nn.SiLU(),
             nn.Linear(h_dim, spatial_dim, bias=True),  # Standard MLP is fine here
         )
         self.feature_vel_net = nn.Sequential(
-            nn.LayerNorm(h_dim),
-            nn.Linear(h_dim, atom_dim, bias=True),  # Standard MLP is fine here
+            nn.LayerNorm(h_dim // 2),
+            nn.Linear(h_dim // 2, atom_dim, bias=True),  # Standard MLP is fine here
         )
 
     def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket):
@@ -143,7 +143,7 @@ class TransformerDistanceVectorField(nn.Module):
 
         final_attn_mask = learnable_dist_bias.clone()
         batch_mask = batch_all[:, None] != batch_all[None, :]
-        final_attn_mask.masked_fill_(batch_mask, -1e9)
+        final_attn_mask.masked_fill_(batch_mask, -torch.inf)
         final_attn_mask.diagonal().fill_(0.0)
         x_encoded = self.transformer(all_h.unsqueeze(0), mask=final_attn_mask).squeeze(
             0
@@ -179,8 +179,9 @@ class TransformerDistanceVectorField(nn.Module):
 
         # Simple Linear projection for atom types
         lig_h_out = x_encoded[:num_lig]
-        vel_spatial = self.spatial_vel_net(lig_h_out)  # [Lig, 3]
-        vel_features = self.feature_vel_net(lig_h_out)  # [Lig, 11]
+        h_dim = lig_h_out.size(-1)
+        vel_spatial = self.spatial_vel_net(lig_h_out[:, : h_dim // 2])  # [Lig, 3]
+        vel_features = self.feature_vel_net(lig_h_out[:, h_dim // 2 :])  # [Lig, 11]
 
         # Concatenate spatial [N, 3] and feature [N, 11] velocities -> [N, 14]
         vel_total = torch.cat([vel_spatial, vel_features], dim=-1)
