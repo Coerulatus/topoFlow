@@ -76,6 +76,13 @@ class TransformerDistanceVectorField(nn.Module):
             nn.Linear(h_dim, atom_dim, bias=True),
         )
 
+        self.spatial_vel_net = nn.Sequential(
+            nn.LayerNorm(self.x_dim + h_dim),
+            nn.Linear(self.x_dim + h_dim, h_dim),
+            nn.SiLU(),
+            nn.Linear(h_dim, spatial_dim, bias=True),
+        )
+
     def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket):
         """Forward pass of the TransformerDistanceVectorField."""
         device = x_lig.device
@@ -137,38 +144,41 @@ class TransformerDistanceVectorField(nn.Module):
         num_lig = len(lig_h)
         num_total = len(all_h)
 
-        # Create pairs: Ligand atoms (i) attending to All atoms (j)
-        h_i = x_encoded[:num_lig].unsqueeze(1).repeat(1, num_total, 1)  # [Lig, All, H]
-        h_j = x_encoded.unsqueeze(0).repeat(num_lig, 1, 1)  # [Lig, All, H]
-        d_ij = raw_dist[:num_lig, :].unsqueeze(-1)  # [Lig, All, 1]
+        # # Create pairs: Ligand atoms (i) attending to All atoms (j)
+        # h_i = x_encoded[:num_lig].unsqueeze(1).repeat(1, num_total, 1)  # [Lig, All, H]
+        # h_j = x_encoded.unsqueeze(0).repeat(num_lig, 1, 1)  # [Lig, All, H]
+        # d_ij = raw_dist[:num_lig, :].unsqueeze(-1)  # [Lig, All, 1]
 
-        # Predict Weights
-        pair_input = torch.cat([h_i, h_j, d_ij], dim=-1)
+        # # Predict Weights
+        # pair_input = torch.cat([h_i, h_j, d_ij], dim=-1)
 
-        # Output is [Lig, All, 1]
-        # We apply Tanh here (optional but recommended) to cap the max influence
-        # This prevents "exploding" gradients if weights get too large.
-        weights = self.direction_weight_net(pair_input)
-        weights = torch.tanh(weights)
+        # # Output is [Lig, All, 1]
+        # # We apply Tanh here (optional but recommended) to cap the max influence
+        # # This prevents "exploding" gradients if weights get too large.
+        # weights = self.direction_weight_net(pair_input)
+        # weights = torch.tanh(weights)
 
-        # Mask interactions from other batches
-        mask_slice = batch_mask[:num_lig, :]
-        weights = weights.masked_fill(mask_slice.unsqueeze(-1), 0.0)
+        # # Mask interactions from other batches
+        # mask_slice = batch_mask[:num_lig, :]
+        # weights = weights.masked_fill(mask_slice.unsqueeze(-1), 0.0)
 
-        # Normalize weights by number of neighbors (optional, effectively "mean" pooling)
-        # This makes the velocity scale independent of the number of atoms.
-        N_neighbors = (~mask_slice).sum(dim=1, keepdim=True).unsqueeze(-1)
-        weights = weights / (N_neighbors + 1e-6)
+        # # Normalize weights by number of neighbors (optional, effectively "mean" pooling)
+        # # This makes the velocity scale independent of the number of atoms.
+        # N_neighbors = (~mask_slice).sum(dim=1, keepdim=True).unsqueeze(-1)
+        # weights = weights / (N_neighbors + 1e-6)
 
-        # Sum of Normalized Directions
-        # vel = Sum( weight * unit_vector )
-        relevant_unit_vecs = unit_vecs[:num_lig, :, :]  # [Lig, All, 3]
-        vel_spatial = torch.sum(relevant_unit_vecs * weights, dim=1)  # [Lig, 3]
+        # # Sum of Normalized Directions
+        # # vel = Sum( weight * unit_vector )
+        # relevant_unit_vecs = unit_vecs[:num_lig, :, :]  # [Lig, All, 3]
+        # vel_spatial = torch.sum(relevant_unit_vecs * weights, dim=1)  # [Lig, 3]
 
         # 7. Predict Feature Velocity (Standard MLP)
         vel_features = self.feature_vel_net(x_encoded[:num_lig])
 
         # 8. Combine
+        vel_spatial = self.spatial_vel_net(
+            torch.cat([x_lig, x_encoded[:num_lig]], dim=-1)
+        )
         vel_total = torch.cat([vel_spatial, vel_features], dim=-1)
 
         return vel_total
