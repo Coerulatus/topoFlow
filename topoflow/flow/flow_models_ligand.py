@@ -23,6 +23,7 @@ from topoflow.utils.metrics import (
     compute_connectivity,
     compute_uniqueness,
     compute_novelty,
+    scorer_dict,
 )
 from topoflow.utils.molecules import data_to_rdmol
 
@@ -55,6 +56,7 @@ class FlowModel(pl.LightningModule):
         w_loss_last_step=0.2,
         w_loss_atom=0.02,
         velocity_scale=1.0,
+        metrics=["qed", "logp", "sas", "lipinski", "vina", "cnn_affinity"],
     ):
         """Initializes the FlowModel.
 
@@ -81,6 +83,7 @@ class FlowModel(pl.LightningModule):
             w_loss_last_step: Weight for the loss component at the last time step. Defaults to 0.2.
             w_loss_atom: Weight for the atom type loss component. Defaults to 0.02.
             velocity_scale: Scaling factor for the velocity in the loss computation. Defaults to 1.0.
+            metrics: List of metrics to evaluate during validation.
         """
         super().__init__()
         self.save_hyperparameters(ignore=["path"])
@@ -134,6 +137,7 @@ class FlowModel(pl.LightningModule):
         self.max_batched_samples = max_batched_samples
         self.velocity_scale = velocity_scale
 
+        self.metrics = metrics
         # self.forward = torch.compile(self.forward)
 
     def _get_loss(
@@ -335,11 +339,7 @@ class FlowModel(pl.LightningModule):
         ):
             distances, other_metrics = self.test_distribution(
                 test_distribution=self.val_distribution,
-                metrics=[
-                    "qed",
-                    "logp",
-                    "sas",
-                ],  # TODO: add lipinski, but also in the val_dist
+                metrics=self.metrics,
                 atom_decoder=self.atom_decoder,
                 keep_biggest_fragment=True,
             )
@@ -418,18 +418,9 @@ class FlowModel(pl.LightningModule):
         for metric in metrics:
             if metric not in test_distribution:
                 raise ValueError(f"Metric {metric} not found in test distribution.")
-            elif metric == "qed":
-                results[metric] = [qed_scorer(mol) for mol in mols]
-                results[metric] = [s for s in results[metric] if s is not None]
-            elif metric == "logp":
-                results[metric] = [logp_scorer(mol) for mol in mols]
-                results[metric] = [s for s in results[metric] if s is not None]
-            elif metric == "sas":
-                results[metric] = [sas_scorer(mol) for mol in mols]
-                results[metric] = [s for s in results[metric] if s is not None]
-            elif metric == "lipinski":
-                results[metric] = [lipinski_scorer(mol) for mol in mols]
-                results[metric] = [s for s in results[metric] if s is not None]
+            scorer = scorer_dict.get(metric)
+            if scorer is not None:
+                results[metric] = [scorer(mol) for mol in mols]
             else:
                 raise ValueError(f"Unsupported metric: {metric}")
 
@@ -469,7 +460,7 @@ class FlowModel(pl.LightningModule):
             return distances, res
         except Exception as e:
             print(f"Error calculating distances: {e}")
-            return {metric: float("nan") for metric in metrics}, res
+            return {metric: float(0) for metric in metrics}, res
 
     def drift_coefficient(self, x, t, batch_all, batch_lig, batch_pocket, z):
         """Computes the drift coefficient (vector field) at time t.

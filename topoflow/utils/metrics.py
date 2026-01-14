@@ -2,13 +2,19 @@
 
 import sys
 import os
-from rdkit.Chem import QED, Descriptors, Lipinski, Crippen
+from rdkit.Chem import QED, Descriptors, Lipinski, Crippen, AllChem
+import subprocess
+import tempfile
+import re
 import numpy as np
 from rdkit import Chem
 import torch
 
 from topoflow.utils.sa_score import sascorer
 from topoflow.utils.molecules import data_to_rdmol, rdmol_to_smiles
+from topoflow.utils.visualization import save_pocket_to_pdb, save_ligand_to_sdf
+
+GNINA_EXECUTABLE = "gnina"  # Ensure this is in your PATH
 
 
 class Metric(torch.nn.Module):
@@ -101,6 +107,150 @@ def calculate_lipinski(rdmol):
     return np.sum([int(a) for a in [rule_1, rule_2, rule_3, rule_4, rule_5]])
 
 
+class GninaDocker:
+    """Handles GNINA docking.
+
+    Implements a cache to ensure that if we ask for
+    both Vina and CNN scores for the same object, we only run the binary once.
+    """
+
+    def __init__(self):
+        """Initialize the GninaDocker with an empty cache."""
+        self._cache_key = None
+        self._cache_result = None
+
+    def _calculate_box(self, data):
+        """Calculates dynamic bounding box centered on the pocket."""
+        # Get pocket coordinates
+        if hasattr(data, "x_pocket") and data.x_pocket is not None:
+            pos = data.x_pocket
+            if isinstance(pos, torch.Tensor):
+                pos = pos.cpu().numpy()
+        else:
+            raise ValueError("Data object missing 'x_pocket' coordinates.")
+
+        # Calculate center
+        center = np.mean(pos, axis=0)
+
+        # Calculate size: max distance from center * 2 + padding (e.g., 6A)
+        # This ensures the box covers the whole pocket plus some room for the ligand
+        max_dist = np.max(np.linalg.norm(pos - center, axis=1))
+        size = (max_dist * 2) + 8.0
+
+        return center, size
+
+    def _run_gnina(self, data):
+        """Runs GNINA and returns (vina_score, cnn_score)."""
+        # Check cache (using object id as a simple hash for this session)
+        # Note: In a multiprocess dataloader, this caching might need adjustment.
+        current_key = id(data)
+        if self._cache_key == current_key:
+            return self._cache_result
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            receptor_path = os.path.join(temp_dir, "receptor.pdb")
+            ligand_path = os.path.join(temp_dir, "ligand.sdf")
+            output_path = os.path.join(temp_dir, "out.sdf")
+
+            # 1. Save Files using your provided helpers
+            try:
+                save_pocket_to_pdb(data, receptor_path, verbose=False)
+                save_ligand_to_sdf(data, ligand_path, verbose=False)
+            except Exception as e:
+                print(f"Error saving GNINA inputs: {e}")
+                return None, None
+
+            # 2. Calculate Box
+            try:
+                center, size = self._calculate_box(data)
+            except ValueError as e:
+                print(f"Skipping GNINA: {e}")
+                return None, None
+
+            # 3. Build Command
+            cmd = [
+                GNINA_EXECUTABLE,
+                "--receptor",
+                receptor_path,
+                "--ligand",
+                ligand_path,
+                "--out",
+                output_path,
+                "--center_x",
+                f"{center[0]:.3f}",
+                "--center_y",
+                f"{center[1]:.3f}",
+                "--center_z",
+                f"{center[2]:.3f}",
+                "--size_x",
+                f"{size:.3f}",
+                "--size_y",
+                f"{size:.3f}",
+                "--size_z",
+                f"{size:.3f}",
+                "--cpu",
+                "4",
+                "--seed",
+                "0",
+                "--num_modes",
+                "1",  # Top pose only
+                "--autobox_ligand",  # Optional: helps if ligand is already somewhat close
+                "--exhaustiveness",
+                "8",
+            ]
+
+            # 4. Run subprocess
+            try:
+                subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                print("GNINA failed or not found.")
+                return None, None
+
+            # 5. Parse Output
+            vina = None
+            cnn = None
+
+            if os.path.exists(output_path):
+                with open(output_path, "r") as f:
+                    content = f.read()
+
+                    # Extract Vina (minimizedAffinity)
+                    v_match = re.search(r"> <minimizedAffinity>\s+([-\d\.]+)", content)
+                    if v_match:
+                        vina = float(v_match.group(1))
+
+                    # Extract CNN (CNNaffinity)
+                    c_match = re.search(r"> <CNNaffinity>\s+([\d\.]+)", content)
+                    if c_match:
+                        cnn = float(c_match.group(1))
+
+            # Update Cache
+            self._cache_key = current_key
+            self._cache_result = (vina, cnn)
+            return vina, cnn
+
+
+# Initialize one instance to share state
+docker = GninaDocker()
+
+
+def vina_scorer_dynamic(data):
+    """Returns Vina score. Triggers docking if not cached."""
+    v, _ = docker._run_gnina(data)
+    return v
+
+
+def cnn_scorer_dynamic(data):
+    """Returns CNN score. Triggers docking if not cached."""
+    _, c = docker._run_gnina(data)
+    return c
+
+
 def compute_connectivity(valid, connectivity_thresh=0.5):
     """Calculate connectivity of molecules.
 
@@ -181,16 +331,62 @@ def wasserstein_1d(a, b):
     )
 
 
+scorer_dict = {
+    "qed": qed_scorer,
+    "logp": logp_scorer,
+    "sas": sas_scorer,
+    "lipinski": lipinski_scorer,
+    "vina": vina_scorer_dynamic,  # Expects Data object
+    "cnn_affinity": cnn_scorer_dynamic,  # Expects Data object
+}
+
+
 def get_distributions(dataset, metrics, atom_decoder=None):
-    """Calculate distributions for specified metrics from a dataset."""
-    mols = [
-        data_to_rdmol(data, atom_decoder=atom_decoder, sanitize=True)
-        for data in dataset
-    ]
-    distribution = {
-        "qed": [qed_scorer(mol) for mol in mols],
-        "logp": [logp_scorer(mol) for mol in mols],
-        "sas": [sas_scorer(mol) for mol in mols],
-    }
+    """Calculate distributions.
+
+    Handles both 'molecular' metrics (QED/LogP) and 'structural' metrics (Vina/CNN).
+    """
+    distribution = {}
+
+    # Pre-convert RDKit mols for standard metrics to avoid doing it repeatedly
+    # (Only needed if we have standard metrics in the list)
+    standard_metrics = ["qed", "logp", "sas", "lipinski"]
+    needs_rdmols = any(m in standard_metrics for m in metrics)
+
+    rdmols = []
+    if needs_rdmols:
+        rdmols = [
+            data_to_rdmol(data, atom_decoder=atom_decoder, sanitize=True)
+            for data in dataset
+        ]
+
+    for metric in metrics:
+        scorer = scorer_dict.get(metric)
+        if scorer is None:
+            print(f"Metric {metric} not recognized.")
+            continue
+
+        scores = []
+
+        # CASE A: Structural Metrics (Vina/CNN) -> Pass raw Data object
+        if metric in ["vina", "cnn_affinity"]:
+            for data in dataset:
+                s = scorer(data)
+                if s is not None:
+                    scores.append(s)
+
+        # CASE B: Standard Metrics -> Pass RDKit Mol
+        else:
+            for mol in rdmols:
+                if mol is not None:  # check for conversion failures
+                    s = scorer(mol)
+                    if s is not None:
+                        scores.append(s)
+
+        # Convert to tensor
+        if scores:
+            distribution[metric] = torch.tensor(scores, dtype=torch.float)
+        else:
+            distribution[metric] = torch.tensor([])
 
     return distribution
