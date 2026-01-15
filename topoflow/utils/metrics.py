@@ -9,12 +9,12 @@ import re
 import numpy as np
 from rdkit import Chem
 import torch
+from tqdm import tqdm
 
 from topoflow.utils.sa_score import sascorer
 from topoflow.utils.molecules import data_to_rdmol, rdmol_to_smiles
 from topoflow.utils.visualization import save_pocket_to_pdb, save_ligand_to_sdf
-
-GNINA_EXECUTABLE = "gnina"  # Ensure this is in your PATH
+from topoflow.utils.gnina_path import GNINA_EXECUTABLE
 
 
 class Metric(torch.nn.Module):
@@ -38,6 +38,11 @@ class Metric(torch.nn.Module):
                         "Expected a single molecule, got a list of length > 1."
                     )
             score = self.scorer_function(mol)
+
+            # Handle tuple/list returns (e.g. Gnina returning multiple scores)
+            if isinstance(score, (tuple, list, np.ndarray)):
+                return torch.tensor([score], dtype=torch.float)
+
             return torch.tensor([score], dtype=torch.float)
         except Exception as e:
             print(f"Error calculating metric: {e}")
@@ -90,34 +95,24 @@ class LipinskiMetric(Metric):
         """Initialize the Lipinski metric."""
         super(LipinskiMetric, self).__init__(scorer_function=self.calculate_lipinski)
 
+    @staticmethod
+    def calculate_lipinski(rdmol):
+        """Calculate the Lipinski score for a molecule."""
+        rule_1 = Descriptors.ExactMolWt(rdmol) < 500
+        rule_2 = Lipinski.NumHDonors(rdmol) <= 5
+        rule_3 = Lipinski.NumHAcceptors(rdmol) <= 10
+        rule_4 = (logp := Crippen.MolLogP(rdmol) >= -2) & (logp <= 5)
+        rule_5 = Chem.rdMolDescriptors.CalcNumRotatableBonds(rdmol) <= 10
+        return np.sum([int(a) for a in [rule_1, rule_2, rule_3, rule_4, rule_5]])
+
 
 def lipinski_scorer(mol):
     """Calculate the Lipinski score for a molecule."""
     return LipinskiMetric()(mol)
 
 
-@staticmethod
-def calculate_lipinski(rdmol):
-    """Calculate the Lipinski score for a molecule."""
-    rule_1 = Descriptors.ExactMolWt(rdmol) < 500
-    rule_2 = Lipinski.NumHDonors(rdmol) <= 5
-    rule_3 = Lipinski.NumHAcceptors(rdmol) <= 10
-    rule_4 = (logp := Crippen.MolLogP(rdmol) >= -2) & (logp <= 5)
-    rule_5 = Chem.rdMolDescriptors.CalcNumRotatableBonds(rdmol) <= 10
-    return np.sum([int(a) for a in [rule_1, rule_2, rule_3, rule_4, rule_5]])
-
-
 class GninaDocker:
-    """Handles GNINA docking.
-
-    Implements a cache to ensure that if we ask for
-    both Vina and CNN scores for the same object, we only run the binary once.
-    """
-
-    def __init__(self):
-        """Initialize the GninaDocker with an empty cache."""
-        self._cache_key = None
-        self._cache_result = None
+    """Handles GNINA docking."""
 
     def _calculate_box(self, data):
         """Calculates dynamic bounding box centered on the pocket."""
@@ -140,32 +135,26 @@ class GninaDocker:
         return center, size
 
     def _run_gnina(self, data):
-        """Runs GNINA and returns (vina_score, cnn_score)."""
-        # Check cache (using object id as a simple hash for this session)
-        # Note: In a multiprocess dataloader, this caching might need adjustment.
-        current_key = id(data)
-        if self._cache_key == current_key:
-            return self._cache_result
-
+        """Runs GNINA and returns [vina_score, cnn_score]."""
         with tempfile.TemporaryDirectory() as temp_dir:
             receptor_path = os.path.join(temp_dir, "receptor.pdb")
             ligand_path = os.path.join(temp_dir, "ligand.sdf")
             output_path = os.path.join(temp_dir, "out.sdf")
 
-            # 1. Save Files using your provided helpers
+            # 1. Save Files
             try:
                 save_pocket_to_pdb(data, receptor_path, verbose=False)
                 save_ligand_to_sdf(data, ligand_path, verbose=False)
             except Exception as e:
                 print(f"Error saving GNINA inputs: {e}")
-                return None, None
+                return None
 
             # 2. Calculate Box
             try:
                 center, size = self._calculate_box(data)
             except ValueError as e:
                 print(f"Skipping GNINA: {e}")
-                return None, None
+                return None
 
             # 3. Build Command
             cmd = [
@@ -194,22 +183,17 @@ class GninaDocker:
                 "0",
                 "--num_modes",
                 "1",  # Top pose only
-                "--autobox_ligand",  # Optional: helps if ligand is already somewhat close
                 "--exhaustiveness",
                 "8",
             ]
 
             # 4. Run subprocess
             try:
-                subprocess.run(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True,
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError):
+                subprocess.run(cmd, capture_output=True, text=True, check=True)
+            except subprocess.CalledProcessError as e:
                 print("GNINA failed or not found.")
-                return None, None
+                print("Error Output:\n", e.stderr)
+                return None
 
             # 5. Parse Output
             vina = None
@@ -229,33 +213,23 @@ class GninaDocker:
                     if c_match:
                         cnn = float(c_match.group(1))
 
-            # Update Cache
-            self._cache_key = current_key
-            self._cache_result = (vina, cnn)
-            return vina, cnn
+            # Return both scores as a list [Vina, CNN]
+            if vina is not None and cnn is not None:
+                return [vina, cnn]
+            return None
 
 
-# Initialize one instance to share state
+# Initialize instance
 docker = GninaDocker()
 
 
-def vina_scorer_dynamic(data):
-    """Returns Vina score. Triggers docking if not cached."""
-    v, _ = docker._run_gnina(data)
-    return v
-
-
-def cnn_scorer_dynamic(data):
-    """Returns CNN score. Triggers docking if not cached."""
-    _, c = docker._run_gnina(data)
-    return c
+def gnina_scorer(data):
+    """Returns [Vina_Score, CNN_Affinity] as a list."""
+    return docker._run_gnina(data)
 
 
 def compute_connectivity(valid, connectivity_thresh=0.5):
-    """Calculate connectivity of molecules.
-
-    Consider molecule connected if its largest fragment contains at least x% of all atoms, where x is determined by self.connectivity_thresh (defaults to 0.5).
-    """
+    """Calculate connectivity of molecules."""
     if len(valid) < 1:
         return 0.0, [], []
 
@@ -278,14 +252,7 @@ def compute_connectivity(valid, connectivity_thresh=0.5):
 
 
 def compute_uniqueness(connected):
-    """Calculate uniqueness of molecules in the dataset.
-
-    Args:
-        connected: list of SMILES strings representing connected molecules.
-
-    Returns:
-        uniqueness ratio and a list of unique SMILES strings.
-    """
+    """Calculate uniqueness of molecules in the dataset."""
     if len(connected) < 1:
         return 0.0, []
 
@@ -293,15 +260,7 @@ def compute_uniqueness(connected):
 
 
 def compute_novelty(connected, known_smiles):
-    """Calculate novelty of molecules in the dataset.
-
-    Args:
-        connected: list of SMILES strings representing connected molecules.
-        known_smiles: set of SMILES strings representing known molecules.
-
-    Returns:
-        novelty ratio and a list of novel SMILES strings.
-    """
+    """Calculate novelty of molecules in the dataset."""
     if len(connected) < 1 or known_smiles is None:
         return 0.0, []
 
@@ -336,15 +295,14 @@ scorer_dict = {
     "logp": logp_scorer,
     "sas": sas_scorer,
     "lipinski": lipinski_scorer,
-    "vina": vina_scorer_dynamic,  # Expects Data object
-    "cnn_affinity": cnn_scorer_dynamic,  # Expects Data object
+    "gnina": gnina_scorer,  # Returns [Vina, CNN]
 }
 
 
 def get_distributions(dataset, metrics, atom_decoder=None):
     """Calculate distributions.
 
-    Handles both 'molecular' metrics (QED/LogP) and 'structural' metrics (Vina/CNN).
+    Handles both 'molecular' metrics (QED/LogP) and 'structural' metrics (Gnina).
     """
     distribution = {}
 
@@ -360,6 +318,10 @@ def get_distributions(dataset, metrics, atom_decoder=None):
             for data in dataset
         ]
 
+    if not rdmols and needs_rdmols:
+        # Warning: if your dataset has invalid mols, this might be empty
+        pass
+
     for metric in metrics:
         scorer = scorer_dict.get(metric)
         if scorer is None:
@@ -368,10 +330,10 @@ def get_distributions(dataset, metrics, atom_decoder=None):
 
         scores = []
 
-        # CASE A: Structural Metrics (Vina/CNN) -> Pass raw Data object
-        if metric in ["vina", "cnn_affinity"]:
-            for data in dataset:
-                s = scorer(data)
+        # CASE A: Structural Metrics (Gnina) -> Pass raw Data object
+        if metric == "gnina":
+            for data in tqdm(dataset, desc=f"Calculating {metric} scores."):
+                s = scorer(data)  # Returns [vina, cnn]
                 if s is not None:
                     scores.append(s)
 
@@ -385,6 +347,8 @@ def get_distributions(dataset, metrics, atom_decoder=None):
 
         # Convert to tensor
         if scores:
+            # If scores is a list of lists/tuples (Gnina), this creates (N, 2)
+            # If scores is a list of scalars (QED), this creates (N,)
             distribution[metric] = torch.tensor(scores, dtype=torch.float)
         else:
             distribution[metric] = torch.tensor([])

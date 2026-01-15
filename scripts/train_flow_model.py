@@ -131,7 +131,7 @@ def train_flow_model(
     else:
         val_distribution = get_distributions(
             val_dataset,
-            metrics=["qed", "logp", "sas", "lipinski", "vina", "cnn_affinity"],
+            metrics=["qed", "logp", "sas", "lipinski", "gnina"],
             atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
         )
         np.save(val_metric_dist_path, val_distribution)

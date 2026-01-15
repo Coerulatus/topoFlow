@@ -56,7 +56,7 @@ class FlowModel(pl.LightningModule):
         w_loss_last_step=0.2,
         w_loss_atom=0.02,
         velocity_scale=1.0,
-        metrics=["qed", "logp", "sas", "lipinski", "vina", "cnn_affinity"],
+        metrics=["qed", "logp", "sas", "lipinski", "gnina"],
     ):
         """Initializes the FlowModel.
 

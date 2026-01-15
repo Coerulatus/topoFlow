@@ -211,3 +211,5 @@ __marimo__/
 /notebooks/outputs/trajectory_test/
 /wandb-importer/
 /outputs/
+gnina.1.3.2
+/topoflow/utils/gnina_path.py
