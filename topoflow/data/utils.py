@@ -243,9 +243,9 @@ def process_ligand_and_pocket(
                     pocket_one_hot.append(np.eye(1, len(atom_dict), atom_idx).squeeze())
                 else:
                     # Fallback for unknown atoms (e.g., if 'others' is in atom_dict)
-                    if "others" in atom_dict:
+                    if "OTHR" in atom_dict:
                         pocket_one_hot.append(
-                            np.eye(1, len(atom_dict), atom_dict["others"]).squeeze()
+                            np.eye(1, len(atom_dict), atom_dict["OTHR"]).squeeze()
                         )
                     else:
                         print(

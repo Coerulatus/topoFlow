@@ -360,7 +360,7 @@ class FlowModel(pl.LightningModule):
     def test_distribution(
         self,
         test_distribution,
-        metrics=["qed", "logp", "sas"],
+        metrics=["qed", "logp", "sas", "lipinksi", "gnina"],
         atom_decoder=None,
         keep_biggest_fragment=False,
     ):
@@ -390,6 +390,7 @@ class FlowModel(pl.LightningModule):
             num_samples + self.max_batched_samples - 1
         ) // self.max_batched_samples
         mols = []
+        pyg_mols = []
         for i in tqdm(
             range(n_batches),
             desc="Sampling molecules",
@@ -404,6 +405,7 @@ class FlowModel(pl.LightningModule):
                 n_steps=self.sample_steps,
             )
             mols += data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
+            pyg_mols += [samples]
 
         connectivity_score, connected_mols, connected_smiles = compute_connectivity(
             mols
@@ -420,7 +422,12 @@ class FlowModel(pl.LightningModule):
                 raise ValueError(f"Metric {metric} not found in test distribution.")
             scorer = scorer_dict.get(metric)
             if scorer is not None:
-                results[metric] = [scorer(mol) for mol in mols]
+                if metric == "gnina":
+                    res = [scorer(mol) for mol in pyg_mols]
+                    results["vina"] = [r[0] for r in res]
+                    results["cnn_affinity"] = [r[1] for r in res]
+                else:
+                    results[metric] = [scorer(mol) for mol in mols]
             else:
                 raise ValueError(f"Unsupported metric: {metric}")
 

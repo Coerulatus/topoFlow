@@ -349,7 +349,15 @@ def get_distributions(dataset, metrics, atom_decoder=None):
         if scores:
             # If scores is a list of lists/tuples (Gnina), this creates (N, 2)
             # If scores is a list of scalars (QED), this creates (N,)
-            distribution[metric] = torch.tensor(scores, dtype=torch.float)
+            if metric == "gnina":
+                distribution["vina"] = torch.tensor(
+                    [s[0] for s in scores], dtype=torch.float
+                )
+                distribution["cnn_affinity"] = torch.tensor(
+                    [s[1] for s in scores], dtype=torch.float
+                )
+            else:
+                distribution[metric] = torch.tensor(scores, dtype=torch.float)
         else:
             distribution[metric] = torch.tensor([])
 
