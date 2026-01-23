@@ -25,7 +25,7 @@ from topoflow.utils.metrics import (
     compute_novelty,
     scorer_dict,
 )
-from topoflow.utils.molecules import data_to_rdmol
+from topoflow.utils.molecules import data_to_rdmol, data_to_list
 
 
 class FlowModel(pl.LightningModule):
@@ -405,11 +405,13 @@ class FlowModel(pl.LightningModule):
                 n_steps=self.sample_steps,
             )
             mols += data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
-            pyg_mols += [samples]
 
-        connectivity_score, connected_mols, connected_smiles = compute_connectivity(
-            mols
+            pyg_mols += data_to_list(samples)
+
+        connectivity_score, connected_mols, connected_smiles, kept_indices = (
+            compute_connectivity(mols)
         )
+        pyg_mols = [pyg_mols[i] for i in kept_indices]
         if keep_biggest_fragment:
             mols = connected_mols
         if len(mols) == 0:
@@ -418,12 +420,14 @@ class FlowModel(pl.LightningModule):
 
         results = {}
         for metric in metrics:
-            if metric not in test_distribution:
+            if metric not in test_distribution and metric != "gnina":
                 raise ValueError(f"Metric {metric} not found in test distribution.")
             scorer = scorer_dict.get(metric)
             if scorer is not None:
                 if metric == "gnina":
-                    res = [scorer(mol) for mol in pyg_mols]
+                    res = []
+                    for mol in tqdm(pyg_mols, desc="Scoring with gnina"):
+                        res.append(scorer(mol.to("cpu")))
                     results["vina"] = [r[0] for r in res]
                     results["cnn_affinity"] = [r[1] for r in res]
                 else:
@@ -431,6 +435,7 @@ class FlowModel(pl.LightningModule):
             else:
                 raise ValueError(f"Unsupported metric: {metric}")
 
+        metrics = results.keys()
         # Check connectivity, uniqueness and novelty
         validity_score = min(num_samples / len(mols), 1)
         uniqueness_ratio, unique_smiles = compute_uniqueness(connected_smiles)

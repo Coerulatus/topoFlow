@@ -87,16 +87,12 @@ def run_multiple_validations(
     mlflow_tracking_uri,
     experiment_name,
     run_name_prefix,
-    output_file,
 ):
-    """Runs multiple validation loops on a trained model and aggregates the results.
-
-    (Docstring content remains the same)
-    """
+    """Runs multiple validation loops on a trained model and aggregates the results."""
     pl.seed_everything(42)  # for reproducibility of data loading
 
     # ======================================================================
-    # Data Preparation (remains the same)
+    # Data Preparation
     # ======================================================================
     print("Setting up validation datamodule...")
     val_dataset = CrossDocked(root=data_dir, split="val")
@@ -129,168 +125,185 @@ def run_multiple_validations(
     )
 
     # ======================================================================
-    # Load Model (remains the same)
+    # Load Model
     # ======================================================================
-    print(f"Loading model from checkpoint: {checkpoint_path}")
-    model = FlowModel.load_from_checkpoint(
-        checkpoint_path,
-        path=path,
-        norm_path="./data/CrossDocked/processed/normalization_params.npz",
-    )
-    model.eval()
-    model.max_batched_samples = batch_size
-
-    val_metric_dist_path = os.path.join(data_dir, "processed", "val_distribution.npy")
-    if os.path.exists(val_metric_dist_path):
-        val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
-        model.val_distribution = val_distribution
-    else:
-        raise FileNotFoundError(
-            f"Validation distribution file not found at {val_metric_dist_path}. "
-            "Please ensure this file was generated during training."
-        )
-    model.atom_decoder = constants.dataset_params[data_name]["atom_decoder"]
-
-    # ======================================================================
-    # Multiple Validation Runs (remains the same)
-    # ======================================================================
-    run_ids = []
-    print(f"Starting {n_runs} validation runs...")
-    for i in range(n_runs):
-        run_name = f"{run_name_prefix}_{i+1}"
-        print(f"--- Running Validation {i+1}/{n_runs} ({run_name}) ---")
-
-        logger = pl.loggers.MLFlowLogger(
-            experiment_name=experiment_name,
-            tracking_uri=mlflow_tracking_uri,
-            run_name=run_name,
-        )
-
-        trainer = pl.Trainer(
-            accelerator="auto",
-            devices=1 if torch.cuda.is_available() else None,
-            logger=logger,
-            enable_progress_bar=True,
-            enable_model_summary=False,
-        )
-
-        trainer.validate(model, datamodule=datamodule)
-        run_ids.append(logger.run_id)
-        # Finalize the logger to push all logs
-        logger.finalize("FINISHED")
-
-    print("All validation runs completed.")
-
-    # ======================================================================
-    # Fetch Results from MLflow and Aggregate
-    # ======================================================================
-    print("Fetching results from MLflow and aggregating...")
-    mlflow.set_tracking_uri(mlflow_tracking_uri)
-    client = MlflowClient()
-
-    all_metrics = {}
-    for run_id in run_ids:
-        run = client.get_run(run_id)
-        for metric_name, value in run.data.metrics.items():
-            if metric_name not in all_metrics:
-                all_metrics[metric_name] = []
-            all_metrics[metric_name].append(value)
-
-    # --- Aggregation Logic Fix ---
-
-    # 1. Separate metrics into mean/std pairs (pooled) and single values (simple)
-    pooled_metrics = (
-        {}
-    )  # Stores {'metric_name': {'mean': [v1, v2, ...], 'std': [s1, s2, ...]}}
-    simple_metrics = {}  # Stores {'metric_name': [v1, v2, ...]}
-
-    # Collect all data, grouping mean/std pairs
-    for name, values in all_metrics.items():
-        if name.endswith("_mean"):
-            base_name = name[:-5]  # e.g., 'qed'
-            std_name = base_name + "_std"
-
-            # Ensure the standard deviation is available
-            if std_name in all_metrics:
-                if base_name not in pooled_metrics:
-                    pooled_metrics[base_name] = {"mean": [], "std": []}
-                pooled_metrics[base_name]["mean"].extend(values)
-        elif name.endswith("_std"):
-            # Standard deviations are handled when processing means
-            continue
-        elif not name.endswith("_mean") and not name.endswith("_std"):
-            # Simple scalar metric (e.g., qed_wl_distance, validity)
-            simple_metrics[name] = values
-
-    # Add standard deviations to pooled_metrics structure
-    for base_name in pooled_metrics.keys():
-        std_name = base_name + "_std"
-        if std_name in all_metrics:
-            pooled_metrics[base_name]["std"].extend(all_metrics[std_name])
-        else:
-            # Handle case where mean exists but std doesn't (shouldn't happen with PTL)
-            print(f"Warning: Mean {base_name}_mean found, but no {std_name}.")
-
-    # 2. Calculate final results
-    final_results = {}
-
-    # A. Aggregate POOLED METRICS (e.g., qed_mean, logp_mean)
-    for base_name, data in pooled_metrics.items():
-        combined_mean, pooled_std = aggregate_pooled_stats(data["mean"], data["std"])
-        final_results[base_name + "_mean"] = f"{combined_mean:.4f} ± {pooled_std:.4f}"
-        final_results[base_name + "_std"] = (
-            f" (Pooled Std: {pooled_std:.4f})"  # Log the original std name for reference
-        )
-
-    # B. Aggregate SIMPLE METRICS (e.g., qed_wl_distance, validity)
-    for name, values in simple_metrics.items():
-        mean, std = aggregate_simple_stats(values)
-        final_results[name] = f"{mean:.4f} ± {std:.4f}"
-
-    # --- End Aggregation Logic Fix ---
-
-    # ======================================================================
-    # Save Results
-    # ======================================================================
-    root_folder = os.path.dirname(output_file)
-    if root_folder and not os.path.exists(root_folder):
-        os.makedirs(root_folder)
-    print(f"Saving aggregated results to {output_file}")
-
-    # Sort results for consistent output
-    sorted_keys = sorted(final_results.keys())
-
-    # Create a DataFrame for better formatting (optional but good practice)
-    data = []
-    for metric_name in sorted_keys:
-        if metric_name == "epoch":
-            continue
-        # Skip the redundant *_std entry in the final table
-        if metric_name.endswith("_std") and metric_name[:-4] + "_mean" in final_results:
-            continue
-
-        # Extract mean/std string, or use the value itself
-        value_str = final_results[metric_name]
-
-        # Check if this metric has a pooled std that should be displayed
-        if metric_name.endswith("_mean") and metric_name[:-5] + "_std" in final_results:
-            pooled_std_ref = (
-                final_results[metric_name[:-5] + "_std"]
-                .replace(" (Pooled Std: ", "")
-                .replace(")", "")
+    if not checkpoint_path.endswith(".ckpt"):
+        ckpt_files = [f for f in os.listdir(checkpoint_path) if f.endswith(".ckpt")]
+        if not ckpt_files:
+            raise FileNotFoundError(
+                f"No .ckpt files found in directory: {checkpoint_path}"
             )
-            value_str = value_str.split("±")[0].strip() + f" ± {pooled_std_ref}"
+    else:
+        ckpt_files = [os.path.basename(checkpoint_path)]
+        # Adjust checkpoint_path to be the directory if a file was passed
+        checkpoint_path = os.path.dirname(checkpoint_path)
 
-        data.append([metric_name, value_str])
+    for name in ckpt_files:
+        # Full path to the current checkpoint
+        checkpoint_path_full = os.path.join(checkpoint_path, name)
 
-    df = pd.DataFrame(data, columns=["Metric", "Value (mean ± std)"])
+        print(f"Loading model from checkpoint: {checkpoint_path_full}")
+        model = FlowModel.load_from_checkpoint(
+            checkpoint_path_full,
+            path=path,
+            norm_path="./data/CrossDocked/processed/normalization_params.npz",
+        )
+        model.eval()
+        model.max_batched_samples = batch_size
 
-    # Save the markdown table
-    with open(output_file, "w") as f:
-        f.write("# Validation Results\n\n")
-        f.write(df.to_markdown(index=False))
+        val_metric_dist_path = os.path.join(
+            data_dir, "processed", "val_distribution.npy"
+        )
+        if os.path.exists(val_metric_dist_path):
+            val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
+            model.val_distribution = val_distribution
+        else:
+            raise FileNotFoundError(
+                f"Validation distribution file not found at {val_metric_dist_path}. "
+                "Please ensure this file was generated during training."
+            )
+        model.atom_decoder = constants.dataset_params[data_name]["atom_decoder"]
 
-    print("Done.")
+        # ======================================================================
+        # Multiple Validation Runs
+        # ======================================================================
+        run_ids = []
+        print(f"Starting {n_runs} validation runs...")
+        for i in range(n_runs):
+            run_name = f"{run_name_prefix}_{i+1}"
+            print(f"--- Running Validation {i+1}/{n_runs} ({run_name}) ---")
+
+            logger = pl.loggers.MLFlowLogger(
+                experiment_name=experiment_name,
+                tracking_uri=mlflow_tracking_uri,
+                run_name=run_name,
+            )
+
+            trainer = pl.Trainer(
+                accelerator="auto",
+                devices=1 if torch.cuda.is_available() else None,
+                logger=logger,
+                enable_progress_bar=True,
+                enable_model_summary=False,
+            )
+
+            trainer.validate(model, datamodule=datamodule)
+            run_ids.append(logger.run_id)
+            # Finalize the logger to push all logs
+            logger.finalize("FINISHED")
+
+        print("All validation runs completed.")
+
+        # ======================================================================
+        # Fetch Results from MLflow and Aggregate
+        # ======================================================================
+        print("Fetching results from MLflow and aggregating...")
+        mlflow.set_tracking_uri(mlflow_tracking_uri)
+        client = MlflowClient()
+
+        all_metrics = {}
+        for run_id in run_ids:
+            run = client.get_run(run_id)
+            for metric_name, value in run.data.metrics.items():
+                if metric_name not in all_metrics:
+                    all_metrics[metric_name] = []
+                all_metrics[metric_name].append(value)
+
+        # --- Aggregation Logic ---
+        pooled_metrics = {}
+        simple_metrics = {}
+
+        for name, values in all_metrics.items():
+            if name.endswith("_mean"):
+                base_name = name[:-5]
+                std_name = base_name + "_std"
+                if std_name in all_metrics:
+                    if base_name not in pooled_metrics:
+                        pooled_metrics[base_name] = {"mean": [], "std": []}
+                    pooled_metrics[base_name]["mean"].extend(values)
+            elif name.endswith("_std"):
+                continue
+            elif not name.endswith("_mean") and not name.endswith("_std"):
+                simple_metrics[name] = values
+
+        for base_name in pooled_metrics.keys():
+            std_name = base_name + "_std"
+            if std_name in all_metrics:
+                pooled_metrics[base_name]["std"].extend(all_metrics[std_name])
+
+        final_results = {}
+
+        # A. Aggregate POOLED METRICS
+        for base_name, data in pooled_metrics.items():
+            combined_mean, pooled_std = aggregate_pooled_stats(
+                data["mean"], data["std"]
+            )
+            final_results[base_name + "_mean"] = (
+                f"{combined_mean:.4f} ± {pooled_std:.4f}"
+            )
+            final_results[base_name + "_std"] = f" (Pooled Std: {pooled_std:.4f})"
+
+        # B. Aggregate SIMPLE METRICS
+        for name, values in simple_metrics.items():
+            mean, std = aggregate_simple_stats(values)
+            final_results[name] = f"{mean:.4f} ± {std:.4f}"
+
+        # ======================================================================
+        # Save Results
+        # ======================================================================
+
+        # 1. Get the directory of the current checkpoint file
+        current_ckpt_dir = os.path.dirname(checkpoint_path_full)
+
+        # 2. Get the file name stem (remove .ckpt extension)
+        # os.path.splitext is safer than slicing [:-5]
+        ckpt_filename = os.path.basename(checkpoint_path_full)
+        ckpt_stem = os.path.splitext(ckpt_filename)[0]
+
+        # 3. Construct new filename: "result_" + checkpoint name + ".txt"
+        new_filename = f"result_{ckpt_stem}.txt"
+
+        output_file = os.path.join(current_ckpt_dir, new_filename)
+
+        print(f"Saving aggregated results to {output_file}")
+
+        # Sort results for consistent output
+        sorted_keys = sorted(final_results.keys())
+
+        # Create a DataFrame for better formatting
+        data = []
+        for metric_name in sorted_keys:
+            if metric_name == "epoch":
+                continue
+            if (
+                metric_name.endswith("_std")
+                and metric_name[:-4] + "_mean" in final_results
+            ):
+                continue
+
+            value_str = final_results[metric_name]
+
+            if (
+                metric_name.endswith("_mean")
+                and metric_name[:-5] + "_std" in final_results
+            ):
+                pooled_std_ref = (
+                    final_results[metric_name[:-5] + "_std"]
+                    .replace(" (Pooled Std: ", "")
+                    .replace(")", "")
+                )
+                value_str = value_str.split("±")[0].strip() + f" ± {pooled_std_ref}"
+
+            data.append([metric_name, value_str])
+
+        df = pd.DataFrame(data, columns=["Metric", "Value (mean ± std)"])
+
+        # Save the markdown table
+        with open(output_file, "w") as f:
+            f.write("# Validation Results\n\n")
+            f.write(df.to_markdown(index=False))
+
+        print("Done.")
 
 
 if __name__ == "__main__":
@@ -300,8 +313,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint_path",
         type=str,
-        default="./checkpoints/runs_cluster/01_13_274e_distance_transformer_2.ckpt",
-        help="Path to the trained model checkpoint (.ckpt file).",
+        default="./checkpoints/runs_cluster/to_evaluate/09_01_499e_transformer.ckpt",
+        help="Path to the trained model checkpoint (.ckpt file) or directory.",
     )
     parser.add_argument(
         "--data_dir",
@@ -346,12 +359,6 @@ if __name__ == "__main__":
         default="validation_run",
         help="Prefix for naming MLflow validation runs.",
     )
-    parser.add_argument(
-        "--output_file",
-        type=str,
-        default="./results/results_01_13_274e_distance_transformer_2.md",
-        help="File to save the aggregated results.",
-    )
 
     args = parser.parse_args()
 
@@ -364,5 +371,4 @@ if __name__ == "__main__":
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         experiment_name=args.mlflow_experiment_name,
         run_name_prefix=args.run_name_prefix,
-        output_file=args.output_file,
     )

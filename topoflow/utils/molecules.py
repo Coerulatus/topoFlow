@@ -433,3 +433,29 @@ def load_sdf_molecules_rdkit(file_path):
     except Exception as e:
         print(f"An error occurred: {e}")
         return []
+
+
+def data_to_list(data):
+    """Split a batched PyTorch Geometric Data object into a list of individual Data objects."""
+    batch_lig = data["batch_lig"]
+    batch_lig = batch_lig[batch_lig != -1]  # Remove -1 entries
+    batch_pocket = data["batch_pocket"]
+    batch_pocket = batch_pocket[batch_pocket != -1]  # Remove -1 entries
+    unique_batches = torch.unique(torch.cat([batch_lig, batch_pocket]))
+
+    data_list = []
+    for batch_id in unique_batches:
+        if batch_id != -1:
+            mask_lig = batch_lig == batch_id
+            mask_pocket = batch_pocket == batch_id
+
+            data_item = Data(
+                x_lig=data["x_lig"][mask_lig],
+                h_lig=data["h_lig"][mask_lig],
+                batch_lig=torch.zeros(mask_lig.sum(), dtype=torch.long),
+                x_pocket=data["x_pocket"][mask_pocket],
+                h_pocket=data["h_pocket"][mask_pocket],
+                batch_pocket=torch.zeros(mask_pocket.sum(), dtype=torch.long),
+            )
+            data_list.append(data_item)
+    return data_list

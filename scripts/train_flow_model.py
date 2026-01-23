@@ -165,6 +165,16 @@ def train_flow_model(
             num_layers=2,
             dropout=0.1,
             add_time_to="ligand",  # "ligand", "both", or "none"
+            use_gat=False,
+        )
+    elif vector_field_model == "ast_gat":
+        vector_field = AllSetTransformerVectorField(
+            h_dim=hidden_dim,
+            num_heads=16,
+            num_layers=2,
+            dropout=0.1,
+            add_time_to="ligand",  # "ligand", "both", or "none"
+            use_gat=True,
         )
     elif vector_field_model == "distance_transformer":
         vector_field = TransformerDistanceVectorField(

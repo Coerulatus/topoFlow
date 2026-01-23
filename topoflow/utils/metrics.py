@@ -231,11 +231,12 @@ def gnina_scorer(data):
 def compute_connectivity(valid, connectivity_thresh=0.5):
     """Calculate connectivity of molecules."""
     if len(valid) < 1:
-        return 0.0, [], []
+        return 0.0, [], [], []
 
     connected_smiles = []
     connected_mols = []
-    for mol in valid:
+    keep_idxs = []
+    for i, mol in enumerate(valid):
         try:
             mol_frags = Chem.rdmolops.GetMolFrags(mol, asMols=True)
             largest_mol = max(mol_frags, default=mol, key=lambda m: m.GetNumAtoms())
@@ -244,11 +245,17 @@ def compute_connectivity(valid, connectivity_thresh=0.5):
                 if smiles is not None:
                     connected_smiles.append(smiles)
                     connected_mols.append(largest_mol)
+                    keep_idxs.append(i)
         except Exception as e:
             print(f"Error processing molecule: {e}")
             continue
 
-    return len(connected_smiles) / len(valid), connected_mols, connected_smiles
+    return (
+        len(connected_smiles) / len(valid),
+        connected_mols,
+        connected_smiles,
+        keep_idxs,
+    )
 
 
 def compute_uniqueness(connected):

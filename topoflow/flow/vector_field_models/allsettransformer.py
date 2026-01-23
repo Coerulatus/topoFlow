@@ -913,6 +913,7 @@ class AllSetTransformerVectorField(nn.Module):
         num_layers=4,
         dropout=0.0,
         add_time_to="ligand",  # "ligand", "both", or "none"
+        use_gat=True,
     ):
         """Ligand-only prediction with self-attention inside each ligand and cross-attention to pocket atoms."""
         super().__init__()
@@ -943,12 +944,14 @@ class AllSetTransformerVectorField(nn.Module):
             mlp_num_layers=2,
             mlp_dropout=dropout,
         )
-        self.gat_model = GATModel(
-            h_dim=h_dim,
-            num_heads=num_heads,
-            num_layers=num_layers,
-            dropout=dropout,
-        )
+        self.use_gat = use_gat
+        if use_gat:
+            self.gat_model = GATModel(
+                h_dim=h_dim,
+                num_heads=num_heads,
+                num_layers=num_layers,
+                dropout=dropout,
+            )
 
         self.out_vel = nn.Sequential(
             nn.LayerNorm(h_dim), nn.Linear(h_dim, self.x_dim, bias=False)
@@ -1106,9 +1109,11 @@ class AllSetTransformerVectorField(nn.Module):
         h_ast = h + self.model(h, incidence1)[0]
 
         # GAT
-        h_gat = self.gat_model(h, edge_index)
-
-        h = h_gat + h_ast  # GAT + AST
+        if self.use_gat:
+            h_gat = self.gat_model(h, edge_index)
+            h = h_gat + h_ast  # GAT + AST
+        else:
+            h = h_ast
 
         N1 = lig_h.size(0)
         h_lig = h[:N1, :]
