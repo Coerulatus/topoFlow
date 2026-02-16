@@ -193,7 +193,7 @@ class GninaDocker:
             except subprocess.CalledProcessError as e:
                 print("GNINA failed or not found.")
                 print("Error Output:\n", e.stderr)
-                return None
+                return [0, 0]
 
             # 5. Parse Output
             vina = None
@@ -216,7 +216,7 @@ class GninaDocker:
             # Return both scores as a list [Vina, CNN]
             if vina is not None and cnn is not None:
                 return [vina, cnn]
-            return None
+            return [0, 0]
 
 
 # Initialize instance

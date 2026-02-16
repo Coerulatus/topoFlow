@@ -220,13 +220,25 @@ def mol_to_data(mol, atom_encoder, batch_id=0):
 
 
 def data_to_rdmol(
-    data, atom_decoder, sanitize=False, show_progress=False, verbose=True
+    data,
+    atom_decoder,
+    norm_params_path=None,
+    sanitize=False,
+    show_progress=False,
+    verbose=True,
 ):
     """Convert PyTorch Geometric Data object to RDKit molecule."""
     rdkit_logger = RDLogger.logger()
     rdkit_logger.setLevel(RDLogger.CRITICAL)
 
     coords = data["x_lig"].to("cpu")
+    if norm_params_path is not None:
+        norm_params = np.load(norm_params_path, allow_pickle=True)
+        mean = norm_params["mean"]
+        std = norm_params["std"]
+        coords = coords * torch.tensor(std, dtype=torch.float32) + torch.tensor(
+            mean, dtype=torch.float32
+        )
     atom_types = data["h_lig"].to("cpu")
     batch = data["batch_lig"].to("cpu")
     batch = batch[batch != -1]  # Remove -1 entries
