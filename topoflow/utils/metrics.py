@@ -136,6 +136,14 @@ class GninaDocker:
 
     def _run_gnina(self, data):
         """Runs GNINA and returns [vina_score, cnn_score]."""
+        env_extra = os.environ.copy()
+        conda_prefix = os.environ.get("CONDA_PREFIX")
+        if conda_prefix:
+            lib_path = os.path.join(conda_prefix, "lib")
+            # Update LD_LIBRARY_PATH so the binary finds libcudnn.so.9
+            current_ld = env_extra.get("LD_LIBRARY_PATH", "")
+            env_extra["LD_LIBRARY_PATH"] = f"{lib_path}:{current_ld}"
+
         with tempfile.TemporaryDirectory() as temp_dir:
             receptor_path = os.path.join(temp_dir, "receptor.pdb")
             ligand_path = os.path.join(temp_dir, "ligand.sdf")
@@ -189,7 +197,9 @@ class GninaDocker:
 
             # 4. Run subprocess
             try:
-                subprocess.run(cmd, capture_output=True, text=True, check=True)
+                subprocess.run(
+                    cmd, capture_output=True, text=True, check=True, env=env_extra
+                )
             except subprocess.CalledProcessError as e:
                 print("GNINA failed or not found.")
                 print("Error Output:\n", e.stderr)

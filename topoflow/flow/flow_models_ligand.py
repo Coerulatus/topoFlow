@@ -8,6 +8,7 @@ from torch_geometric.data import Data
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
 from tqdm import tqdm
+from rdkit import Chem  # Added for molecule saving
 
 from topoflow.flow.simulator import TorchDiffEqSimulator
 from topoflow.flow.utils_plot import plot_results
@@ -138,7 +139,6 @@ class FlowModel(pl.LightningModule):
         self.velocity_scale = velocity_scale
 
         self.metrics = metrics
-        # self.forward = torch.compile(self.forward)
 
     def _get_loss(
         self,
@@ -168,8 +168,8 @@ class FlowModel(pl.LightningModule):
         loss_mse = self.loss_function(u_t_theta_lig, u_t_ref_lig)
         loss_pos = loss_mse[:, :3].mean()
         loss_atom = loss_mse[:, 3:].mean()
-        loss_mse[:, 3:] *= self.w_loss_atom  # Higher weight on position
-        loss_mse = loss_mse.mean(dim=-1)  # Mean over the last dimension
+        loss_mse[:, 3:] *= self.w_loss_atom
+        loss_mse = loss_mse.mean(dim=-1)
         loss = loss_mse + loss_last_step
         loss_without_time = loss.clone().mean().detach()
 
@@ -230,24 +230,18 @@ class FlowModel(pl.LightningModule):
         u_t_ref = batch.get("u_t_ref")
         u_t_ref *= self.velocity_scale
 
-        # Get ligand and pocket indices
         lig_indices = torch.where(batch_lig != -1)[0]
         pocket_indices = torch.where(batch_pocket != -1)[0]
 
-        # Extract the ligand
         x_lig = x[lig_indices, :]
         u_t_ref_lig = u_t_ref[lig_indices, :]
-
-        # Extract the pocket positions instead of velocities
         x_pocket = x[pocket_indices, :]
 
-        # Only predict ligand velocities, conditioned on pocket positions
         u_t_theta_lig = self.vector_field_model(
             x_lig, t, x_pocket, batch_lig, batch_pocket
         )
 
         t_batched_lig = t_batched[lig_indices]
-
         return u_t_theta_lig, u_t_ref_lig, t_batched_lig, x_lig
 
     def training_step(self, batch, batch_idx):
@@ -278,33 +272,7 @@ class FlowModel(pl.LightningModule):
             on_epoch=True,
             on_step=False,
         )
-        # self.log("u_t/ref", u_t_ref.norm(dim=-1).mean(), on_epoch=True, on_step=True)
-        # self.log(
-        #     "u_t/theta", u_t_theta.norm(dim=-1).mean(), on_epoch=True, on_step=True
-        # )
         return losses["loss"]
-
-    def on_after_backward(self):
-        """Logs the gradients after the backward pass."""
-        # TODO: remove this after debugging
-        # for name, param in self.named_parameters():
-        #     if param.grad is not None:
-        #         # Log the L2 norm of the gradient
-        #         self.log(
-        #             f"gradients/{name}_norm",
-        #             param.grad.norm(),
-        #             on_epoch=True,
-        #             on_step=False,
-        #         )
-
-        #         # Log the average absolute value of the gradient
-        #         self.log(
-        #             f"gradients/{name}_mean_abs",
-        #             param.grad.abs().mean(),
-        #             on_epoch=True,
-        #             on_step=False,
-        #         )
-        pass
 
     def validation_step(self, batch, batch_idx):
         """Performs a single validation step.
@@ -337,11 +305,19 @@ class FlowModel(pl.LightningModule):
             and batch_idx == 0
             and self.n_epoch % self.sample_every == 0
         ):
+            # Define save path if run_dir is set by the validation loop
+            save_path = None
+            if hasattr(self, "current_run_dir"):
+                save_path = os.path.join(
+                    self.current_run_dir, f"valid_mols_epoch_{self.current_epoch}.sdf"
+                )
+
             distances, other_metrics = self.test_distribution(
                 test_distribution=self.val_distribution,
                 metrics=self.metrics,
                 atom_decoder=self.atom_decoder,
                 keep_biggest_fragment=True,
+                save_path=save_path,  # Pass save_path
             )
             for metric, distance in distances.items():
                 self.log(
@@ -363,6 +339,7 @@ class FlowModel(pl.LightningModule):
         metrics=["qed", "logp", "sas", "lipinksi", "gnina"],
         atom_decoder=None,
         keep_biggest_fragment=False,
+        save_path=None,
     ):
         """Test is the molecules produced follow the expected distribution.
 
@@ -376,6 +353,7 @@ class FlowModel(pl.LightningModule):
             atom_decoder: Optional atom decoder for converting samples to RDKit molecules.
                 Defaults to None to use the model's default atom decoder.
             keep_biggest_fragment: If True, only the biggest fragment of each molecule is considered. Defaults to False.
+            save_path: Path to folder to save generated molecules.
 
         Returns:
             A tuple containing:
@@ -405,18 +383,33 @@ class FlowModel(pl.LightningModule):
                 n_steps=self.sample_steps,
             )
             mols += data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
-
             pyg_mols += data_to_list(samples)
 
         connectivity_score, connected_mols, connected_smiles, kept_indices = (
             compute_connectivity(mols)
         )
+
         pyg_mols = [pyg_mols[i] for i in kept_indices]
         if keep_biggest_fragment:
             mols = connected_mols
         if len(mols) == 0:
             print("Warning: No valid molecules generated.")
             return {metric: float("0") for metric in metrics}, {}
+
+        if save_path is not None and len(mols) > 0:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+            # 1. Save RDKit molecules (SDF)
+            writer = Chem.SDWriter(save_path)
+            for m in mols:
+                if m is not None:
+                    writer.write(m)
+            writer.close()
+
+            # 2. Save PyTorch Geometric Data objects (.pt)
+            pyg_save_path = os.path.splitext(save_path)[0] + ".pt"
+            torch.save(pyg_mols, pyg_save_path)
+            print(f"Saved SDF to {save_path} and PyG data to {pyg_save_path}")
 
         results = {}
         for metric in metrics:
@@ -435,18 +428,15 @@ class FlowModel(pl.LightningModule):
             else:
                 raise ValueError(f"Unsupported metric: {metric}")
 
-        metrics = results.keys()
-        # Check connectivity, uniqueness and novelty
+        metrics_calculated = results.keys()
         validity_score = min(num_samples / len(mols), 1)
-        uniqueness_ratio, unique_smiles = compute_uniqueness(connected_smiles)
-        # novelty_ratio, novel_smiles = compute_novelty(
-        #     connected, self.path.p_data.dataset.smiles_list
-        # )
+        uniqueness_ratio, connected_smiles_unique = compute_uniqueness(connected_smiles)
+
         res = {}
         res["validity"] = torch.tensor(validity_score, dtype=torch.float)
         res["connectivity"] = torch.tensor(connectivity_score, dtype=torch.float)
         res["uniqueness"] = torch.tensor(uniqueness_ratio, dtype=torch.float)
-        for metric in metrics:
+        for metric in metrics_calculated:
             if metric in results:
                 res[f"{metric}_mean"] = torch.tensor(
                     np.mean(results[metric]), dtype=torch.float
@@ -454,21 +444,20 @@ class FlowModel(pl.LightningModule):
                 res[f"{metric}_std"] = torch.tensor(
                     np.std(results[metric]), dtype=torch.float
                 )
-        # res["novelty"] = torch.tensor(novelty_ratio, dtype=torch.float)
 
         distances = {}
         try:
-            for metric in metrics:
-                expected = test_distribution[metric]
-                expected = [e for e in expected if e is not None]
-                actual = results[metric]
-                if isinstance(expected, list):
-                    expected = torch.tensor(expected)
-                if isinstance(actual, list):
-                    actual = torch.tensor(actual, device=expected.device)
-                distance = wasserstein_1d(expected, actual)
-                distances[metric + "_wl_distance"] = distance.item()
-
+            for metric in metrics_calculated:
+                if metric in test_distribution:
+                    expected = test_distribution[metric]
+                    expected = [e for e in expected if e is not None]
+                    actual = results[metric]
+                    if isinstance(expected, list):
+                        expected = torch.tensor(expected)
+                    if isinstance(actual, list):
+                        actual = torch.tensor(actual, device=expected.device)
+                    distance = wasserstein_1d(expected, actual)
+                    distances[metric + "_wl_distance"] = distance.item()
             return distances, res
         except Exception as e:
             print(f"Error calculating distances: {e}")
@@ -491,17 +480,12 @@ class FlowModel(pl.LightningModule):
         is_lig = batch_lig != -1
         x_lig = x[is_lig, :]
         x_pocket = z
-
         u_t_theta_lig = self.vector_field_model(
             x_lig, t, x_pocket, batch_lig, batch_pocket
         )
-
-        # For the pocket we already have the final positions, so the velocity is zero
         guided_vector_field = torch.zeros_like(x)
         guided_vector_field[is_lig, :] = u_t_theta_lig
-        # We need to rescale the velocity because the reference vector field is also rescaled
         guided_vector_field /= self.velocity_scale
-
         return guided_vector_field
 
     def unnorm_x(self, x_lig, x_pocket):
@@ -512,7 +496,6 @@ class FlowModel(pl.LightningModule):
             )
         mean = torch.tensor(self.normalization_params["mean"]).to(x_pocket.device)
         std = torch.tensor(self.normalization_params["std"]).to(x_pocket.device)
-
         x_lig = x_lig * std + mean
         x_pocket = x_pocket * std + mean
         return x_lig, x_pocket
@@ -530,7 +513,6 @@ class FlowModel(pl.LightningModule):
             The generated samples after simulating the flow.
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
-
         if pocket is not None:
             z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
             batch_pocket = pocket.batch_pocket
@@ -540,7 +522,6 @@ class FlowModel(pl.LightningModule):
             z_pocket, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
                 n_samples, pocket_only=True, force_batch_size=True
             )
-
         starting_points, batch_all, batch_lig, batch_pocket = (
             self.path.sample_simple_distribution(n_samples, batch_pocket=batch_pocket)
         )
@@ -548,9 +529,7 @@ class FlowModel(pl.LightningModule):
         is_poc = batch_pocket != -1
 
         starting_points[is_poc] = z_pocket
-
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
-
         output = simulator.simulate(
             starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z_pocket
         )
