@@ -1,6 +1,7 @@
 """Script to generate ligand molecules starting from a base scaffold, conditioned on a target protein pocket using a pre-trained flow model."""
 
 import os
+import csv
 from tqdm import tqdm
 import numpy as np
 from rdkit import Chem
@@ -23,31 +24,34 @@ from topoflow.utils.molecules import (
     get_largest_fragment_info,
     extract_bonds,
 )
-from topoflow.utils.visualization import visualize_trajectory
 
 if __name__ == "__main__":
     # --- Configuration ---
-    BATCH_SIZE = 4  # Increased BATCH_SIZE for efficiency, you can adjust this
+    BATCH_SIZE = 4
     N_SAMPLES_TO_GENERATE = 256
-    N_STEPS = 80  # Number of steps in the flow sampling process
-    FRAGMENT_THRESHOLD_PERCENT = 0.0  # % of atoms must be in the largest fragment
-    T_MAX_INPAINTING = 1
-
-    # New parameter for retry limit (optional but recommended to prevent infinite loops)
+    N_STEPS = 80
+    FRAGMENT_THRESHOLD_PERCENT = 0.0
     MAX_ATTEMPTS = N_SAMPLES_TO_GENERATE * 5
+
+    # Grid search parameters
+    T_MAX_VALUES = [0.9, 1.0]
+    FORCE_BONDS_VALUES = [True, False]
 
     atom_encoder = constants.dataset_params["crossdock_full"]["atom_encoder"]
     atom_decoder = constants.dataset_params["crossdock_full"]["atom_decoder"]
     pdb_path = "./data/target_protein/wwp2_c2.pdb"
     data_path = "./data/target_protein/wwp2_c2_data_normalized.pt"
     normalization_path = "./data/CrossDocked/processed/normalization_params_full.npz"
-    output_folder = "./outputs/generated_ligands_wwp2_c2/t_max_100_force_bonds"  # Folder to save passing molecules
+    base_output_dir = "./outputs/generated_ligands_wwp2_c2"
 
-    # --- Environment Setup (No changes needed, keeping original imports/setup) ---
+    # --- 1. Global Setup ---
+    print("Initializing environment and loading models...")
     base_ligand_smile = "c1ccc2c(c1)[nH]cc2"
     rdkit_ligand = Chem.MolFromSmiles(base_ligand_smile)
     AllChem.Compute2DCoords(rdkit_ligand)
-    bonds = extract_bonds(rdkit_ligand)
+
+    extracted_bonds = extract_bonds(rdkit_ligand)
+
     coords, one_hot, batch = mol_to_data(rdkit_ligand, atom_encoder)
     if normalization_path is not None:
         norm_params = np.load(normalization_path, allow_pickle=True)
@@ -101,119 +105,143 @@ if __name__ == "__main__":
     )
     model.eval()
     model.max_batched_samples = BATCH_SIZE
-    # --- End Environment Setup ---
 
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    # Ensure base output directory exists
+    os.makedirs(base_output_dir, exist_ok=True)
 
-    print(f"Starting generation of {N_SAMPLES_TO_GENERATE} molecules...")
+    # List to hold our summary metrics for the CSV
+    summary_results = []
 
-    num_saved = 0
-    attempt_count = 0
+    # --- 2. Parameter Grid Search Loop ---
+    for t_max_val in T_MAX_VALUES:
+        for force_val in FORCE_BONDS_VALUES:
 
-    # Use tqdm to track the progress of SAVED molecules
-    pbar = tqdm(total=N_SAMPLES_TO_GENERATE, desc="Molecules Saved")
+            t_max_str = str(t_max_val).replace(".", "_")
+            output_folder = os.path.join(
+                base_output_dir, f"t_max_{t_max_str}_force_bonds_{force_val}"
+            )
+            os.makedirs(output_folder, exist_ok=True)
 
-    while num_saved < N_SAMPLES_TO_GENERATE and attempt_count < MAX_ATTEMPTS:
-        attempt_count += 1
+            print(f"\n{'='*50}")
+            print(
+                f"Starting Run: t_max_inpainting={t_max_val}, force_bonds={force_val}"
+            )
+            print(f"Saving to: {output_folder}")
+            print(f"{'='*50}")
 
-        # Determine the number of molecules to generate in this batch
-        # We cap it at the BATCH_SIZE, even if we need fewer than BATCH_SIZE left
-        current_batch_size = BATCH_SIZE
-
-        # 1. Sample a batch of data objects
-        res = model.inpainting(
-            ligand=base_ligand,
-            pocket=pocket,
-            n_atoms_to_add=10,
-            n_steps=N_STEPS,
-            t_max_inpainting=T_MAX_INPAINTING,
-        )
-
-        # Check for immediate sampling failure (e.g., returned an empty result)
-        if res is None or res.x_lig is None or res.x_lig.numel() == 0:
-            tqdm.write("Warning: Sampling returned empty data. Retrying batch.")
-            continue  # Retry the loop without incrementing num_saved
-
-        # 2. Convert batch to a list of RDKit molecules and process them
-        unique_batch_ids = torch.unique(res.batch_lig)
-        batch_lig = res.batch_lig[res.batch_lig != -1]
-
-        # Only iterate over the number of unique samples generated in the batch
-        for batch_id in unique_batch_ids:
-            if num_saved >= N_SAMPLES_TO_GENERATE:
-                break  # Stop processing if target is reached
-
-            if batch_id.item() == -1:
-                continue
-
-            mask = batch_lig == batch_id
-
-            # Extract single molecule data (this part assumes your data structure)
-            lig_coords = res.x_lig[mask].detach().cpu()
-            lig_features = res.h_lig[mask].detach().cpu()
-
-            # Total number of atoms in the sampled ligand
-            total_atoms = lig_coords.shape[0]
-
-            # Use your custom openbabel function to build the RDKit molecule
-            rdmol = make_mol_openbabel(
-                lig_coords, lig_features, atom_decoder, explicit_bonds=bonds
+            num_saved = 0
+            attempt_count = 0
+            pbar = tqdm(
+                total=N_SAMPLES_TO_GENERATE,
+                desc=f"Molecules Saved (t={t_max_val}, force={force_val})",
             )
 
-            if rdmol is None:
-                tqdm.write(
-                    f"Warning: RDKit molecule creation failed for a sample in attempt {attempt_count}. Skipping."
+            while num_saved < N_SAMPLES_TO_GENERATE and attempt_count < MAX_ATTEMPTS:
+                attempt_count += 1
+
+                res = model.inpainting(
+                    ligand=base_ligand,
+                    pocket=pocket,
+                    n_atoms_to_add=10,
+                    n_steps=N_STEPS,
+                    t_max_inpainting=t_max_val,
                 )
-                continue  # Move to the next sample in the batch
 
-            # 3. Find the largest connected fragment
-            largest_frag, frag_size = get_largest_fragment_info(rdmol)
+                if res is None or res.x_lig is None or res.x_lig.numel() == 0:
+                    tqdm.write("Warning: Sampling returned empty data. Retrying batch.")
+                    continue
 
-            # 4. Check the percentage threshold
-            frag_percent = frag_size / total_atoms if total_atoms > 0 else 0.0
+                unique_batch_ids = torch.unique(res.batch_lig)
+                batch_lig = res.batch_lig[res.batch_lig != -1]
 
-            if frag_percent >= FRAGMENT_THRESHOLD_PERCENT:
-                # 5. Molecule passed all checks, proceed to save and count
-                base_name = f"generated_mol_inpainting_{num_saved}"
-                sdf_file_path = os.path.join(output_folder, f"{base_name}.sdf")
-                png_file_path = os.path.join(output_folder, f"{base_name}.png")
+                for batch_id in unique_batch_ids:
+                    if num_saved >= N_SAMPLES_TO_GENERATE:
+                        break
 
-                # Save the largest fragment only
-                if largest_frag:
-                    try:
-                        writer = Chem.SDWriter(sdf_file_path)
-                        writer.write(largest_frag)
-                        writer.close()
+                    if batch_id.item() == -1:
+                        continue
 
-                        # Compute 2D coordinates for plotting
-                        AllChem.Compute2DCoords(largest_frag)
+                    mask = batch_lig == batch_id
+                    lig_coords = res.x_lig[mask].detach().cpu()
+                    lig_features = res.h_lig[mask].detach().cpu()
+                    total_atoms = lig_coords.shape[0]
 
-                        # Draw and save the 2D image
-                        Draw.MolToFile(largest_frag, png_file_path, size=(300, 300))
+                    bonds_to_use = extracted_bonds if force_val else None
 
-                        # --- SUCCESS: Increment count and update progress bar ---
-                        num_saved += 1
-                        pbar.update(1)
-                        tqdm.write(
-                            f"Saved {base_name}.sdf (Attempt {attempt_count}). Fragment size: {frag_size}/{total_atoms} ({frag_percent:.2f})"
-                        )
-                    except Exception as e:
-                        tqdm.write(
-                            f"Warning: Failed to save molecule or draw PNG: {e}. Skipping count."
-                        )
+                    rdmol = make_mol_openbabel(
+                        lig_coords,
+                        lig_features,
+                        atom_decoder,
+                        explicit_bonds=bonds_to_use,
+                    )
+
+                    if rdmol is None:
+                        continue
+
+                    largest_frag, frag_size = get_largest_fragment_info(rdmol)
+                    frag_percent = frag_size / total_atoms if total_atoms > 0 else 0.0
+
+                    if frag_percent >= FRAGMENT_THRESHOLD_PERCENT:
+                        base_name = f"generated_mol_inpainting_{num_saved}"
+                        sdf_file_path = os.path.join(output_folder, f"{base_name}.sdf")
+                        png_file_path = os.path.join(output_folder, f"{base_name}.png")
+
+                        if largest_frag:
+                            try:
+                                writer = Chem.SDWriter(sdf_file_path)
+                                writer.write(largest_frag)
+                                writer.close()
+                                AllChem.Compute2DCoords(largest_frag)
+                                Draw.MolToFile(
+                                    largest_frag, png_file_path, size=(300, 300)
+                                )
+
+                                num_saved += 1
+                                pbar.update(1)
+                            except Exception as e:
+                                pass
+
+            pbar.close()
+
+            # Calculate success rate and log the metrics for this run
+            success_rate = (
+                (num_saved / attempt_count * 100) if attempt_count > 0 else 0.0
+            )
+            summary_results.append(
+                {
+                    "t_max_inpainting": t_max_val,
+                    "force_bonds": force_val,
+                    "molecules_saved": num_saved,
+                    "total_attempts": attempt_count,
+                    "success_rate_percent": round(success_rate, 2),
+                }
+            )
+
+            if num_saved < N_SAMPLES_TO_GENERATE:
+                print(
+                    f"-> Run finished early. Saved {num_saved}/{N_SAMPLES_TO_GENERATE} molecules in {attempt_count} attempts."
+                )
             else:
-                tqdm.write(
-                    f"Fragment percent {frag_percent:.2f} below threshold (Attempt {attempt_count}). Skipping saving."
+                print(
+                    f"-> Run successful. Saved {num_saved} molecules in {attempt_count} attempts."
                 )
 
-    pbar.close()
+    # --- 3. Save Summary CSV ---
+    csv_file_path = os.path.join(base_output_dir, "generation_summary.csv")
+    print(f"\nWriting summary logs to: {csv_file_path}")
 
-    if num_saved < N_SAMPLES_TO_GENERATE:
-        print(
-            f"\nGeneration finished. Only {num_saved}/{N_SAMPLES_TO_GENERATE} molecules were successfully saved after {attempt_count} attempts."
-        )
-    else:
-        print(
-            f"\nSuccessfully generated and saved {num_saved} molecules in {attempt_count} attempts."
-        )
+    with open(csv_file_path, mode="w", newline="") as csv_file:
+        fieldnames = [
+            "t_max_inpainting",
+            "force_bonds",
+            "molecules_saved",
+            "total_attempts",
+            "success_rate_percent",
+        ]
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for row in summary_results:
+            writer.writerow(row)
+
+    print("All combinations completed and logged successfully!")

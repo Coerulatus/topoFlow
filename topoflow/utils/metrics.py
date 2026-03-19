@@ -155,14 +155,14 @@ class GninaDocker:
                 save_ligand_to_sdf(data, ligand_path, verbose=False)
             except Exception as e:
                 print(f"Error saving GNINA inputs: {e}")
-                return None
+                return [0, 0]
 
             # 2. Calculate Box
             try:
                 center, size = self._calculate_box(data)
             except ValueError as e:
                 print(f"Skipping GNINA: {e}")
-                return None
+                return [0, 0]
 
             # 3. Build Command
             cmd = [
