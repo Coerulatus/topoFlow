@@ -1,10 +1,12 @@
 """Script to evaluate generated molecules across multiple folders, including GNINA binding affinity."""
 
+import argparse
 import os
 import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import Data
+from tqdm import tqdm
 from rdkit import Chem
 
 from topoflow.utils.metrics import (
@@ -22,15 +24,7 @@ from topoflow.utils.molecules import (
 from topoflow.utils.scaffold import check_scaffold_presence
 import topoflow.utils.constants as constants
 
-# --- Configuration ---
-BASE_DIR = "./outputs/generated_ligands_wwp2_c2/"
-METRICS = ["qed", "logp", "sas", "lipinski", "gnina"]
-SCAFFOLD_SMILES = "c1ccc2c(c1)[nH]cc2"
-
 # --- GNINA/Pocket Configuration ---
-POCKET_PDB_PATH = "./data/target_protein/wwp2_c2.pdb"
-POCKET_DATA_PATH = "./data/target_protein/wwp2_c2_data_normalized.pt"
-NORMALIZATION_PATH = "/data/petretto/home/gmsv2427/Documents/topoFlow/data/CrossDocked/processed/normalization_params_full.npz"
 ATOM_ENCODER = constants.dataset_params["crossdock_full"]["atom_encoder"]
 
 
@@ -119,7 +113,7 @@ def evaluate_folder(
             cnn_scores = []
 
             print("  -> Running GNINA docking evaluations...")
-            for mol in valid_mols:
+            for idxmol, mol in enumerate(tqdm(valid_mols, desc="GNINA Docking")):
                 try:
                     # 1. Convert RDKit Mol back to tensors
                     coords, one_hot, batch = mol_to_data(mol, atom_encoder)
@@ -147,7 +141,6 @@ def evaluate_folder(
 
             results["vina"] = vina_scores
             results["cnn_affinity"] = cnn_scores
-
         # --- Standard Metrics (QED, LogP, etc.) ---
         else:
             collected_scores = []
@@ -260,43 +253,79 @@ def evaluate_folder(
 
 
 if __name__ == "__main__":
-    scaffold_mol = Chem.MolFromSmiles(SCAFFOLD_SMILES)
+    parser = argparse.ArgumentParser(description="Evaluate generated molecules.")
+    parser.add_argument(
+        "--base_dir",
+        type=str,
+        default="./outputs/generated_ligands_wwp2_hect/",
+        help="Base directory containing folders of .sdf files.",
+    )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        default=["qed", "logp", "sas", "lipinski", "gnina"],
+        help="Metrics to calculate.",
+    )
+    parser.add_argument(
+        "--scaffold_smiles",
+        type=str,
+        default="c1ccc2c(c1)[nH]cc2",
+        help="SMILES of the scaffold to check for presence.",
+    )
+    parser.add_argument(
+        "--pocket_pdb_path",
+        type=str,
+        default="./data/target_protein/wwp2_hect.pdb",
+        help="Path to the pocket PDB file.",
+    )
+    parser.add_argument(
+        "--pocket_data_path",
+        type=str,
+        default="./data/target_protein/wwp2_hect_data.pt",
+        help="Path to save/load the processed pocket data.",
+    )
+
+    args = parser.parse_args()
+
+    scaffold_mol = Chem.MolFromSmiles(args.scaffold_smiles)
     if scaffold_mol is None:
         raise ValueError(
-            f"Failed to create RDKit molecule from scaffold SMILES: {SCAFFOLD_SMILES}"
+            f"Failed to create RDKit molecule from scaffold SMILES: {args.scaffold_smiles}"
         )
 
-    if not os.path.exists(BASE_DIR):
-        raise FileNotFoundError(f"The specified base folder does not exist: {BASE_DIR}")
+    if not os.path.exists(args.base_dir):
+        raise FileNotFoundError(
+            f"The specified base folder does not exist: {args.base_dir}"
+        )
 
     # --- Load Pocket Data Once for GNINA ---
     pocket_data = None
-    if "gnina" in METRICS:
+    if "gnina" in args.metrics:
         print("Loading pocket data for GNINA docking...")
-        if not os.path.exists(POCKET_PDB_PATH):
+        if not os.path.exists(args.pocket_pdb_path):
             print(
-                f"Warning: Pocket file not found at {POCKET_PDB_PATH}. GNINA will likely fail."
+                f"Warning: Pocket file not found at {args.pocket_pdb_path}. GNINA will likely fail."
             )
         else:
             pocket_data = pdb_to_data_object(
-                pdb_file=POCKET_PDB_PATH,
+                pdb_file=args.pocket_pdb_path,
                 atom_encoder=ATOM_ENCODER,
-                save_path=POCKET_DATA_PATH,
-                normalization_path=NORMALIZATION_PATH,
+                save_path=args.pocket_data_path,
+                normalization_path=None,
                 center_pocket=False,
-                force=False,  # Set to True if you need to re-parse the PDB
+                force=True,  # Set to True if you need to re-parse the PDB
             )
 
-    for item in os.listdir(BASE_DIR):
-        folder_path = os.path.join(BASE_DIR, item)
+    for item in os.listdir(args.base_dir):
+        folder_path = os.path.join(args.base_dir, item)
 
         if os.path.isdir(folder_path):
-            results_file = os.path.join(BASE_DIR, f"metrics_{item}.md")
+            results_file = os.path.join(args.base_dir, f"metrics_{item}.md")
             evaluate_folder(
                 folder=folder_path,
                 results_path=results_file,
                 scaffold_mol=scaffold_mol,
-                metrics=METRICS,
+                metrics=args.metrics,
                 pocket_data=pocket_data,
                 atom_encoder=ATOM_ENCODER,
             )

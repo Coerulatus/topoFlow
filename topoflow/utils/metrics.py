@@ -136,29 +136,13 @@ class GninaDocker:
 
     def _run_gnina(self, data):
         """Runs GNINA and returns [vina_score, cnn_score]."""
-        import site
-
         env_extra = os.environ.copy()
-        current_ld = env_extra.get("LD_LIBRARY_PATH", "")
-        ld_paths = [current_ld] if current_ld else []
-
-        # 1. Add standard conda lib path
         conda_prefix = os.environ.get("CONDA_PREFIX")
         if conda_prefix:
-            ld_paths.append(os.path.join(conda_prefix, "lib"))
-
-        # 2. Add buried PyTorch/NVIDIA paths from site-packages
-        for sp in site.getsitepackages():
-            nvidia_cudnn = os.path.join(sp, "nvidia", "cudnn", "lib")
-            torch_lib = os.path.join(sp, "torch", "lib")
-
-            if os.path.exists(nvidia_cudnn):
-                ld_paths.append(nvidia_cudnn)
-            if os.path.exists(torch_lib):
-                ld_paths.append(torch_lib)
-
-        # Apply the deeply linked paths to the subprocess environment
-        env_extra["LD_LIBRARY_PATH"] = ":".join(ld_paths)
+            lib_path = os.path.join(conda_prefix, "lib")
+            # Update LD_LIBRARY_PATH so the binary finds libcudnn.so.9
+            current_ld = env_extra.get("LD_LIBRARY_PATH", "")
+            env_extra["LD_LIBRARY_PATH"] = f"{lib_path}:{current_ld}"
 
         with tempfile.TemporaryDirectory() as temp_dir:
             receptor_path = os.path.join(temp_dir, "receptor.pdb")
@@ -235,7 +219,7 @@ class GninaDocker:
                         vina = float(v_match.group(1))
 
                     # Extract CNN (CNNaffinity)
-                    c_match = re.search(r"> <CNNaffinity>\s+([\d\.]+)", content)
+                    c_match = re.search(r"> <CNNaffinity>\s+([-\d\.]+)", content)
                     if c_match:
                         cnn = float(c_match.group(1))
 

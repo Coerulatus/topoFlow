@@ -676,8 +676,6 @@ class FlowModel(pl.LightningModule):
         Returns:
             The inpainted molecule after simulating the flow.
         """
-        # TODO: add max time so that the molecule can change pose
-
         ligand = ligand.to(self.path.device)
         pocket = pocket.to(self.path.device)
 

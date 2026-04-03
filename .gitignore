@@ -206,6 +206,7 @@ __marimo__/
 /checkpoints/
 /mlruns/
 /results/
+/results_equivariant/
 /notebooks/outputs/trajectory/
 /notebooks/outputs/trajectory_distance_transformer_2/
 /notebooks/outputs/trajectory_test/
@@ -213,3 +214,4 @@ __marimo__/
 /outputs/
 gnina.1.3.2
 /topoflow/utils/gnina_path.py
+GEMINI.md
