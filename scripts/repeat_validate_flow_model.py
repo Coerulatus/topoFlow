@@ -12,6 +12,7 @@ import scipy.stats
 from rdkit import Chem
 from tqdm import tqdm
 from mlflow.tracking import MlflowClient
+from torch_geometric.data import Batch
 
 # Assuming the model and data files are in the same directory or accessible in the python path
 from topoflow.flow.flow_models_ligand import FlowModel
@@ -21,7 +22,8 @@ import topoflow.utils.constants as constants
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.schedulers import CosineAlpha, CosineBeta
 from topoflow.data.dataloader_adj import DataLoaderSampleable
-from topoflow.utils.metrics import scorer_dict
+from topoflow.utils.metrics import scorer_dict, get_distributions
+from topoflow.utils.molecules import data_to_rdmol, data_to_list
 
 # --- Aggregation Functions ---
 
@@ -47,7 +49,7 @@ def aggregate_simple_stats(values):
     return mean, std
 
 
-def save_results_to_file(final_results, output_file):
+def save_results_to_file(final_results, output_file, split="val"):
     """Helper to format and save the results dictionary to a markdown text file."""
     sorted_keys = sorted(final_results.keys())
     data = []
@@ -74,7 +76,7 @@ def save_results_to_file(final_results, output_file):
 
     # Save the markdown table
     with open(output_file, "w") as f:
-        f.write("# Validation Results\n\n")
+        f.write(f"# {split.capitalize()} Results\n\n")
         f.write(df.to_markdown(index=False))
 
     print(f"Saved aggregated results to {output_file}\n")
@@ -83,7 +85,7 @@ def save_results_to_file(final_results, output_file):
 # --- Offline Evaluation Function ---
 
 
-def process_offline_folder(val_samples_dir, val_distribution, output_file):
+def process_offline_folder(val_samples_dir, val_distribution, output_file, split="val"):
     """Processes existing val_samples directories locally when no .ckpt is present."""
     print(f"--- Offline Processing: {val_samples_dir} ---")
     run_dirs = [
@@ -97,6 +99,12 @@ def process_offline_folder(val_samples_dir, val_distribution, output_file):
         return
 
     all_run_metrics = {}
+
+    # Get reference size for bucketing
+    ref_size = len(next(iter(val_distribution.values())))
+    print(
+        f"Reference distribution size: {ref_size}. Generated molecules will be split into buckets of this size."
+    )
 
     for run_dir in run_dirs:
         sdfs = [f for f in os.listdir(run_dir) if f.endswith(".sdf")]
@@ -150,25 +158,37 @@ def process_offline_folder(val_samples_dir, val_distribution, output_file):
             if not values:
                 continue
 
-            values_flat = np.array(values).flatten().tolist()
+            values_flat = np.array(values).flatten()
             mean_val = np.mean(values_flat)
             std_val = np.std(values_flat, ddof=1) if len(values_flat) > 1 else 0.0
 
-            # Calculate WL Distance
-            val_dist_key = metric
-            val_vals = val_distribution.get(val_dist_key, [])
-            if hasattr(val_vals, "tolist"):
-                val_vals = val_vals.tolist()
+            # Bucketed WL Distance Calculation
+            n_gen = len(values_flat)
+            n_buckets = n_gen // ref_size
 
-            if len(val_vals) > 0:
-                wl_dist = scipy.stats.wasserstein_distance(
-                    values_flat, np.array(val_vals).flatten().tolist()
-                )
+            wl_distances = []
+            val_vals = np.array(val_distribution.get(metric, [])).flatten()
+
+            if n_buckets > 0 and len(val_vals) > 0:
+                # Shuffle generated values for random bucketing
+                np.random.shuffle(values_flat)
+                for b in range(n_buckets):
+                    bucket_vals = values_flat[b * ref_size : (b + 1) * ref_size]
+                    wl_dist = scipy.stats.wasserstein_distance(bucket_vals, val_vals)
+                    wl_distances.append(wl_dist)
+
+                wl_mean, wl_std = aggregate_simple_stats(wl_distances)
             else:
-                wl_dist = np.nan
+                # Fallback if too few samples
+                if len(val_vals) > 0 and len(values_flat) > 0:
+                    wl_mean = scipy.stats.wasserstein_distance(values_flat, val_vals)
+                    wl_std = 0.0
+                else:
+                    wl_mean = np.nan
+                    wl_std = np.nan
 
-            # Log metrics to offline dict matching the MLflow format
-            base_name = f"val/{metric}"
+            # Log metrics to offline dict
+            base_name = f"{split}/{metric}"
 
             if base_name + "_mean" not in all_run_metrics:
                 all_run_metrics[base_name + "_mean"] = []
@@ -177,7 +197,12 @@ def process_offline_folder(val_samples_dir, val_distribution, output_file):
 
             all_run_metrics[base_name + "_mean"].append(mean_val)
             all_run_metrics[base_name + "_std"].append(std_val)
-            all_run_metrics[base_name + "_wl_distance"].append(wl_dist)
+
+            # Store ALL bucket WL distances to get a proper standard deviation during final aggregation
+            if n_buckets > 0 and len(val_vals) > 0:
+                all_run_metrics[base_name + "_wl_distance"].extend(wl_distances)
+            elif not np.isnan(wl_mean):
+                all_run_metrics[base_name + "_wl_distance"].append(wl_mean)
 
     # Combine across multiple offline runs
     final_results = {}
@@ -194,7 +219,7 @@ def process_offline_folder(val_samples_dir, val_distribution, output_file):
             comb_mean, comb_std = aggregate_simple_stats(wls)
             final_results[metric_key] = f"{comb_mean:.4f} ± {comb_std:.4f}"
 
-    save_results_to_file(final_results, output_file)
+    save_results_to_file(final_results, output_file, split=split)
 
 
 # --- Main Validation Logic ---
@@ -209,21 +234,42 @@ def run_multiple_validations(
     mlflow_tracking_uri,
     experiment_name,
     run_name_prefix,
+    split="test",
+    molecules_per_pocket=0,
 ):
-    """Runs validations via MLflow for .ckpt files OR aggregates existing val_samples offline."""
+    """Runs validations via MLflow for .ckpt files OR aggregates existing samples offline."""
     pl.seed_everything(42)
 
     # ======================================================================
-    # Load Validation Distribution (Used by both MLflow and Offline flows)
+    # Data Loading
     # ======================================================================
-    val_metric_dist_path = os.path.join(data_dir, "processed", "val_distribution.npy")
+    print(f"\nSetting up {split} datamodule for model evaluations...")
+    val_dataset = CrossDocked(root=data_dir, split=split)
+    datamodule = MockDatamodule(
+        train_length=1,
+        val_length=len(val_dataset),
+        test_length=1,
+        batch_size=batch_size,
+    )
+
+    # ======================================================================
+    # Load Reference Distribution
+    # ======================================================================
+    val_metric_dist_path = os.path.join(
+        data_dir, "processed", f"{split}_distribution.npy"
+    )
     if os.path.exists(val_metric_dist_path):
         val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
     else:
-        raise FileNotFoundError(
-            f"Validation distribution file not found at {val_metric_dist_path}. "
-            "Please ensure this file was generated during training."
+        print(
+            f"Distribution file not found at {val_metric_dist_path}. Generating it from {split} dataset..."
         )
+        val_distribution = get_distributions(
+            val_dataset,
+            metrics=["qed", "logp", "sas", "lipinski", "gnina"],
+            atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
+        )
+        np.save(val_metric_dist_path, val_distribution)
 
     # ======================================================================
     # Task Discovery (.ckpt vs offline folders)
@@ -243,8 +289,18 @@ def run_multiple_validations(
         val_dirs = [
             d
             for d in all_files
-            if os.path.isdir(os.path.join(base_dir, d)) and d.startswith("val_samples_")
+            if os.path.isdir(os.path.join(base_dir, d))
+            and d.startswith(f"{split}_samples_")
         ]
+
+        # Fallback to val_samples_ if split is test but only val_samples_ exist
+        if split == "test" and not val_dirs:
+            val_dirs = [
+                d
+                for d in all_files
+                if os.path.isdir(os.path.join(base_dir, d))
+                and d.startswith("val_samples_")
+            ]
 
         for ckpt in ckpt_files:
             stem = ckpt[:-5]
@@ -257,7 +313,7 @@ def run_multiple_validations(
         # For folders, check if they don't have a ckpt task and don't have a result file
         ckpt_stems = [stem for stem, _ in ckpt_tasks]
         for d in val_dirs:
-            stem = d.replace("val_samples_", "")
+            stem = d.replace(f"{split}_samples_", "").replace("val_samples_", "")
             result_name = f"result_{stem}.txt"
             # Proceed offline only if there's no result file AND no active .ckpt task
             if stem not in ckpt_stems and not os.path.exists(
@@ -286,25 +342,18 @@ def run_multiple_validations(
         )
         for stem, folder_path in offline_tasks:
             out_file = os.path.join(base_dir, f"result_{stem}.txt")
-            process_offline_folder(folder_path, val_distribution, out_file)
+            process_offline_folder(folder_path, val_distribution, out_file, split=split)
 
     # ======================================================================
     # Execute Checkpoint Tasks
     # ======================================================================
     if ckpt_tasks:
-        print("\nSetting up validation datamodule for model evaluations...")
-        val_dataset = CrossDocked(root=data_dir, split="val")
-        datamodule = MockDatamodule(
-            train_length=1,
-            val_length=len(val_dataset),
-            test_length=1,
-            batch_size=batch_size,
-        )
         alpha = CosineAlpha()
         beta = CosineBeta()
 
+        # IMPORTANT: shuffle=False ensures we cycle through all unique pockets in order
         p_data = DataLoaderSampleable(
-            val_dataset, batch_size=batch_size, shuffle=True, num_workers=8
+            val_dataset, batch_size=batch_size, shuffle=False, num_workers=8
         )
         distribution_hist = np.load(
             "./data/CrossDocked/processed/size_distribution.npy", allow_pickle=True
@@ -333,13 +382,87 @@ def run_multiple_validations(
             model.atom_decoder = constants.dataset_params[data_name]["atom_decoder"]
             model.metrics = ["qed", "logp", "sas", "lipinski", "gnina"]
 
+            if molecules_per_pocket > 0:
+                print(
+                    f"Starting custom sampling: {molecules_per_pocket} molecules per pocket..."
+                )
+                # Load names from .npz
+                split_npz_path = os.path.join(data_dir, "processed", f"{split}.npz")
+                names = np.load(split_npz_path, allow_pickle=True)["names"]
+
+                # We'll use a standard DataLoader to iterate one by one
+                from torch_geometric.data import DataLoader as PyGDataLoader
+
+                loader = PyGDataLoader(val_dataset, batch_size=1, shuffle=False)
+
+                run_dir = os.path.join(
+                    base_dir, f"{split}_samples_{stem}", "generation"
+                )
+                os.makedirs(run_dir, exist_ok=True)
+
+                for idx, pocket in enumerate(tqdm(loader, desc="Sampling Pockets")):
+                    # Extract pocket name and sanitize
+                    full_name = names[idx]
+                    # Expected format: pocket_rel_path_ligand_rel_path
+                    # We take the pocket part and replace slashes with underscores
+                    pocket_part = full_name.split(".pdb")[0]
+                    pocket_name = pocket_part.replace("/", "_")
+
+                    # Replicate pocket for batch sampling
+                    # Ensure we don't exceed max_batched_samples
+                    n_left = molecules_per_pocket
+                    mols_all = []
+                    pyg_samples_all = []
+
+                    while n_left > 0:
+                        n_batch = min(n_left, model.max_batched_samples)
+                        repeated_pocket = Batch.from_data_list([pocket] * n_batch).to(
+                            model.device
+                        )
+
+                        # Sample
+                        samples = model.sample(
+                            n_samples=n_batch, pocket=repeated_pocket
+                        )
+
+                        # Convert to RDKit molecules
+                        mols = data_to_rdmol(
+                            samples, atom_decoder=model.atom_decoder, sanitize=True
+                        )
+                        mols_all.extend(mols)
+
+                        # Convert to individual PyG objects (one molecule + pocket)
+                        pyg_samples = data_to_list(samples)
+                        pyg_samples_all.extend(pyg_samples)
+
+                        n_left -= n_batch
+
+                    # Save SDF
+                    sdf_path = os.path.join(run_dir, f"{pocket_name}.sdf")
+                    writer = Chem.SDWriter(sdf_path)
+                    for m in mols_all:
+                        if m is not None:
+                            writer.write(m)
+                    writer.close()
+
+                    # Save PyG objects
+                    pt_path = os.path.join(run_dir, f"{pocket_name}.pt")
+                    torch.save(pyg_samples_all, pt_path)
+
+                print(f"Finished sampling for {stem}. Results saved in {run_dir}")
+                continue
+
             run_ids = []
-            print(f"Starting {n_runs} validation runs...")
+            print(f"Starting {n_runs} {split} runs...")
             for i in range(n_runs):
                 run_name = f"{run_name_prefix}_{i+1}"
-                print(f"--- Running Validation {i+1}/{n_runs} ({run_name}) ---")
+                print(
+                    f"--- Running {split.capitalize()} {i+1}/{n_runs} ({run_name}) ---"
+                )
 
-                run_dir = os.path.join(base_dir, f"val_samples_{stem}", f"run_{i+1}")
+                run_dir = os.path.join(
+                    base_dir, f"{split}_samples_{stem}", f"run_{i+1}"
+                )
                 os.makedirs(run_dir, exist_ok=True)
                 model.current_run_dir = run_dir
 
@@ -413,12 +536,12 @@ def run_multiple_validations(
                 final_results[name] = f"{mean:.4f} ± {std:.4f}"
 
             out_file = os.path.join(base_dir, f"result_{stem}.txt")
-            save_results_to_file(final_results, out_file)
+            save_results_to_file(final_results, out_file, split=split)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Run multiple validations on a trained model."
+        description="Run multiple evaluations on a trained model."
     )
     parser.add_argument(
         "--checkpoint_path",
@@ -443,13 +566,19 @@ if __name__ == "__main__":
         "--batch_size",
         type=int,
         default=4,
-        help="Batch size for validation.",
+        help="Batch size for evaluation.",
     )
     parser.add_argument(
         "--n_runs",
         type=int,
         default=3,
-        help="Number of validation runs to perform.",
+        help="Number of evaluation runs to perform.",
+    )
+    parser.add_argument(
+        "--molecules_per_pocket",
+        type=int,
+        default=10,
+        help="Number of molecules to generate per pocket. If > 0, skips standard validation and saves generated samples.",
     )
     parser.add_argument(
         "--mlflow_tracking_uri",
@@ -460,14 +589,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mlflow_experiment_name",
         type=str,
-        default="TopoFlow_Validation",
-        help="MLflow experiment name for validation runs.",
+        default="TopoFlow_Evaluation",
+        help="MLflow experiment name for evaluation runs.",
     )
     parser.add_argument(
         "--run_name_prefix",
         type=str,
-        default="validation_run",
-        help="Prefix for naming MLflow validation runs.",
+        default="test_run",
+        help="Prefix for naming MLflow evaluation runs.",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="test",
+        choices=["val", "test"],
+        help="Dataset split to use for evaluation.",
     )
 
     args = parser.parse_args()
@@ -481,4 +617,6 @@ if __name__ == "__main__":
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         experiment_name=args.mlflow_experiment_name,
         run_name_prefix=args.run_name_prefix,
+        split=args.split,
+        molecules_per_pocket=args.molecules_per_pocket,
     )

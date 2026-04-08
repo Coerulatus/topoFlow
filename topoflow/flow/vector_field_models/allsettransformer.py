@@ -957,28 +957,6 @@ class AllSetTransformerVectorField(nn.Module):
             nn.LayerNorm(h_dim), nn.Linear(h_dim, self.x_dim, bias=False)
         )
 
-    def check_batch_separation(
-        self, row, col, n_hyperedges, n_values, n_nodes, device, batch_lig, batch_pocket
-    ):
-        """Check that batches of ligand and pocket are not mixed in hyperedges."""
-        value = torch.ones(n_values, dtype=torch.long, device=device)
-        incidence1 = torch.sparse_coo_tensor(
-            torch.stack([row, col], dim=0),
-            value,
-            (n_nodes, n_hyperedges),
-            device=device,
-        )
-        incidence1 = incidence1.coalesce()
-        i1 = incidence1.to_dense()
-        batch_total = torch.cat([batch_lig, batch_pocket], dim=0)
-        for i in range(i1.shape[1]):
-            non_zeros = i1[:, i].nonzero(as_tuple=False).view(-1)
-            idxs = batch_total[non_zeros]
-            if torch.unique(idxs).size(0) > 1:
-                raise ValueError(
-                    "Batches of ligand and pocket are not separated in hyperedges."
-                )
-
     def create_edge_index(self, x_lig, x_pocket, batch_lig, batch_pocket):
         """Create edge index for GATv2Conv."""
         lig_pos = x_lig[:, :3]

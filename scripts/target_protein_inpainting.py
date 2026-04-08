@@ -1,5 +1,6 @@
 """Script to generate ligand molecules starting from a base scaffold, conditioned on a target protein pocket using a pre-trained flow model."""
 
+import argparse
 import os
 import csv
 from tqdm import tqdm
@@ -25,36 +26,97 @@ from topoflow.utils.molecules import (
     extract_bonds,
 )
 
-if __name__ == "__main__":
-    # --- Configuration ---
-    BATCH_SIZE = 4
-    N_SAMPLES_TO_GENERATE = 256
-    N_STEPS = 80
-    FRAGMENT_THRESHOLD_PERCENT = 0.0
-    MAX_ATTEMPTS = N_SAMPLES_TO_GENERATE * 5
 
-    # Grid search parameters
-    T_MAX_VALUES = [0.9, 1.0]
-    FORCE_BONDS_VALUES = [True, False]
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Generate ligands using inpainting conditioned on a protein pocket."
+    )
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size.")
+    parser.add_argument(
+        "--n_samples", type=int, default=256, help="Number of samples to generate."
+    )
+    parser.add_argument("--n_steps", type=int, default=80, help="Number of flow steps.")
+    parser.add_argument(
+        "--fragment_threshold",
+        type=float,
+        default=0.0,
+        help="Fragment size threshold percent.",
+    )
+    parser.add_argument(
+        "--max_attempts",
+        type=int,
+        default=None,
+        help="Maximum attempts. Defaults to 5 * n_samples.",
+    )
+    parser.add_argument(
+        "--t_max_values",
+        nargs="+",
+        type=float,
+        default=[0.9, 1.0],
+        help="Grid search t_max values.",
+    )
+    parser.add_argument(
+        "--force_bonds_values",
+        nargs="+",
+        type=str,
+        default=["True", "False"],
+        help="Grid search force_bonds values (True/False).",
+    )
+    parser.add_argument(
+        "--pdb_path",
+        type=str,
+        default="./data/target_protein/wwp2_c2.pdb",
+        help="Path to protein PDB.",
+    )
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default="./data/target_protein/wwp2_c2_data_normalized.pt",
+        help="Path to save processed protein data.",
+    )
+    parser.add_argument(
+        "--normalization_path",
+        type=str,
+        default="./data/CrossDocked/processed/normalization_params_full.npz",
+        help="Path to normalization params.",
+    )
+    parser.add_argument(
+        "--base_output_dir",
+        type=str,
+        default="./outputs/generated_ligands_wwp2_c2",
+        help="Base output directory.",
+    )
+    parser.add_argument(
+        "--base_ligand_smile",
+        type=str,
+        default="c1ccc2c(c1)[nH]cc2",
+        help="Base ligand SMILES.",
+    )
+
+    args = parser.parse_args()
+
+    # Process grid search parameters
+    T_MAX_VALUES = args.t_max_values
+    FORCE_BONDS_VALUES = [
+        v.lower() in ("true", "yes", "t", "1") for v in args.force_bonds_values
+    ]
+
+    if args.max_attempts is None:
+        args.max_attempts = args.n_samples * 5
 
     atom_encoder = constants.dataset_params["crossdock_full"]["atom_encoder"]
     atom_decoder = constants.dataset_params["crossdock_full"]["atom_decoder"]
-    pdb_path = "./data/target_protein/wwp2_c2.pdb"
-    data_path = "./data/target_protein/wwp2_c2_data_normalized.pt"
-    normalization_path = "./data/CrossDocked/processed/normalization_params_full.npz"
-    base_output_dir = "./outputs/generated_ligands_wwp2_c2"
 
     # --- 1. Global Setup ---
     print("Initializing environment and loading models...")
-    base_ligand_smile = "c1ccc2c(c1)[nH]cc2"
-    rdkit_ligand = Chem.MolFromSmiles(base_ligand_smile)
+    rdkit_ligand = Chem.MolFromSmiles(args.base_ligand_smile)
     AllChem.Compute2DCoords(rdkit_ligand)
 
-    extracted_bonds = extract_bonds(rdkit_ligand)
+    extracted_bonds_list = extract_bonds(rdkit_ligand)
 
     coords, one_hot, batch = mol_to_data(rdkit_ligand, atom_encoder)
-    if normalization_path is not None:
-        norm_params = np.load(normalization_path, allow_pickle=True)
+    if args.normalization_path is not None:
+        norm_params = np.load(args.normalization_path, allow_pickle=True)
         mean = norm_params["mean"]
         std = norm_params["std"]
         coords = (coords - torch.tensor(mean, dtype=torch.float32)) / torch.tensor(
@@ -63,10 +125,10 @@ if __name__ == "__main__":
     base_ligand = Data(x_lig=coords, h_lig=one_hot, batch_lig=batch)
 
     pocket = pdb_to_data_object(
-        pdb_file=pdb_path,
+        pdb_file=args.pdb_path,
         atom_encoder=atom_encoder,
-        save_path=data_path,
-        normalization_path=normalization_path,
+        save_path=args.data_path,
+        normalization_path=args.normalization_path,
         center_pocket=False,
         force=True,
     )
@@ -78,12 +140,12 @@ if __name__ == "__main__":
         train_length=1,
         val_length=len(val_dataset),
         test_length=1,
-        batch_size=BATCH_SIZE,
+        batch_size=args.batch_size,
     )
     alpha = CosineAlpha()
     beta = CosineBeta()
     p_data = DataLoaderSampleable(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8
+        val_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8
     )
     distribution_hist = np.load(
         "./data/CrossDocked/processed/size_distribution.npy", allow_pickle=True
@@ -104,10 +166,10 @@ if __name__ == "__main__":
         norm_path="./data/CrossDocked/processed/normalization_params.npz",
     )
     model.eval()
-    model.max_batched_samples = BATCH_SIZE
+    model.max_batched_samples = args.batch_size
 
     # Ensure base output directory exists
-    os.makedirs(base_output_dir, exist_ok=True)
+    os.makedirs(args.base_output_dir, exist_ok=True)
 
     # List to hold our summary metrics for the CSV
     summary_results = []
@@ -118,7 +180,7 @@ if __name__ == "__main__":
 
             t_max_str = str(t_max_val).replace(".", "_")
             output_folder = os.path.join(
-                base_output_dir, f"t_max_{t_max_str}_force_bonds_{force_val}"
+                args.base_output_dir, f"t_max_{t_max_str}_force_bonds_{force_val}"
             )
             os.makedirs(output_folder, exist_ok=True)
 
@@ -132,18 +194,18 @@ if __name__ == "__main__":
             num_saved = 0
             attempt_count = 0
             pbar = tqdm(
-                total=N_SAMPLES_TO_GENERATE,
+                total=args.n_samples,
                 desc=f"Molecules Saved (t={t_max_val}, force={force_val})",
             )
 
-            while num_saved < N_SAMPLES_TO_GENERATE and attempt_count < MAX_ATTEMPTS:
+            while num_saved < args.n_samples and attempt_count < args.max_attempts:
                 attempt_count += 1
 
                 res = model.inpainting(
                     ligand=base_ligand,
                     pocket=pocket,
                     n_atoms_to_add=10,
-                    n_steps=N_STEPS,
+                    n_steps=args.n_steps,
                     t_max_inpainting=t_max_val,
                 )
 
@@ -155,7 +217,7 @@ if __name__ == "__main__":
                 batch_lig = res.batch_lig[res.batch_lig != -1]
 
                 for batch_id in unique_batch_ids:
-                    if num_saved >= N_SAMPLES_TO_GENERATE:
+                    if num_saved >= args.n_samples:
                         break
 
                     if batch_id.item() == -1:
@@ -166,7 +228,7 @@ if __name__ == "__main__":
                     lig_features = res.h_lig[mask].detach().cpu()
                     total_atoms = lig_coords.shape[0]
 
-                    bonds_to_use = extracted_bonds if force_val else None
+                    bonds_to_use = extracted_bonds_list if force_val else None
 
                     rdmol = make_mol_openbabel(
                         lig_coords,
@@ -181,7 +243,7 @@ if __name__ == "__main__":
                     largest_frag, frag_size = get_largest_fragment_info(rdmol)
                     frag_percent = frag_size / total_atoms if total_atoms > 0 else 0.0
 
-                    if frag_percent >= FRAGMENT_THRESHOLD_PERCENT:
+                    if frag_percent >= args.fragment_threshold:
                         base_name = f"generated_mol_inpainting_{num_saved}"
                         sdf_file_path = os.path.join(output_folder, f"{base_name}.sdf")
                         png_file_path = os.path.join(output_folder, f"{base_name}.png")
@@ -217,9 +279,9 @@ if __name__ == "__main__":
                 }
             )
 
-            if num_saved < N_SAMPLES_TO_GENERATE:
+            if num_saved < args.n_samples:
                 print(
-                    f"-> Run finished early. Saved {num_saved}/{N_SAMPLES_TO_GENERATE} molecules in {attempt_count} attempts."
+                    f"-> Run finished early. Saved {num_saved}/{args.n_samples} molecules in {attempt_count} attempts."
                 )
             else:
                 print(
@@ -227,7 +289,7 @@ if __name__ == "__main__":
                 )
 
     # --- 3. Save Summary CSV ---
-    csv_file_path = os.path.join(base_output_dir, "generation_summary.csv")
+    csv_file_path = os.path.join(args.base_output_dir, "generation_summary.csv")
     print(f"\nWriting summary logs to: {csv_file_path}")
 
     with open(csv_file_path, mode="w", newline="") as csv_file:

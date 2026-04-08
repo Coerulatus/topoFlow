@@ -6,48 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class TimeFourierEncoding(nn.Module):
-    """Encoder for continuous timesteps in `[0, 1]`."""
-
-    def __init__(self, h_dim, max_len=100):
-        """Initialize the Time Fourier Encoding."""
-        super().__init__()
-        self.h_dim = h_dim
-        self.max_len = max_len
-
-    def forward(self, t):
-        """Encode a tensor of timesteps.
-
-        Args:
-            t: 1-D tensor with values in `[0, 1]`.
-
-        Returns:
-            Tensor of shape `(B, h_dim)` with sine/cosine features.
-        """
-        t = t.view(-1)  # Ensure t is a 1-D tensor
-        t_scaled = t * self.max_len
-        half_dim = self.h_dim // 2
-        emb = math.log(self.max_len) / (half_dim - 1)
-        emb = torch.exp(
-            torch.arange(half_dim, dtype=torch.float32, device=t.device) * -emb
-        )
-        emb = torch.outer(t_scaled.float(), emb)
-        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
-
-        if self.h_dim % 2 == 1:
-            emb = F.pad(emb, (0, 1), mode="constant")
-
-        assert emb.shape == (
-            t.shape[0],
-            self.h_dim,
-        ), f"Expected shape ({t.shape[0], self.h_dim}), got {emb.shape}"
-        return emb
-
-    def out_dim(self):
-        """Return the output dimension of the time encoding."""
-        return self.h_dim
-
-
 class SimpleTimeEmbedding(nn.Module):
     """Simple MLP-based time embedding."""
 
@@ -190,57 +148,3 @@ class TransformerVectorField(nn.Module):
         atom_type_out = self.out_atom_type_linear(x_encoded)  # [num_x, atom_dim]
 
         return torch.cat([coords_out, atom_type_out], dim=-1)
-
-    def forward_old(self, x, t, batch_lig, batch_pocket):
-        """Forward pass of the vector field model.
-
-        Args:
-            x: [num_x, x_dim] — node features (ligand + pocket)
-            t: scalar or [batch_size] — time step
-            batch_lig: [num_lig] — ligand graph index
-            batch_pocket: [num_pocket] — pocket graph index
-        Returns:
-            [num_x, x_dim] — vector field
-        """
-        device = x.device
-
-        batch_x = torch.cat([batch_lig, batch_pocket], dim=0)
-
-        # Build type labels: 1 for ligand, 0 for pocket
-        type_labels = torch.cat(
-            [
-                torch.ones(len(batch_lig), dtype=torch.long),
-                torch.zeros(len(batch_pocket), dtype=torch.long),
-            ]
-        ).to(device)
-
-        # Get learned type embedding
-        type_embed = self.type_embed(type_labels)  # [num_x, type_embed_dim]
-
-        # Concatenate to input
-        x = torch.cat([x, type_embed], dim=1)  # [num_x, x_dim + type_embed_dim]
-
-        # Embed x
-        x = self.x_embed(x)  # [num_x, h_dim]
-
-        # Expand t to per-node
-        if t.ndim == 0:
-            t = t.view(1, 1)
-        elif t.ndim == 1:
-            t = t[:, None]  # [batch_size, 1]
-        t_embed = self.time_embed(t)  # [batch_size, h_dim]
-
-        # Now assign each node the right t embedding via batch_x
-        t_per_x = t_embed[batch_x]  # [num_x, h_dim]
-
-        # Add time conditioning
-        x = torch.cat([x, t_per_x], dim=-1)
-
-        # Create attention mask: prevent attention across graphs
-        attn_mask = (batch_x[:, None] != batch_x[None, :]).to(device)
-        attn_mask = attn_mask.masked_fill(attn_mask, float("-inf"))
-
-        # Transformer forward
-        x_encoded = self.transformer(x.unsqueeze(0), mask=attn_mask).squeeze(0)
-
-        return self.out_proj(x_encoded)

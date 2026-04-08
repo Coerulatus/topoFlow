@@ -45,7 +45,7 @@ class Metric(torch.nn.Module):
 
             return torch.tensor([score], dtype=torch.float)
         except Exception as e:
-            print(f"Error calculating metric: {e}")
+            print(f"Error calculating metric {self.scorer_function.__name__}: {e}")
             return None
 
 
