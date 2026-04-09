@@ -588,7 +588,9 @@ class CrossDocked(InMemoryDataset):
             smiles_list = []
             for data in tqdm(self, desc="Converting data to RDKit molecules"):
                 mol = data_to_rdmol(
-                    data, constants.dataset_params["crossdock_full"]["atom_decoder"]
+                    data,
+                    constants.dataset_params["crossdock_full"]["atom_decoder"],
+                    norm_params_path=norm_params_path,
                 )
                 if len(mol) == 0:
                     continue
