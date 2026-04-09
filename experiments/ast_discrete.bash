@@ -1,1 +1,0 @@
-python scripts/train_flow_model_discrete.py --vector_field_model ast --hidden_dim 128 --epochs 200 --batch_size 8 --max_time_factor 10 --w_loss_last_step 0.2 --w_loss_atom 0.2 --mlflow_experiment_name TopoFlow_AST_Discrete --run_name 10_02_200e_ast_discrete

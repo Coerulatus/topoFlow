@@ -2,16 +2,9 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from time import time
-import shutil
-import random
 import os
-import requests
 
 import numpy as np
-from tqdm import tqdm
-import gdown
-
 from Bio.PDB import PDBParser
 from Bio.PDB.Polypeptide import is_aa
 from Bio.Data.PDBData import protein_letters_3to1
@@ -22,9 +15,7 @@ import torch
 from torch.utils.data import DataLoader
 import lightning.pytorch as pl
 
-import topoflow.utils.constants as constants
-from topoflow.utils.constants import covalent_radii, dataset_params
-from topoflow.utils.molecules import make_mol_openbabel, rdmol_to_smiles
+from topoflow.utils.molecules import make_mol_openbabel
 
 
 class MockDataset(torch.utils.data.Dataset):
@@ -274,37 +265,6 @@ def process_ligand_and_pocket(
     return ligand_data, pocket_data
 
 
-def compute_smiles(positions, one_hot, mask, dataset_info):
-    """Computes SMILES strings for molecules from their positions and atom types."""
-    print("Computing SMILES ...")
-
-    atom_types = np.argmax(one_hot, axis=-1)
-
-    sections = np.where(np.diff(mask))[0] + 1
-    positions = [torch.from_numpy(x) for x in np.split(positions, sections)]
-    atom_types = [torch.from_numpy(x) for x in np.split(atom_types, sections)]
-
-    mols_smiles = []
-
-    pbar = tqdm(enumerate(zip(positions, atom_types)), total=len(np.unique(mask)))
-    for i, (pos, atom_type) in pbar:
-        # Assuming build_molecule uses dataset_info correctly
-        mol = make_mol_openbabel(pos, atom_type, dataset_info["atom_decoder"])
-        if mol is None:
-            continue
-        try:
-            Chem.SanitizeMol(mol)
-        except ValueError:
-            continue
-
-        mol_smiles = rdmol_to_smiles(mol)
-        if mol_smiles is not None:
-            mols_smiles.append(mol_smiles)
-        pbar.set_description(f"{len(mols_smiles)}/{i + 1} successful")
-
-    return mols_smiles
-
-
 def get_n_nodes_hist(lig_mask, pocket_mask, smooth_sigma=None):
     """Computes the joint distribution of ligand's and pocket's number of nodes."""
     idx_lig, n_nodes_lig = np.unique(lig_mask, return_counts=True)
@@ -334,7 +294,7 @@ def get_n_nodes_hist(lig_mask, pocket_mask, smooth_sigma=None):
 
     # Smooth the histogram
     if smooth_sigma is not None:
-        filtered_histogram = gaussian_filter(
+        joint_histogram = gaussian_filter(
             joint_histogram,
             sigma=smooth_sigma,
             order=0,
@@ -344,90 +304,11 @@ def get_n_nodes_hist(lig_mask, pocket_mask, smooth_sigma=None):
         )
 
         print(
-            f"Smoothed histogram: {np.count_nonzero(filtered_histogram)}/"
-            f"{filtered_histogram.shape[0] * filtered_histogram.shape[1]} bins filled"
+            f"Smoothed histogram: {np.count_nonzero(joint_histogram)}/"
+            f"{joint_histogram.shape[0] * joint_histogram.shape[1]} bins filled"
         )
 
-        joint_histogram = filtered_histogram
-
     return joint_histogram
-
-
-def get_bond_length_arrays(atom_mapping):
-    """Converts bond length dictionaries from constants into arrays.
-
-    Requires `constants.bonds1`, `constants.bonds2`, `constants.bonds3`.
-    """
-    bond_arrays = []
-    for i in range(3):
-        bond_dict = getattr(constants, f"bonds{i + 1}")
-        bond_array = np.zeros((len(atom_mapping), len(atom_mapping)))
-        for a1 in atom_mapping.keys():
-            for a2 in atom_mapping.keys():
-                if a1 in bond_dict and a2 in bond_dict[a1]:
-                    bond_len = bond_dict[a1][a2]
-                else:
-                    bond_len = 0
-                bond_array[atom_mapping[a1], atom_mapping[a2]] = bond_len
-
-        assert np.all(bond_array == bond_array.T)
-        bond_arrays.append(bond_array)
-
-    return bond_arrays
-
-
-def get_lennard_jones_rm(atom_mapping):
-    """Calculates R_m for the Lennard-Jones potential based on covalent radii and bond lengths.
-
-    Requires `constants.covalent_radii` and `constants.bondsX`.
-    """
-    # Bond radii for the Lennard-Jones potential
-    LJ_rm = np.zeros((len(atom_mapping), len(atom_mapping)))
-
-    for a1 in atom_mapping.keys():
-        for a2 in atom_mapping.keys():
-            all_bond_lengths = []
-            for btype in ["bonds1", "bonds2", "bonds3"]:
-                bond_dict = getattr(constants, btype)
-                if a1 in bond_dict and a2 in bond_dict[a1]:
-                    all_bond_lengths.append(bond_dict[a1][a2])
-
-            if len(all_bond_lengths) > 0:
-                # take the shortest possible bond length because slightly larger
-                # values aren't penalized as much
-                bond_len = min(all_bond_lengths)
-            else:
-                if a1 == "others" or a2 == "others":
-                    bond_len = 0  # Default or placeholder if not found
-                else:
-                    # Replace missing values with sum of average covalent radii
-                    # Assuming 'covalent_radii' is accessible from 'constants'
-                    bond_len = constants.covalent_radii.get(
-                        a1, 0
-                    ) + constants.covalent_radii.get(a2, 0)
-
-            LJ_rm[atom_mapping[a1], atom_mapping[a2]] = bond_len
-
-    assert np.all(LJ_rm == LJ_rm.T)
-    return LJ_rm
-
-
-def get_type_histograms(lig_one_hot, pocket_one_hot, atom_encoder, aa_encoder):
-    """Generates histograms of ligand atom types and pocket amino acid types."""
-    atom_decoder = list(atom_encoder.keys())
-    atom_counts = {k: 0 for k in atom_encoder.keys()}
-    # Ensure indices are within bounds
-    for a_idx in lig_one_hot.argmax(1):
-        if a_idx < len(atom_decoder):
-            atom_counts[atom_decoder[a_idx]] += 1
-
-    aa_decoder = list(aa_encoder.keys())
-    aa_counts = {k: 0 for k in aa_encoder.keys()}
-    for r_idx in pocket_one_hot.argmax(1):
-        if r_idx < len(aa_decoder):
-            aa_counts[aa_decoder[r_idx]] += 1
-
-    return atom_counts, aa_counts
 
 
 def saveall(
@@ -477,6 +358,8 @@ def download_google_drive_file(google_drive_url, destination_path, cookies_file=
 
     try:
         destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+        import gdown
 
         gdown.download(
             google_drive_url, output=str(destination_path), quiet=False, fuzzy=True

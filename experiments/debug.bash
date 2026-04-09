@@ -1,1 +1,0 @@
-python scripts/train_flow_model.py --vector_field_model ast --hidden_dim 128 --epochs 400 --batch_size 8 --start_lr 0.0001 --max_lr 0.0005 --min_lr 0.00002 --velocity_scale 0.25 --mlflow_experiment_name debug --run_name ast_gat_v0.25

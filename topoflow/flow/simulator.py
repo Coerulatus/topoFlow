@@ -1,10 +1,7 @@
-"""ODE and SDE simulator classes."""
+"""ODE simulator classes."""
 
 from abc import ABC, abstractmethod
-import time
-
 import torch
-import torch.nn.functional as F
 from torchdiffeq import odeint
 
 
@@ -24,26 +21,6 @@ class ODE(ABC):
 
         Returns:
             Drift coefficient at the current state and time.
-        """
-        pass
-
-
-class SDE(ODE):
-    """Abstract class representing an SDE."""
-
-    @abstractmethod
-    def diffusion_coefficient(
-        self, xt: torch.Tensor, t: torch.Tensor, **kwargs
-    ) -> torch.Tensor:
-        """Diffusion coefficient of the SDE.
-
-        Args:
-            xt: Current state of the system.
-            t: Current time.
-            **kwargs: Additional keyword arguments for the SDE.
-
-        Returns:
-            Diffusion coefficient at the current state and time.
         """
         pass
 
@@ -109,73 +86,11 @@ class Simulator(ABC):
         return torch.stack(trajectory, 1)
 
 
-class EulerMaruyamaSimulator(Simulator):
-    """Class for simulating SDEs using the Euler-Maruyama method."""
-
-    def __init__(self, sde: SDE):
-        """Initializes the simulator with an SDE.
-
-        Args:
-            sde: The SDE to be simulated.
-        """
-        self.sde = sde
-
-    def step(
-        self, xt: torch.Tensor, t: torch.Tensor, dt: torch.Tensor, **kwargs
-    ) -> torch.Tensor:
-        """Takes a step in the simulation using the Euler-Maruyama method.
-
-        Args:
-            xt: Current state of the system. [batch_size, dim]
-            t: Current time. [batch_size]
-            dt: Time step size. [batch_size]
-            **kwargs: Additional keyword arguments for the SDE.
-
-        Returns:
-            Updated state of the system after taking a step.
-        """
-        drift = self.sde.drift_coefficient(xt, t, **kwargs)
-        dt = dt.view(-1, *([1] * (drift.ndim - 1)))
-        diffusion = self.sde.diffusion_coefficient(xt, t, **kwargs)
-        dW = torch.randn_like(xt) * (dt**0.5)  # Brownian increment
-        return xt + drift * dt + diffusion * dW
-
-
-class EulerSimulator(Simulator):
-    """Class for simulating ODEs using the Euler method."""
-
-    def __init__(self, ode: ODE):
-        """Initializes the simulator with an ODE.
-
-        Args:
-            ode: The ODE to be simulated.
-        """
-        self.ode = ode
-
-    def step(
-        self, xt: torch.Tensor, t: torch.Tensor, dt: torch.Tensor, **kwargs
-    ) -> torch.Tensor:
-        """Takes a step in the simulation using the Euler method.
-
-        Args:
-            xt: Current state of the system. [batch_size, dim]
-            t: Current time. [batch_size]
-            dt: Time step size. [batch_size]
-            **kwargs: Additional keyword arguments for the ODE.
-
-        Returns:
-            Updated state of the system after taking a step.
-        """
-        drift = self.ode.drift_coefficient(xt, t, **kwargs)
-        dt = dt.view(-1, *([1] * (drift.ndim - 1)))
-        return xt + drift * dt
-
-
 class TorchDiffEqSimulator:
     """Class for simulating ODEs using torchdiffeq."""
 
     def __init__(self, ode: ODE, solver: str = "rk4"):
-        """Initializes the simulator with an ODE.
+        """Initializes the simulator with an ODE and a solver.
 
         Args:
             ode: The ODE to be simulated.
@@ -280,39 +195,3 @@ class TorchDiffEqSimulator:
 
         sol = odeint(ode_func, x, ts, method=self.solver)
         return sol.transpose(0, 1)
-
-    def step(self, xt, t, dt):
-        """Step method for TorchDiffEqSimulator."""
-        pass
-
-    def integration_error(self, x: torch.Tensor, ts: torch.Tensor):
-        """Computes the integration error over a sequence of time steps.
-
-        Args:
-            x: Initial state of the system. [batch_size, *dims]
-            ts: Sequence of time steps. [batch_size, time_steps]
-            y: Conditioning variable. (Label for guided data) [batch_size, 1].
-                Defaults to None.
-            guidance_scale: Scale for guidance. Defaults to 0.0.
-
-        Returns:
-            A tuple containing:
-                - torch.Tensor: Mean L2 norm difference between DOPRI5 and RK4 solutions.
-                - float: Time taken for DOPRI5 integration.
-                - float: Time taken for RK4 integration.
-        """
-        ode_func = lambda t, x: self.ode.drift_coefficient(x, t)
-
-        time_start = time.time()
-        sol_dopri = odeint(ode_func, x, ts, method="dopri5")
-        time_dopri = time.time() - time_start
-
-        time_start = time.time()
-        sol_rk4 = odeint(ode_func, x, ts, method="rk4")
-        time_rk4 = time.time() - time_start
-
-        return (
-            torch.mean(torch.norm(sol_dopri - sol_rk4, p=2, dim=1)),
-            time_dopri,
-            time_rk4,
-        )

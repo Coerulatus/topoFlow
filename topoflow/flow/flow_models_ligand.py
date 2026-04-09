@@ -547,8 +547,8 @@ class FlowModel(pl.LightningModule):
             x_pocket=x_pocket,
             h_pocket=h_pocket,
             batch_all=batch_all,
-            batch_lig=batch_lig,
-            batch_pocket=batch_pocket,
+            batch_lig=batch_lig[is_lig],
+            batch_pocket=batch_pocket[is_poc],
         )
         return data
 
@@ -603,8 +603,8 @@ class FlowModel(pl.LightningModule):
                 x_pocket=final_output[is_poc, :3],
                 h_pocket=final_output[is_poc, 3:],
                 batch_all=batch_all,
-                batch_lig=batch_lig,
-                batch_pocket=batch_pocket,
+                batch_lig=batch_lig[is_lig],
+                batch_pocket=batch_pocket[is_poc],
             )
             final_rdmol = data_to_rdmol(
                 final_mol, atom_decoder=self.atom_decoder, sanitize=True
@@ -642,20 +642,20 @@ class FlowModel(pl.LightningModule):
 
         data_trajectory = []
         for i in range(output.shape[1]):
-            x_lig = output[torch.where(batch_lig != -1)[0], i, :3]
-            h_lig = output[torch.where(batch_lig != -1)[0], i, 3:]
-            x_pocket = output[torch.where(batch_pocket != -1)[0], i, :3]
-            h_pocket = output[torch.where(batch_pocket != -1)[0], i, 3:]
+            x_lig = output[is_lig, i, :3]
+            h_lig = output[is_lig, i, 3:]
+            x_pocket = output[is_poc, i, :3]
+            h_pocket = output[is_poc, i, 3:]
             if self.unnorm:
                 x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
             data = Data(
                 batch_all=batch_all,
                 x_lig=x_lig,
                 h_lig=h_lig,
-                batch_lig=batch_lig,
+                batch_lig=batch_lig[is_lig],
                 x_pocket=x_pocket,
                 h_pocket=h_pocket,
-                batch_pocket=batch_pocket,
+                batch_pocket=batch_pocket[is_poc],
             )
             data_trajectory.append(data)
         return data_trajectory
@@ -676,8 +676,6 @@ class FlowModel(pl.LightningModule):
         Returns:
             The inpainted molecule after simulating the flow.
         """
-        # TODO: add max time so that the molecule can change pose
-
         ligand = ligand.to(self.path.device)
         pocket = pocket.to(self.path.device)
 
@@ -760,8 +758,8 @@ class FlowModel(pl.LightningModule):
             x_pocket=x_pocket,
             h_pocket=h_pocket,
             batch_all=batch_all,
-            batch_lig=batch_lig,
-            batch_pocket=batch_pocket,
+            batch_lig=batch_lig[is_lig],
+            batch_pocket=batch_pocket[is_poc],
         )
         return data
 
@@ -824,20 +822,20 @@ class FlowModel(pl.LightningModule):
 
         data_trajectory = []
         for i in range(output.shape[1]):
-            x_lig = output[torch.where(batch_lig != -1)[0], i, :3]
-            h_lig = output[torch.where(batch_lig != -1)[0], i, 3:]
-            x_pocket = output[torch.where(batch_pocket != -1)[0], i, :3]
-            h_pocket = output[torch.where(batch_pocket != -1)[0], i, 3:]
+            x_lig = output[is_lig, i, :3]
+            h_lig = output[is_lig, i, 3:]
+            x_pocket = output[is_poc, i, :3]
+            h_pocket = output[is_poc, i, 3:]
             if self.unnorm:
                 x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
             data = Data(
                 batch_all=batch_all,
                 x_lig=x_lig,
                 h_lig=h_lig,
-                batch_lig=batch_lig,
+                batch_lig=batch_lig[is_lig],
                 x_pocket=x_pocket,
                 h_pocket=h_pocket,
-                batch_pocket=batch_pocket,
+                batch_pocket=batch_pocket[is_poc],
             )
             data_trajectory.append(data)
         return data_trajectory

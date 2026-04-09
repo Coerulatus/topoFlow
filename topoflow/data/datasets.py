@@ -1,22 +1,18 @@
-"""QM9 dataset with RDKit-calculated molecular properties (QED, SAS, LogP)."""
+"""CrossDocked dataset with RDKit-calculated molecular properties."""
 
 import os
-from collections import defaultdict
 from pathlib import Path
+from time import time
+from collections import defaultdict
 import torch
-from torch_geometric.datasets import QM9
 from torch_geometric.data import InMemoryDataset
 from tqdm import tqdm
 from rdkit import Chem
-from scipy.ndimage import gaussian_filter
 import numpy as np
 from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
 import random
 import shutil
-from time import time
 
-from topoflow.utils.metrics import qed_scorer, logp_scorer, sas_scorer
 from topoflow.data.utils import (
     download_crossdocked,
     process_ligand_and_pocket,
@@ -25,121 +21,6 @@ from topoflow.data.utils import (
 )
 from topoflow.utils.molecules import data_to_rdmol, rdmol_to_smiles
 import topoflow.utils.constants as constants
-
-
-class QM9WithRDKitMetrics(InMemoryDataset):
-    """A custom PyTorch Geometric dataset that extends the QM9 dataset to include RDKit-calculated properties."""
-
-    def __init__(
-        self, root, transform=None, pre_transform=None, normalize=True, fraction=1.0
-    ):
-        """A custom PyTorch Geometric dataset that extends QM9.
-
-        This class adds RDKit-calculated molecular properties (QED, SAS, LogP) as new attributes to each Data object.
-        """
-        self.original_qm9_root = os.path.join(root, "QM9_original")
-        self.normalize = normalize
-        qed_min, qed_max = 0.0, 1.0
-        logp_min, logp_max = -6.0, 6.0
-        sas_min, sas_max = 1.0, 10.0
-        self.norm_params = {
-            "qed": (qed_min, qed_max),
-            "logp": (logp_min, logp_max),
-            "sas": (sas_min, sas_max),
-        }
-        self.fraction = fraction
-        super().__init__(root, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
-
-    @property
-    def raw_file_names(self):
-        """QM9 dataset does not have raw files in the traditional sense."""
-        return []
-
-    @property
-    def processed_file_names(self):
-        """Filename for the processed dataset with RDKit metrics."""
-        return "qm9_rdkit_metrics.pt"
-
-    def download(self):
-        """Download the original QM9 dataset if it doesn't exist."""
-        QM9(self.original_qm9_root)
-
-    def process(self):
-        """Process the original QM9 dataset and calculate RDKit metrics."""
-        original_dataset = QM9(self.original_qm9_root)
-        if self.fraction < 1.0:
-            # Sample a fraction of the dataset
-            num_samples = int(len(original_dataset) * self.fraction)
-            original_dataset = original_dataset[:num_samples]
-
-        data_list = []
-        # Iterate through each molecule in the original QM9 dataset
-        for i, data in enumerate(
-            tqdm(original_dataset, desc="Calculating RDKit metrics")
-        ):
-            # Get the SMILES string (QM9 stores it in `data.smiles` usually)
-            smiles = (
-                data.smiles[0] if isinstance(data.smiles, torch.Tensor) else data.smiles
-            )
-
-            # Convert SMILES to RDKit molecule object
-            mol = Chem.MolFromSmiles(smiles)
-
-            if mol is None:
-                print(
-                    f"Warning: Could not parse SMILES for molecule {i}: {smiles}. Skipping."
-                )
-                continue
-
-            # Calculate RDKit Descriptors
-            # 1. Quantitative Estimation of Drug-likeness (QED)
-            qed_score = torch.tensor([qed_scorer(mol)], dtype=torch.float)
-
-            # 2. LogP (Partition Coefficient, related to solubility/lipophilicity)
-            logp_score = torch.tensor([logp_scorer(mol)], dtype=torch.float)
-
-            # 3. Synthetic Accessibility Score (SAS)
-            # SAS score typically ranges from 1 (easy to synthesize) to 10 (hard to synthesize)
-            sas_score = torch.tensor([sas_scorer(mol)], dtype=torch.float)
-
-            if self.normalize:
-                qed_min, qed_max = self.norm_params["qed"]
-                logp_min, logp_max = self.norm_params["logp"]
-                sas_min, sas_max = self.norm_params["sas"]
-                if qed_score < qed_min or qed_score > qed_max:
-                    raise ValueError(
-                        f"QED score {qed_score.item()} out of bounds [{qed_min}, {qed_max}]"
-                    )
-                if logp_score < logp_min or logp_score > logp_max:
-                    raise ValueError(
-                        f"LogP score {logp_score.item()} out of bounds [{logp_min}, {logp_max}]"
-                    )
-                if sas_score < sas_min or sas_score > sas_max:
-                    raise ValueError(
-                        f"SAS score {sas_score.item()} out of bounds [{sas_min}, {sas_max}]"
-                    )
-                qed_score = (qed_score - qed_min) / (qed_max - qed_min)
-                logp_score = (logp_score - logp_min) / (logp_max - logp_min)
-                sas_score = (sas_score - sas_min) / (sas_max - sas_min)
-
-            new_y = torch.cat([qed_score, logp_score, sas_score], dim=0)
-            data.y = new_y
-
-            # We only care about the atom types and positions for the graph structure
-            data.x = torch.cat([data.x[:, :5], data.pos], dim=1)
-            del data.pos  # Remove position if not needed
-
-            data_list.append(data)
-
-        # Save the processed data
-        if self.pre_filter is not None:
-            data_list = self.pre_filter(data_list)
-        if self.pre_transform is not None:
-            data_list = self.pre_transform(data_list)
-
-        data, slices = self.collate(data_list)
-        torch.save((data, slices), self.processed_paths[0])
 
 
 class CrossDocked(InMemoryDataset):
@@ -240,13 +121,23 @@ class CrossDocked(InMemoryDataset):
         # TODO: Remove this when loading whole dataset
         # data_split["train"] = random.sample(data_split["train"], 512)
 
-        # There is no validation set, copy some training examples (the validation set
-        # is not very important in this application)
-        data_split["val"] = random.sample(data_split["train"], 512)
+        # Handle validation and test splits
+        if "test" in data_split:
+            print(f"Found 'test' split with {len(data_split['test'])} samples.")
 
-        n_train_before = len(data_split["train"])
-        n_val_before = len(data_split["val"])
-        n_test_before = len(data_split["test"])
+        if "val" not in data_split:
+            if "test" in data_split:
+                print("No 'val' split found. Using 'test' split for validation.")
+                data_split["val"] = data_split["test"]
+            else:
+                print(
+                    "No 'val' or 'test' split found. Sampling 512 samples from 'train' for 'val'."
+                )
+                data_split["val"] = random.sample(data_split["train"], 512)
+
+        n_train_before = len(data_split.get("train", []))
+        n_val_before = len(data_split.get("val", []))
+        n_test_before = len(data_split.get("test", []))
 
         failed_save = []
         n_samples_after = {}

@@ -7,48 +7,6 @@ import torch.nn.functional as F
 from xformers.ops import memory_efficient_attention, fmha
 
 
-class TimeFourierEncoding(nn.Module):
-    """Encoder for continuous timesteps in `[0, 1]`."""
-
-    def __init__(self, h_dim, max_len=100):
-        """Initialize the Time Fourier Encoding."""
-        super().__init__()
-        self.h_dim = h_dim
-        self.max_len = max_len
-
-    def forward(self, t):
-        """Encode a tensor of timesteps.
-
-        Args:
-            t: 1-D tensor with values in `[0, 1]`.
-
-        Returns:
-            Tensor of shape `(B, h_dim)` with sine/cosine features.
-        """
-        t = t.view(-1)  # Ensure t is a 1-D tensor
-        t_scaled = t * self.max_len
-        half_dim = self.h_dim // 2
-        emb = math.log(self.max_len) / (half_dim - 1)
-        emb = torch.exp(
-            torch.arange(half_dim, dtype=torch.float32, device=t.device) * -emb
-        )
-        emb = torch.outer(t_scaled.float(), emb)
-        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
-
-        if self.h_dim % 2 == 1:
-            emb = F.pad(emb, (0, 1), mode="constant")
-
-        assert emb.shape == (
-            t.shape[0],
-            self.h_dim,
-        ), f"Expected shape ({t.shape[0], self.h_dim}), got {emb.shape}"
-        return emb
-
-    def out_dim(self):
-        """Return the output dimension of the time encoding."""
-        return self.h_dim
-
-
 class SimpleTimeEmbedding(nn.Module):
     """Simple MLP-based time embedding."""
 
