@@ -253,8 +253,8 @@ def main():
                 if gnina_score and len(gnina_score) == 2:
                     data.vina = float(gnina_score[0])
                     data.cnn_affinity = float(gnina_score[1])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Error with gnina scorer: {e}")
 
             # <-- NEW: Mark as successfully scored and set save flag
             data.is_scored = True
