@@ -7,6 +7,9 @@ import numpy as np
 import argparse
 import pandas as pd
 import scipy.stats
+import concurrent.futures
+import multiprocessing as mp
+from functools import partial
 from tqdm import tqdm
 from torch_geometric.data import Data
 
@@ -41,6 +44,49 @@ def aggregate_simple_stats(values):
     return mean, std
 
 
+# --- NEW: Isolated scoring function for parallel workers ---
+def process_single_molecule(data, atom_decoder):
+    """Worker function to score a single molecule."""
+    # Skip if already scored
+    if hasattr(data, "is_scored") and data.is_scored:
+        return data, False
+
+    data.qed = float("nan")
+    data.logp = float("nan")
+    data.sas = float("nan")
+    data.lipinski = float("nan")
+    data.vina = float("nan")
+    data.cnn_affinity = float("nan")
+    data.is_valid = False
+
+    mol = data_to_rdmol(data, atom_decoder=atom_decoder, sanitize=True)
+
+    if mol is not None:
+        data.is_valid = True
+        for m in ["qed", "logp", "sas", "lipinski"]:
+            scorer = scorer_dict[m]
+            try:
+                score = scorer(mol)
+                if score is not None:
+                    val = score.item() if hasattr(score, "item") else float(score)
+                    setattr(data, m, val)
+            except Exception:
+                pass
+
+    try:
+        gnina_scorer = scorer_dict["gnina"]
+        gnina_score = gnina_scorer(data)
+        if gnina_score and len(gnina_score) == 2:
+            data.vina = float(gnina_score[0])
+            data.cnn_affinity = float(gnina_score[1])
+    except Exception as e:
+        # Silently fail or log to file to avoid breaking tqdm layout
+        pass
+
+    data.is_scored = True
+    return data, True
+
+
 def main():
     """Main function to perform bootstrap evaluation of generated molecules."""
     parser = argparse.ArgumentParser()
@@ -64,6 +110,13 @@ def main():
         "--test_distribution_path",
         type=str,
         default="./data/CrossDocked/processed/test_distribution.npy",
+    )
+    # --- NEW: Add argument for number of workers ---
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers for scoring (tune based on GPU VRAM).",
     )
     args = parser.parse_args()
 
@@ -164,7 +217,6 @@ def main():
                             continue
                         try:
                             x_lig, h_lig, _ = mol_to_data(mol, atom_encoder)
-                            # Create combined Data object WITH UNIQUE ID
                             data = Data(
                                 x_lig=x_lig,
                                 h_lig=h_lig,
@@ -174,7 +226,7 @@ def main():
                                 batch_pocket=torch.zeros(
                                     pocket_data.x_pocket.size(0), dtype=torch.long
                                 ),
-                                mol_id=f"{raw_stem}_{idx}",  # <-- NEW: Unique Identifier added here
+                                mol_id=f"{raw_stem}_{idx}",
                             )
                             pyg_mols.append(data)
                         except Exception as e:
@@ -211,58 +263,58 @@ def main():
             print(f"No molecules to score for {model_folder}. Skipping scoring phase.")
             continue
 
-        # Initialize tracking for periodic saves
+        # --- NEW: PARALLEL SCORING PHASE ---
+        unscored_indices = [
+            i
+            for i, d in enumerate(flat_mols)
+            if not (hasattr(d, "is_scored") and d.is_scored)
+        ]
+
         needs_save = False
 
-        # Iterate and score each molecule
-        for i, data in enumerate(
-            tqdm(flat_mols, desc=f"Scoring molecules for {model_folder}")
-        ):
+        if unscored_indices:
+            print(
+                f"Parallelizing {len(unscored_indices)} scoring tasks across {args.num_workers} workers..."
+            )
 
-            # <-- NEW: Skip if already scored in a previous interrupted run
-            if hasattr(data, "is_scored") and data.is_scored:
-                continue
+            # Setup worker function with fixed atom_decoder parameter
+            worker_func = partial(process_single_molecule, atom_decoder=atom_decoder)
 
-            data.qed = float("nan")
-            data.logp = float("nan")
-            data.sas = float("nan")
-            data.lipinski = float("nan")
-            data.vina = float("nan")
-            data.cnn_affinity = float("nan")
-            data.is_valid = False
+            # Using 'spawn' context is crucial to prevent PyTorch/CUDA hangs in subprocesses
+            ctx = mp.get_context("spawn")
 
-            mol = data_to_rdmol(data, atom_decoder=atom_decoder, sanitize=True)
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=args.num_workers, mp_context=ctx
+            ) as executor:
+                # Submit all unscored tasks to the executor mapped to their original index
+                future_to_idx = {
+                    executor.submit(worker_func, flat_mols[idx]): idx
+                    for idx in unscored_indices
+                }
 
-            if mol is not None:
-                data.is_valid = True
-                for m in ["qed", "logp", "sas", "lipinski"]:
-                    scorer = scorer_dict[m]
+                completed = 0
+                for future in tqdm(
+                    concurrent.futures.as_completed(future_to_idx),
+                    total=len(unscored_indices),
+                    desc=f"Scoring {model_folder}",
+                ):
+                    idx = future_to_idx[future]
                     try:
-                        score = scorer(mol)
-                        if score is not None:
-                            val = (
-                                score.item() if hasattr(score, "item") else float(score)
-                            )
-                            setattr(data, m, val)
-                    except Exception:
-                        pass
+                        scored_data, was_scored = future.result()
+                        # Update the array in place with the processed copy
+                        flat_mols[idx] = scored_data
 
-            try:
-                gnina_scorer = scorer_dict["gnina"]
-                gnina_score = gnina_scorer(data)
-                if gnina_score and len(gnina_score) == 2:
-                    data.vina = float(gnina_score[0])
-                    data.cnn_affinity = float(gnina_score[1])
-            except Exception:
-                pass
+                        if was_scored:
+                            needs_save = True
 
-            # <-- NEW: Mark as successfully scored and set save flag
-            data.is_scored = True
-            needs_save = True
+                        completed += 1
 
-            # <-- NEW: Checkpoint save every 100 molecules
-            if (i + 1) % 100 == 0:
-                torch.save(flat_mols, out_path)
+                        # Checkpoint save every 100 molecules
+                        if completed % 100 == 0:
+                            torch.save(flat_mols, out_path)
+
+                    except Exception as e:
+                        print(f"\nTask failed for molecule at index {idx}: {e}")
 
         # Final save if any new molecules were processed
         if needs_save:
