@@ -12,7 +12,6 @@ from topoflow.data import MockDatamodule
 from topoflow.flow.schedulers import LinearAlpha, LinearBeta, CosineAlpha, CosineBeta
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.vector_field_models import (
-    TransformerVectorField,
     MLPVectorField,
     TransformerVectorFieldLigand,
     GATVectorField,
@@ -282,7 +281,7 @@ if __name__ == "__main__":
         "--vector_field_model",
         type=str,
         default="distance_transformer",
-        choices=["transformer", "mlp", "gat", "ast", "distance_transformer"],
+        choices=["ast_gat", "transformer", "mlp", "gat", "ast", "distance_transformer"],
         help="Type of vector field model to use.",
     )
     parser.add_argument(
