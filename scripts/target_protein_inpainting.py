@@ -18,6 +18,7 @@ import topoflow.utils.constants as constants
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.schedulers import CosineAlpha, CosineBeta
 from topoflow.data.dataloader_adj import DataLoaderSampleable
+from topoflow.flow.utils import DistributionNodes
 from topoflow.utils.molecules import (
     pdb_to_data_object,
     make_mol_openbabel,
@@ -33,7 +34,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size.")
     parser.add_argument(
-        "--n_samples", type=int, default=256, help="Number of samples to generate."
+        "--n_samples", type=int, default=1024, help="Number of samples to generate."
     )
     parser.add_argument("--n_steps", type=int, default=80, help="Number of flow steps.")
     parser.add_argument(
@@ -147,9 +148,9 @@ if __name__ == "__main__":
     p_data = DataLoaderSampleable(
         val_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8
     )
-    distribution_hist = np.load(
-        "./data/CrossDocked/processed/size_distribution.npy", allow_pickle=True
-    )
+    distribution_hist_path = "./data/CrossDocked/processed/size_distribution_full.npy"
+    distribution_hist = np.load(distribution_hist_path, allow_pickle=True)
+    dist_nodes = DistributionNodes(distribution_hist)
 
     path = GaussianConditionalProbabilityPath(
         p_data=p_data,
@@ -173,6 +174,10 @@ if __name__ == "__main__":
 
     # List to hold our summary metrics for the CSV
     summary_results = []
+
+    # Get number of atoms in pocket and base ligand for sampling
+    n_pocket_atoms = pocket.x_pocket.shape[0]
+    n_base_ligand_atoms = base_ligand.x_lig.shape[0]
 
     # --- 2. Parameter Grid Search Loop ---
     for t_max_val in T_MAX_VALUES:
@@ -201,10 +206,23 @@ if __name__ == "__main__":
             while num_saved < args.n_samples and attempt_count < args.max_attempts:
                 attempt_count += 1
 
+                # Sample target ligand size from distribution given pocket size
+                # dist_nodes.sample_conditional expects a tensor of pocket sizes
+                target_ligand_size = dist_nodes.sample_conditional(
+                    n2=torch.tensor([n_pocket_atoms])
+                ).item()
+                n_atoms_to_add = max(0, int(target_ligand_size - n_base_ligand_atoms))
+
+                if n_atoms_to_add == 0:
+                    # If the distribution suggests a smaller ligand than the scaffold,
+                    # we still need to add at least some atoms if possible, or just retry.
+                    # Here we retry to get a better sample from distribution.
+                    continue
+
                 res = model.inpainting(
                     ligand=base_ligand,
                     pocket=pocket,
-                    n_atoms_to_add=10,
+                    n_atoms_to_add=n_atoms_to_add,
                     n_steps=args.n_steps,
                     t_max_inpainting=t_max_val,
                 )

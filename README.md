@@ -68,3 +68,16 @@ You can manually resolve this by running the following command **after activatin
 # This command forces the installation from the dedicated PyG wheel index
 pip install torch-cluster -f https://data.pyg.org/whl/torch-{TORCH}+{CUDA}.html
 ```
+
+### Use GNINA
+
+Download gnina executable
+```
+wget https://github.com/gnina/gnina/releases/download/v1.3.2/gnina.1.3.2
+```
+
+Create gnina_path file
+```
+nano topoflow/utils/gnina_path.py
+```
+which should contain: GNINA_EXECUTABLE = "/path/to/your/gnina.1.3.2"
