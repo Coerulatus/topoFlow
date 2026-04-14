@@ -287,7 +287,15 @@ def main():
             "val/uniqueness": [],
         }
 
-        metrics_to_eval = ["qed", "logp", "sas", "lipinski", "vina", "cnn_affinity"]
+        metrics_to_eval = [
+            "qed",
+            "logp",
+            "sas",
+            "lipinski",
+            "vina",
+            "cnn_affinity",
+            "mol_size",
+        ]
         for m in metrics_to_eval:
             all_group_metrics[f"val/{m}_mean"] = []
             if test_distribution is not None:
@@ -326,8 +334,18 @@ def main():
                 all_group_metrics["val/uniqueness"].append(uniq_score)
 
                 for m in metrics_to_eval:
-                    vals = [getattr(d, m, float("nan")) for d in valid_mols_pyg]
-                    vals = [v for v in vals if not np.isnan(v)]
+                    vals = []
+                    for d in valid_mols_pyg:
+                        val = getattr(d, m, float("nan"))
+                        # Calculate mol_size on the fly if missing
+                        if (val is None or np.isnan(val)) and m == "mol_size":
+                            if hasattr(d, "x_lig"):
+                                val = float(d.x_lig.size(0))
+                            elif hasattr(d, "h_lig"):
+                                val = float(d.h_lig.size(0))
+
+                        if val is not None and not np.isnan(val):
+                            vals.append(val)
 
                     if vals:
                         all_group_metrics[f"val/{m}_mean"].append(np.mean(vals))

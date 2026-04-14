@@ -37,7 +37,7 @@ def get_test_distribution(data_dir, atom_decoder):
         print(f"Loading test distribution from {dist_path}")
         test_dist = np.load(dist_path, allow_pickle=True).item()
 
-    all_metrics = ["qed", "logp", "sas", "lipinski", "gnina"]
+    all_metrics = ["qed", "logp", "sas", "lipinski", "gnina", "mol_size"]
 
     # Check which metrics are actually missing
     missing_metrics = []
@@ -51,6 +51,8 @@ def get_test_distribution(data_dir, atom_decoder):
         missing_metrics.append("lipinski")
     if "vina" not in test_dist or "cnn_affinity" not in test_dist:
         missing_metrics.append("gnina")
+    if "mol_size" not in test_dist:
+        missing_metrics.append("mol_size")
 
     if not missing_metrics:
         return test_dist

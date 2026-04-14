@@ -111,6 +111,13 @@ def lipinski_scorer(mol):
     return LipinskiMetric()(mol)
 
 
+def mol_size_scorer(mol):
+    """Calculate the number of atoms in a molecule."""
+    if mol is None:
+        return None
+    return torch.tensor([mol.GetNumAtoms()], dtype=torch.float)
+
+
 class GninaDocker:
     """Handles GNINA docking."""
 
@@ -313,6 +320,7 @@ scorer_dict = {
     "sas": sas_scorer,
     "lipinski": lipinski_scorer,
     "gnina": gnina_scorer,  # Returns [Vina, CNN]
+    "mol_size": mol_size_scorer,
 }
 
 
@@ -325,7 +333,7 @@ def get_distributions(dataset, metrics, atom_decoder=None):
 
     # Pre-convert RDKit mols for standard metrics to avoid doing it repeatedly
     # (Only needed if we have standard metrics in the list)
-    standard_metrics = ["qed", "logp", "sas", "lipinski"]
+    standard_metrics = ["qed", "logp", "sas", "lipinski", "mol_size"]
     needs_rdmols = any(m in standard_metrics for m in metrics)
 
     rdmols = []
