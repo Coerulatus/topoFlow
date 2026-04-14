@@ -78,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--normalization_path",
         type=str,
-        default="./data/CrossDocked/processed/normalization_params_full.npz",
+        default="./data/CrossDocked/processed/normalization_params.npz",
         help="Path to normalization params.",
     )
     parser.add_argument(
@@ -111,7 +111,7 @@ if __name__ == "__main__":
     # --- 1. Global Setup ---
     print("Initializing environment and loading models...")
     rdkit_ligand = Chem.MolFromSmiles(args.base_ligand_smile)
-    AllChem.Compute2DCoords(rdkit_ligand)
+    AllChem.EmbedMolecule(rdkit_ligand, AllChem.ETKDG())
 
     extracted_bonds_list = extract_bonds(rdkit_ligand)
 
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     )
 
     data_dir = "./data/CrossDocked/"
-    checkpoint_path = "checkpoints/runs_cluster/10_21_499e_ast_gat_scaled_vel.ckpt"
+    checkpoint_path = "/home/marco/Documents/phd/topoFlow/checkpoints/runs_cluster/to_evaluate/03_11_1199e_ast_gat_scaled_vel.ckpt"
     val_dataset = CrossDocked(root=data_dir, split="val")
     datamodule = MockDatamodule(
         train_length=1,
@@ -204,20 +204,22 @@ if __name__ == "__main__":
             )
 
             while num_saved < args.n_samples and attempt_count < args.max_attempts:
-                attempt_count += 1
+                # Determine how many to sample in this batch
+                current_batch_size = min(
+                    args.batch_size, args.max_attempts - attempt_count
+                )
+                if current_batch_size <= 0:
+                    break
 
-                # Sample target ligand size from distribution given pocket size
-                # dist_nodes.sample_conditional expects a tensor of pocket sizes
-                target_ligand_size = dist_nodes.sample_conditional(
-                    n2=torch.tensor([n_pocket_atoms])
-                ).item()
-                n_atoms_to_add = max(0, int(target_ligand_size - n_base_ligand_atoms))
+                attempt_count += current_batch_size
 
-                if n_atoms_to_add == 0:
-                    # If the distribution suggests a smaller ligand than the scaffold,
-                    # we still need to add at least some atoms if possible, or just retry.
-                    # Here we retry to get a better sample from distribution.
-                    continue
+                # Sample target ligand size from distribution given pocket size for the whole batch
+                target_ligand_sizes = dist_nodes.sample_conditional(
+                    n2=torch.tensor([n_pocket_atoms] * current_batch_size)
+                )
+                n_atoms_to_add = torch.clamp(
+                    target_ligand_sizes - n_base_ligand_atoms, min=1
+                )  # Force at least 1 atom to be added to grow the molecule
 
                 res = model.inpainting(
                     ligand=base_ligand,
@@ -225,6 +227,7 @@ if __name__ == "__main__":
                     n_atoms_to_add=n_atoms_to_add,
                     n_steps=args.n_steps,
                     t_max_inpainting=t_max_val,
+                    batch_size=current_batch_size,
                 )
 
                 if res is None or res.x_lig is None or res.x_lig.numel() == 0:
@@ -232,16 +235,14 @@ if __name__ == "__main__":
                     continue
 
                 unique_batch_ids = torch.unique(res.batch_lig)
-                batch_lig = res.batch_lig[res.batch_lig != -1]
+                # Filter out -1 if present
+                unique_batch_ids = unique_batch_ids[unique_batch_ids != -1]
 
                 for batch_id in unique_batch_ids:
                     if num_saved >= args.n_samples:
                         break
 
-                    if batch_id.item() == -1:
-                        continue
-
-                    mask = batch_lig == batch_id
+                    mask = res.batch_lig == batch_id
                     lig_coords = res.x_lig[mask].detach().cpu()
                     lig_features = res.h_lig[mask].detach().cpu()
                     total_atoms = lig_coords.shape[0]

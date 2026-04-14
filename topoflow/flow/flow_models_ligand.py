@@ -4,7 +4,7 @@ import os
 import numpy as np
 import lightning.pytorch as pl
 import torch
-from torch_geometric.data import Data
+from torch_geometric.data import Data, Batch
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
 from tqdm import tqdm
@@ -662,14 +662,21 @@ class FlowModel(pl.LightningModule):
 
     @torch.no_grad()
     def inpainting(
-        self, ligand, pocket, n_atoms_to_add, n_steps=80, t_max_inpainting=1.0
+        self,
+        ligand,
+        pocket,
+        n_atoms_to_add,
+        batch_size=1,
+        n_steps=80,
+        t_max_inpainting=1.0,
     ):
         """Performs inpainting by adding atoms to a given ligand within a pocket.
 
         Args:
             ligand: Data object representing the initial ligand.
             pocket: Data object representing the pocket.
-            n_atoms_to_add: Number of atoms to add to the ligand.
+            n_atoms_to_add: Number of atoms to add to the ligand. Can be int or torch.Tensor.
+            batch_size: Number of samples to generate in parallel. Defaults to 1.
             n_steps: Number of integration steps for the simulator. Defaults to 80.
             t_max_inpainting: Maximum time to consider inpainting. Defaults to 1.0.
 
@@ -679,59 +686,118 @@ class FlowModel(pl.LightningModule):
         ligand = ligand.to(self.path.device)
         pocket = pocket.to(self.path.device)
 
-        batch_size = 1
+        # 1. Handle batch replication if ligand/pocket are single graphs but batch_size > 1
+        if batch_size > 1:
+            if not hasattr(ligand, "num_graphs") or ligand.num_graphs < batch_size:
+                ligand = Batch.from_data_list([ligand] * batch_size)
+            if not hasattr(pocket, "num_graphs") or pocket.num_graphs < batch_size:
+                pocket = Batch.from_data_list([pocket] * batch_size)
+
+        # 2. Determine indices
+        if hasattr(pocket, "batch_pocket"):
+            batch_pocket_orig = pocket.batch_pocket
+        elif hasattr(pocket, "batch"):
+            batch_pocket_orig = pocket.batch
+        else:
+            batch_pocket_orig = torch.zeros(
+                pocket.x_pocket.shape[0], dtype=torch.long, device=self.path.device
+            )
+
+        if hasattr(ligand, "batch_lig"):
+            batch_lig_orig = ligand.batch_lig
+        elif hasattr(ligand, "batch"):
+            batch_lig_orig = ligand.batch
+        else:
+            batch_lig_orig = torch.zeros(
+                ligand.x_lig.shape[0], dtype=torch.long, device=self.path.device
+            )
+
+        # 3. Handle n_atoms_to_add
+        if isinstance(n_atoms_to_add, int):
+            n_atoms_to_add = torch.tensor(
+                [n_atoms_to_add] * batch_size, device=self.path.device
+            )
+        else:
+            n_atoms_to_add = torch.as_tensor(n_atoms_to_add, device=self.path.device)
+
         simulator = TorchDiffEqSimulator(self, solver="rk4")
 
         z_ligand = torch.cat([ligand.x_lig, ligand.h_lig], dim=-1)
         z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
-        batch_pocket = pocket.batch_pocket
-        z_pocket = z_pocket.to(self.path.device)
-        batch_pocket = batch_pocket.to(self.path.device)
 
-        n_total = ligand.x_lig.shape[0] + n_atoms_to_add
-        starting_points, batch_all, batch_lig, batch_pocket = (
+        num_nodes_lig_existing = torch.bincount(batch_lig_orig, minlength=batch_size)
+        num_nodes_pocket = torch.bincount(batch_pocket_orig, minlength=batch_size)
+        n_total_lig = num_nodes_lig_existing + n_atoms_to_add
+
+        # 4. Sample starting points (noise at time 0)
+        starting_points, batch_all, batch_lig, batch_pocket_new = (
             self.path.sample_simple_distribution(
                 batch_size,
-                batch_pocket=batch_pocket,
-                size_ligand=torch.tensor([n_total] * batch_size),
+                batch_pocket=batch_pocket_orig,
+                size_ligand=n_total_lig,
             )
         )
 
         is_lig = batch_lig != -1
-        is_poc = batch_pocket != -1
+        is_poc = batch_pocket_new != -1
 
+        # Fill pocket features in starting points
         starting_points[is_poc] = z_pocket
-        mask = torch.zeros(starting_points.shape[0], dtype=torch.bool)
-        # TODO: fix mask for batch_size > 1
-        if batch_size > 1:
-            raise NotImplementedError(
-                "Inpainting for batch_size > 1 is not implemented yet."
+
+        # 5. Create mask for known nodes (scaffold) and end points (data at time 1)
+        mask = torch.zeros(
+            starting_points.shape[0], dtype=torch.bool, device=self.path.device
+        )
+        end_points = torch.zeros_like(starting_points)
+
+        current_idx = 0
+        current_lig_idx = 0
+        current_pocket_idx = 0
+        for i in range(batch_size):
+            # Known scaffold mask (first num_nodes_lig_existing[i] atoms of the ligand part)
+            mask[current_idx : current_idx + num_nodes_lig_existing[i]] = True
+
+            # Known scaffold data in end_points
+            end_points[current_idx : current_idx + num_nodes_lig_existing[i]] = (
+                z_ligand[current_lig_idx : current_lig_idx + num_nodes_lig_existing[i]]
             )
-        mask[: ligand.x_lig.shape[0]] = True
+
+            # Added nodes (remain zero in end_points)
+
+            # Pocket data in end_points
+            end_points[
+                current_idx
+                + n_total_lig[i] : current_idx
+                + n_total_lig[i]
+                + num_nodes_pocket[i]
+            ] = z_pocket[current_pocket_idx : current_pocket_idx + num_nodes_pocket[i]]
+
+            current_idx += n_total_lig[i] + num_nodes_pocket[i]
+            current_lig_idx += num_nodes_lig_existing[i]
+            current_pocket_idx += num_nodes_pocket[i]
 
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
         inverse_n_steps = int(n_steps * t_max_inpainting)
         t_eval_inverse = torch.linspace(
             t_max_inpainting, 0, inverse_n_steps, device=self.path.device
         )
-        # TODO: fix for batch > 1
-        z_ligand_padded = torch.cat(
-            [
-                z_ligand,
-                torch.zeros(
-                    (n_atoms_to_add, z_ligand.shape[1]), device=z_ligand.device
-                ),
-            ],
-            dim=0,
-        )
-        end_points = torch.cat((z_ligand_padded, z_pocket), dim=0)
+
+        # 6. Inverse trajectory from end_points (data) to starting_points (noise)
         inverse_traj = simulator.simulate(
-            end_points, t_eval_inverse, batch_all, batch_lig, batch_pocket, z=z_pocket
+            end_points,
+            t_eval_inverse,
+            batch_all,
+            batch_lig,
+            batch_pocket_new,
+            z=z_pocket,
         ).flip(
             1
         )  # Flip to have time increasing
 
-        starting_points[mask] = inverse_traj[: ligand.x_lig.shape[0], 0, :]
+        # Update scaffold parts of starting points with values from inverse trajectory at time 0
+        starting_points[mask] = inverse_traj[mask, 0, :]
+
+        # 7. Forward simulation with inpainting
         output = simulator.simulate_inpaint(
             starting_points,
             inverse_traj,
@@ -739,19 +805,21 @@ class FlowModel(pl.LightningModule):
             t_max_inpainting,
             batch_all,
             batch_lig,
-            batch_pocket,
+            batch_pocket_new,
             z=z_pocket,
             mask=mask,
         )
 
-        output = output[:, -1]
+        output = output[:, -1]  # Final state at t=1
 
+        # 8. Unpack results
         x_lig = output[is_lig, :3]
         h_lig = output[is_lig, 3:]
         x_pocket = output[is_poc, :3]
         h_pocket = output[is_poc, 3:]
         if self.unnorm:
             x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+
         data = Data(
             x_lig=x_lig,
             h_lig=h_lig,
@@ -759,7 +827,7 @@ class FlowModel(pl.LightningModule):
             h_pocket=h_pocket,
             batch_all=batch_all,
             batch_lig=batch_lig[is_lig],
-            batch_pocket=batch_pocket[is_poc],
+            batch_pocket=batch_pocket_new[is_poc],
         )
         return data
 

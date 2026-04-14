@@ -125,7 +125,8 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
             num_nodes_lig = size_ligand
             if batch_pocket is not None:
                 num_nodes_pocket = torch.tensor(
-                    [torch.sum(batch_pocket == i).item() for i in range(batch_size)]
+                    [torch.sum(batch_pocket == i).item() for i in range(batch_size)],
+                    device=self.device,
                 )
             else:
                 _, num_nodes_pocket = self.size_distribution.sample(batch_size)
@@ -133,7 +134,8 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
             if batch_pocket is not None:
                 num_nodes_lig, _ = self.size_distribution.sample(batch_size)
                 num_nodes_pocket = torch.tensor(
-                    [torch.sum(batch_pocket == i).item() for i in range(batch_size)]
+                    [torch.sum(batch_pocket == i).item() for i in range(batch_size)],
+                    device=self.device,
                 )
             else:
                 num_nodes_lig, num_nodes_pocket = self.size_distribution.sample(
