@@ -110,20 +110,36 @@ if __name__ == "__main__":
 
     # --- 1. Global Setup ---
     print("Initializing environment and loading models...")
-    rdkit_ligand = Chem.MolFromSmiles(args.base_ligand_smile)
-    AllChem.EmbedMolecule(rdkit_ligand, AllChem.ETKDG())
 
-    extracted_bonds_list = extract_bonds(rdkit_ligand)
+    if args.base_ligand_smile and args.base_ligand_smile.strip():
+        rdkit_ligand = Chem.MolFromSmiles(args.base_ligand_smile)
+        if rdkit_ligand is None:
+            raise ValueError(f"Could not parse SMILES: {args.base_ligand_smile}")
+        AllChem.EmbedMolecule(rdkit_ligand, AllChem.ETKDG())
 
-    coords, one_hot, batch = mol_to_data(rdkit_ligand, atom_encoder)
-    if args.normalization_path is not None:
-        norm_params = np.load(args.normalization_path, allow_pickle=True)
-        mean = norm_params["mean"]
-        std = norm_params["std"]
-        coords = (coords - torch.tensor(mean, dtype=torch.float32)) / torch.tensor(
-            std, dtype=torch.float32
+        extracted_bonds_list = extract_bonds(rdkit_ligand)
+
+        coords, one_hot, batch = mol_to_data(rdkit_ligand, atom_encoder)
+        if args.normalization_path is not None:
+            norm_params = np.load(args.normalization_path, allow_pickle=True)
+            mean = norm_params["mean"]
+            std = norm_params["std"]
+            coords = (coords - torch.tensor(mean, dtype=torch.float32)) / torch.tensor(
+                std, dtype=torch.float32
+            )
+        base_ligand = Data(x_lig=coords, h_lig=one_hot, batch_lig=batch)
+    else:
+        print(
+            "No base ligand SMILES provided. Generating from scratch within the pocket."
         )
-    base_ligand = Data(x_lig=coords, h_lig=one_hot, batch_lig=batch)
+        # Create an empty Data object with the correct feature dimension
+        num_atom_types = max(atom_encoder.values()) + 1
+        base_ligand = Data(
+            x_lig=torch.empty((0, 3), dtype=torch.float32),
+            h_lig=torch.empty((0, num_atom_types), dtype=torch.float32),
+            batch_lig=torch.empty((0,), dtype=torch.long),
+        )
+        extracted_bonds_list = []
 
     pocket = pdb_to_data_object(
         pdb_file=args.pdb_path,
