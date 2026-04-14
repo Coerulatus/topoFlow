@@ -254,8 +254,14 @@ class DistributionNodes:
         """Sample from the conditional distribution."""
         assert (n1 is None) ^ (n2 is None), "Exactly one input argument must be None"
 
-        m = self.n1_given_n2 if n2 is not None else self.n2_given_n1
-        c = n2 if n2 is not None else n1
+        if n2 is not None:
+            m = self.n1_given_n2
+            # Clamp n2 to the valid range of indices in the distribution
+            c = torch.clamp(n2, 0, len(m) - 1)
+        else:
+            m = self.n2_given_n1
+            # Clamp n1 to the valid range of indices in the distribution
+            c = torch.clamp(n1, 0, len(m) - 1)
 
         return torch.tensor([m[i].sample() for i in c], device=c.device)
 
