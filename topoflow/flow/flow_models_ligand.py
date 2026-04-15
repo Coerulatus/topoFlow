@@ -696,18 +696,18 @@ class FlowModel(pl.LightningModule):
                 pocket = Batch.from_data_list([pocket] * batch_size)
 
         # 2. Determine indices
-        if hasattr(pocket, "batch_pocket"):
+        if hasattr(pocket, "batch_pocket") and pocket.batch_pocket is not None:
             batch_pocket_orig = pocket.batch_pocket
-        elif hasattr(pocket, "batch"):
+        elif hasattr(pocket, "batch") and pocket.batch is not None:
             batch_pocket_orig = pocket.batch
         else:
             batch_pocket_orig = torch.zeros(
                 pocket.x_pocket.shape[0], dtype=torch.long, device=self.path.device
             )
 
-        if hasattr(ligand, "batch_lig"):
+        if hasattr(ligand, "batch_lig") and ligand.batch_lig is not None:
             batch_lig_orig = ligand.batch_lig
-        elif hasattr(ligand, "batch"):
+        elif hasattr(ligand, "batch") and ligand.batch is not None:
             batch_lig_orig = ligand.batch
         else:
             batch_lig_orig = torch.zeros(
