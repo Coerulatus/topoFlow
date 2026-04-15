@@ -688,7 +688,9 @@ class FlowModel(pl.LightningModule):
 
         # 1. Handle batch replication if ligand/pocket are single graphs but batch_size > 1
         if batch_size > 1:
-            if not hasattr(ligand, "num_graphs") or ligand.num_graphs < batch_size:
+            if (
+                not hasattr(ligand, "num_graphs") or ligand.num_graphs < batch_size
+            ) and ligand.x_lig.numel() > 0:
                 ligand = Batch.from_data_list([ligand] * batch_size)
             if not hasattr(pocket, "num_graphs") or pocket.num_graphs < batch_size:
                 pocket = Batch.from_data_list([pocket] * batch_size)
@@ -777,38 +779,51 @@ class FlowModel(pl.LightningModule):
             current_pocket_idx += num_nodes_pocket[i]
 
         t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
-        inverse_n_steps = int(n_steps * t_max_inpainting)
-        t_eval_inverse = torch.linspace(
-            t_max_inpainting, 0, inverse_n_steps, device=self.path.device
-        )
 
-        # 6. Inverse trajectory from end_points (data) to starting_points (noise)
-        inverse_traj = simulator.simulate(
-            end_points,
-            t_eval_inverse,
-            batch_all,
-            batch_lig,
-            batch_pocket_new,
-            z=z_pocket,
-        ).flip(
-            1
-        )  # Flip to have time increasing
+        # 6. Inverse trajectory and Forward simulation
+        if mask.any():
+            inverse_n_steps = int(n_steps * t_max_inpainting)
+            t_eval_inverse = torch.linspace(
+                t_max_inpainting, 0, max(2, inverse_n_steps), device=self.path.device
+            )
 
-        # Update scaffold parts of starting points with values from inverse trajectory at time 0
-        starting_points[mask] = inverse_traj[mask, 0, :]
+            # Inverse trajectory from end_points (data) to starting_points (noise)
+            inverse_traj = simulator.simulate(
+                end_points,
+                t_eval_inverse,
+                batch_all,
+                batch_lig,
+                batch_pocket_new,
+                z=z_pocket,
+            ).flip(
+                1
+            )  # Flip to have time increasing
 
-        # 7. Forward simulation with inpainting
-        output = simulator.simulate_inpaint(
-            starting_points,
-            inverse_traj,
-            t_eval,
-            t_max_inpainting,
-            batch_all,
-            batch_lig,
-            batch_pocket_new,
-            z=z_pocket,
-            mask=mask,
-        )
+            # Update scaffold parts of starting points with values from inverse trajectory at time 0
+            starting_points[mask] = inverse_traj[mask, 0, :]
+
+            # Forward simulation with inpainting
+            output = simulator.simulate_inpaint(
+                starting_points,
+                inverse_traj,
+                t_eval,
+                t_max_inpainting,
+                batch_all,
+                batch_lig,
+                batch_pocket_new,
+                z=z_pocket,
+                mask=mask,
+            )
+        else:
+            # If no scaffold is provided, just run regular forward simulation
+            output = simulator.simulate(
+                starting_points,
+                t_eval,
+                batch_all,
+                batch_lig,
+                batch_pocket_new,
+                z=z_pocket,
+            )
 
         output = output[:, -1]  # Final state at t=1
 

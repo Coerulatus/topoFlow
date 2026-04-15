@@ -135,11 +135,11 @@ if __name__ == "__main__":
         # Create an empty Data object with the correct feature dimension
         num_atom_types = max(atom_encoder.values()) + 1
         base_ligand = Data(
-            x_lig=torch.empty((0, 3), dtype=torch.float32),
-            h_lig=torch.empty((0, num_atom_types), dtype=torch.float32),
-            batch_lig=torch.empty((0,), dtype=torch.long),
+            x_lig=torch.zeros((0, 3), dtype=torch.float32),
+            h_lig=torch.zeros((0, num_atom_types), dtype=torch.float32),
         )
         extracted_bonds_list = []
+        FORCE_BONDS_VALUES = [False]
 
     pocket = pdb_to_data_object(
         pdb_file=args.pdb_path,
