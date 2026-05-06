@@ -46,18 +46,75 @@ def main():
     print(f"Loading {args.split} dataset from {args.data_dir}...")
     dataset = CrossDocked(root=args.data_dir, split=args.split)
 
+    # --- NEW: Link to original files for accurate baseline ---
+    print("Linking dataset to original PDB and SDF files...")
+    test_npz_path = os.path.join(args.data_dir, "processed", f"{args.split}.npz")
+    if not os.path.exists(test_npz_path):
+        # Try without extension or alternate locations
+        test_npz_path = os.path.join(args.data_dir, "processed", f"{args.split}.npz")
+
+    source_root = os.path.join(
+        args.data_dir, "raw", "processed_crossdock_noH_full_temp", args.split
+    )
+
+    linked_data_list = []
+    if os.path.exists(test_npz_path) and os.path.exists(source_root):
+        test_names = np.load(test_npz_path, allow_pickle=True)["names"]
+        for i in tqdm(range(len(dataset)), desc="Mapping files"):
+            data = dataset[i]
+            combined_name = test_names[i]
+
+            # PDB Path construction
+            if ".pdb" in combined_name:
+                pdb_filename = combined_name.split(".pdb")[0] + ".pdb"
+            else:
+                pdb_filename = combined_name.split("_")[0] + ".pdb"
+            pdb_filename = os.path.basename(pdb_filename)
+
+            pdb_path = os.path.join(source_root, pdb_filename)
+            if not os.path.exists(pdb_path):
+                pdb_path = os.path.join(source_root, pdb_filename.replace("_", "-"))
+
+            # Ligand SDF Path construction
+            ligand_path = os.path.join(source_root, combined_name + ".sdf")
+            if not os.path.exists(ligand_path):
+                ligand_path = os.path.join(
+                    source_root, combined_name.replace("_", "-") + ".sdf"
+                )
+
+            if os.path.exists(pdb_path) and os.path.exists(ligand_path):
+                data.pdb_path = os.path.abspath(pdb_path)
+                data.ligand_sdf_path = os.path.abspath(ligand_path)
+
+            linked_data_list.append(data)
+        scoring_dataset = linked_data_list
+    else:
+        print(
+            f"Warning: Could not find original files in {source_root}. Falling back to PyG data."
+        )
+        scoring_dataset = dataset
+
+    # Load Normalization Params
+    norm_params = None
+    norm_path = os.path.join(args.data_dir, "processed", "normalization_params.npz")
+    if os.path.exists(norm_path):
+        print(f"Loading normalization parameters from {norm_path}")
+        norm_data = np.load(norm_path, allow_pickle=True)
+        norm_params = {"mean": norm_data["mean"], "std": norm_data["std"]}
+
     atom_decoder = constants.dataset_params[args.data_name]["atom_decoder"]
 
     # We include all relevant metrics
     metrics = ["qed", "logp", "sas", "lipinski", "gnina", "mol_size"]
 
     print(f"Calculating distributions for metrics: {metrics}")
-    print(
-        "This may take a while if GNINA is included and needs to run on the whole set..."
-    )
+    print("Using original PDB/SDF files where available for GNINA...")
 
     distribution = get_distributions(
-        dataset, metrics=metrics, atom_decoder=atom_decoder
+        scoring_dataset,
+        metrics=metrics,
+        atom_decoder=atom_decoder,
+        norm_params=norm_params,
     )
 
     # Also add mol_id or name if possible for reference

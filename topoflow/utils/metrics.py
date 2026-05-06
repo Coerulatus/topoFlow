@@ -300,9 +300,9 @@ class GninaDocker:
 docker = GninaDocker()
 
 
-def gnina_scorer(data):
+def gnina_scorer(data, norm_params=None, atom_decoder=None):
     """Returns [Vina_Score, CNN_Affinity] as a list."""
-    return docker._run_gnina(data)
+    return docker._run_gnina(data, norm_params=norm_params, atom_decoder=atom_decoder)
 
 
 def compute_connectivity(valid, connectivity_thresh=0.5):
@@ -388,7 +388,7 @@ scorer_dict = {
 }
 
 
-def get_distributions(dataset, metrics, atom_decoder=None):
+def get_distributions(dataset, metrics, atom_decoder=None, norm_params=None):
     """Calculate distributions.
 
     Handles both 'molecular' metrics (QED/LogP) and 'structural' metrics (Gnina).
@@ -422,7 +422,10 @@ def get_distributions(dataset, metrics, atom_decoder=None):
         # CASE A: Structural Metrics (Gnina) -> Pass raw Data object
         if metric == "gnina":
             for data in tqdm(dataset, desc=f"Calculating {metric} scores."):
-                s = scorer(data)  # Returns [vina, cnn]
+                # Pass norm_params and atom_decoder to ensure unnormalized docking
+                s = scorer(
+                    data, norm_params=norm_params, atom_decoder=atom_decoder
+                )  # Returns [vina, cnn]
                 if s is not None:
                     scores.append(s)
 
