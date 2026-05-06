@@ -87,8 +87,9 @@ def process_single_molecule(data, atom_decoder, norm_params=None):
             data.vina = float(gnina_score[0])
             data.cnn_affinity = float(gnina_score[1])
     except Exception as e:
-        # Silently fail or log to file to avoid breaking tqdm layout
-        pass
+        print(
+            f"Error during GNINA scoring for {getattr(data, 'mol_id', 'unknown')}: {e}"
+        )
 
     data.is_scored = True
     return data, True

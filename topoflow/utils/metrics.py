@@ -263,9 +263,9 @@ class GninaDocker:
                     cmd, capture_output=True, text=True, check=True, env=env_extra
                 )
             except subprocess.CalledProcessError as e:
-                # print("GNINA failed or not found.")
-                # print("Error Output:\n", e.stderr)
-                return [0, 0]
+                print(f"GNINA failed for {ligand_path}:")
+                print("Error Output:\n", e.stderr)
+                return [0.0, 0.0]
 
             # 5. Parse Output
             vina = None
@@ -290,6 +290,11 @@ class GninaDocker:
                             cnn = float(c_match.group(1))
                         except ValueError:
                             cnn = None
+
+            if vina is None or cnn is None:
+                print(
+                    f"Warning: GNINA completed but failed to parse scores for {ligand_path}. Content length: {len(content) if os.path.exists(output_path) else 0}"
+                )
 
             # Return both scores as a list [Vina, CNN]
             # Ensure we return valid floats or 0.0, never None in the list
