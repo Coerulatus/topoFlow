@@ -141,7 +141,7 @@ class GninaDocker:
 
         return center, size
 
-    def _run_gnina(self, data):
+    def _run_gnina(self, data, norm_params=None, atom_decoder=None):
         """Runs GNINA and returns [vina_score, cnn_score]."""
         env_extra = os.environ.copy()
         conda_prefix = os.environ.get("CONDA_PREFIX")
@@ -151,27 +151,82 @@ class GninaDocker:
             current_ld = env_extra.get("LD_LIBRARY_PATH", "")
             env_extra["LD_LIBRARY_PATH"] = f"{lib_path}:{current_ld}"
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            receptor_path = os.path.join(temp_dir, "receptor.pdb")
-            ligand_path = os.path.join(temp_dir, "ligand.sdf")
-            output_path = os.path.join(temp_dir, "out.sdf")
+        # --- OPTIMIZATION: Use original files if paths are provided ---
+        use_original_files = False
+        if hasattr(data, "pdb_path") and hasattr(data, "ligand_sdf_path"):
+            if os.path.exists(data.pdb_path) and os.path.exists(data.ligand_sdf_path):
+                receptor_path = data.pdb_path
+                ligand_path = data.ligand_sdf_path
+                use_original_files = True
 
-            # 1. Save Files
-            try:
-                save_pocket_to_pdb(data, receptor_path, verbose=False)
-                save_ligand_to_sdf(data, ligand_path, verbose=False)
-            except Exception as e:
-                print(f"Error saving GNINA inputs: {e}")
-                return [0, 0]
+        if not use_original_files:
+            # --- UNNORMALIZATION LOGIC (Fallback) ---
+            data_to_save = data.clone()
+            if norm_params is not None:
+                try:
+                    device = data_to_save.x_lig.device
+                    std = torch.tensor(
+                        norm_params["std"], device=device, dtype=torch.float32
+                    )
+                    mean = torch.tensor(
+                        norm_params["mean"], device=device, dtype=torch.float32
+                    )
+
+                    data_to_save.x_lig = data_to_save.x_lig * std + mean
+                    data_to_save.x_pocket = data_to_save.x_pocket * std + mean
+                except Exception as e:
+                    print(f"Warning: Unnormalization failed: {e}")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            if not use_original_files:
+                receptor_path = os.path.join(temp_dir, "receptor.pdb")
+                ligand_path = os.path.join(temp_dir, "ligand.sdf")
+                # 1. Save Files
+                try:
+                    save_pocket_to_pdb(
+                        data_to_save,
+                        receptor_path,
+                        atom_decoder=atom_decoder,
+                        verbose=False,
+                    )
+                    save_ligand_to_sdf(
+                        data_to_save,
+                        ligand_path,
+                        atom_decoder=atom_decoder,
+                        verbose=False,
+                    )
+                except Exception as e:
+                    print(f"Error saving GNINA inputs: {e}")
+                    return [0, 0]
+
+            output_path = os.path.join(temp_dir, "out.sdf")
 
             # 2. Calculate Box
             try:
-                center, size = self._calculate_box(data)
-            except ValueError as e:
+                if use_original_files:
+                    # Load ligand to center the box
+                    suppl = Chem.SDMolSupplier(ligand_path)
+                    mol = suppl[0]
+                    if mol is None:
+                        raise ValueError(f"Could not read ligand from {ligand_path}")
+
+                    conf = mol.GetConformer()
+                    pos = conf.GetPositions()
+                    center = np.mean(pos, axis=0)
+                    max_dist = np.max(np.linalg.norm(pos - center, axis=1))
+                    size = (max_dist * 2) + 12.0
+                else:
+                    center, size = self._calculate_box(data_to_save)
+            except Exception as e:
                 print(f"Skipping GNINA: {e}")
                 return [0, 0]
 
             # 3. Build Command
+            if use_original_files:
+                print(f"DEBUG: Using ORIGINAL FILES: {receptor_path} | {ligand_path}")
+            else:
+                print(f"DEBUG: Using TEMPORARY FILES: {receptor_path} | {ligand_path}")
+
             cmd = [
                 GNINA_EXECUTABLE,
                 "--receptor",
@@ -197,7 +252,7 @@ class GninaDocker:
                 "--seed",
                 "0",
                 "--num_modes",
-                "1",  # Top pose only
+                "1",
                 "--exhaustiveness",
                 "8",
             ]
@@ -208,8 +263,8 @@ class GninaDocker:
                     cmd, capture_output=True, text=True, check=True, env=env_extra
                 )
             except subprocess.CalledProcessError as e:
-                print("GNINA failed or not found.")
-                print("Error Output:\n", e.stderr)
+                # print("GNINA failed or not found.")
+                # print("Error Output:\n", e.stderr)
                 return [0, 0]
 
             # 5. Parse Output
@@ -223,17 +278,22 @@ class GninaDocker:
                     # Extract Vina (minimizedAffinity)
                     v_match = re.search(r"> <minimizedAffinity>\s+([-\d\.]+)", content)
                     if v_match:
-                        vina = float(v_match.group(1))
+                        try:
+                            vina = float(v_match.group(1))
+                        except ValueError:
+                            vina = None
 
                     # Extract CNN (CNNaffinity)
                     c_match = re.search(r"> <CNNaffinity>\s+([-\d\.]+)", content)
                     if c_match:
-                        cnn = float(c_match.group(1))
+                        try:
+                            cnn = float(c_match.group(1))
+                        except ValueError:
+                            cnn = None
 
             # Return both scores as a list [Vina, CNN]
-            if vina is not None and cnn is not None:
-                return [vina, cnn]
-            return [0, 0]
+            # Ensure we return valid floats or 0.0, never None in the list
+            return [vina if vina is not None else 0.0, cnn if cnn is not None else 0.0]
 
 
 # Initialize instance
@@ -294,24 +354,28 @@ def compute_novelty(connected, known_smiles):
 
 def wasserstein_1d(a, b):
     """Calculate the 1D Wasserstein distance between two 1D distributions."""
-    # they might not have same length, pad with zeros if necessary
     a_sorted = torch.sort(a)[0]
     b_sorted = torch.sort(b)[0]
 
-    # Uniform weights
     n, m = len(a_sorted), len(b_sorted)
-    a_cdf = torch.arange(1, n + 1, dtype=torch.float32) / n
-    b_cdf = torch.arange(1, m + 1, dtype=torch.float32) / m
 
-    # Interpolate to common support (merge the sorted values)
+    # Combine to find all points where the CDFs change
     support = torch.sort(torch.cat([a_sorted, b_sorted]))[0]
-    a_interp = torch.searchsorted(a_sorted, support, right=True) / n
-    b_interp = torch.searchsorted(b_sorted, support, right=True) / m
 
-    return torch.sum(
-        torch.abs(a_interp - b_interp)
-        * torch.diff(torch.cat([torch.tensor([0.0]), support]))
-    )
+    # We evaluate the CDF step functions at the left edge of each interval.
+    # Therefore, we drop the last point of the support.
+    eval_points = support[:-1]
+
+    # Calculate empirical CDFs at the evaluation points
+    # (Note: .float() is added to ensure safe float division)
+    a_interp = torch.searchsorted(a_sorted, eval_points, right=True).float() / n
+    b_interp = torch.searchsorted(b_sorted, eval_points, right=True).float() / m
+
+    # Calculate the widths of the intervals
+    deltas = torch.diff(support)
+
+    # Integrate |CDF_a - CDF_b| over the support
+    return torch.sum(torch.abs(a_interp - b_interp) * deltas)
 
 
 scorer_dict = {

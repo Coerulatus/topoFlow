@@ -552,23 +552,26 @@ class FlowModel(pl.LightningModule):
         )
         return data
 
-    def sample_with_trajectory(
-        self, n_samples, n_steps=20, force_connected=False, max_attempts=10, pocket=None
+    @torch.no_grad()
+    def sample_with_entropy(
+        self, n_samples, n_steps=20, pocket=None, entropy_times=None, n_atoms=None
     ):
-        """Samples data by simulating the learned flow from the simple distribution and returns the trajectory.
+        """Samples data by simulating the learned flow and returns entropy at specified times.
 
         Args:
             n_samples: Number of samples to generate.
             n_steps: Number of integration steps for the simulator. Defaults to 20.
-            force_connected: If True, generate molecules until it is connected. Defaults to False.
-            max_attempts: Maximum number of attempts to generate a connected molecule. Defaults to 10.
             pocket: Optional pocket data to condition the sampling.
+            entropy_times: List of times at which to calculate the entropy.
+            n_atoms: Optional number of atoms in the ligand to consider.
 
         Returns:
-            The generated samples after simulating the flow, along with the trajectory.
+            The generated samples after simulating the flow, and a dictionary of entropies.
         """
-        simulator = TorchDiffEqSimulator(self, solver="rk4")
+        if entropy_times is None:
+            entropy_times = []
 
+        simulator = TorchDiffEqSimulator(self, solver="rk4")
         if pocket is not None:
             z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
             batch_pocket = pocket.batch_pocket
@@ -579,8 +582,129 @@ class FlowModel(pl.LightningModule):
                 n_samples, pocket_only=True, force_batch_size=True
             )
 
+        if n_atoms is not None:
+            if isinstance(n_atoms, int):
+                size_ligand = torch.tensor(
+                    [n_atoms] * n_samples, device=self.path.device
+                )
+            else:
+                size_ligand = n_atoms.to(self.path.device)
+        else:
+            size_ligand = None
+
         starting_points, batch_all, batch_lig, batch_pocket = (
-            self.path.sample_simple_distribution(n_samples, batch_pocket=batch_pocket)
+            self.path.sample_simple_distribution(
+                n_samples, batch_pocket=batch_pocket, size_ligand=size_ligand
+            )
+        )
+        is_lig = batch_lig != -1
+        is_poc = batch_pocket != -1
+
+        starting_points[is_poc] = z_pocket
+
+        t_eval = torch.linspace(0, 1, n_steps, device=self.path.device)
+        if len(entropy_times) > 0:
+            entropy_times_t = torch.tensor(entropy_times, device=self.path.device)
+            t_eval = torch.cat([t_eval, entropy_times_t])
+            t_eval = torch.unique(t_eval).sort()[0]
+
+        output = simulator.simulate(
+            starting_points, t_eval, batch_all, batch_lig, batch_pocket, z=z_pocket
+        )
+
+        entropies = {}
+        for et in entropy_times:
+            idx = (t_eval - et).abs().argmin().item()
+            state = output[:, idx]
+            x_lig = state[is_lig, :]
+            t = torch.tensor([t_eval[idx]], device=self.path.device)
+            _, diagnostics = self.vector_field_model(
+                x_lig, t, z_pocket, batch_lig, batch_pocket, return_diagnostics=True
+            )
+            entropies[et] = diagnostics
+
+        last_output = output[:, -1]
+        x_lig = last_output[is_lig, :3]
+        h_lig = last_output[is_lig, 3:]
+        x_pocket = last_output[is_poc, :3]
+        h_pocket = last_output[is_poc, 3:]
+        if self.unnorm:
+            x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+        data = Data(
+            x_lig=x_lig,
+            h_lig=h_lig,
+            x_pocket=x_pocket,
+            h_pocket=h_pocket,
+            batch_all=batch_all,
+            batch_lig=batch_lig[is_lig],
+            batch_pocket=batch_pocket[is_poc],
+        )
+        return data, entropies
+
+    def sample_with_trajectory(
+        self,
+        n_samples,
+        n_steps=20,
+        force_connected=False,
+        max_attempts=10,
+        pocket=None,
+        n_atoms=None,
+    ):
+        """Samples data by simulating the learned flow from the simple distribution and returns the trajectory.
+
+        Args:
+            n_samples: Number of samples to generate.
+            n_steps: Number of integration steps for the simulator. Defaults to 20.
+            force_connected: If True, generate molecules until it is connected. Defaults to False.
+            max_attempts: Maximum number of attempts to generate a connected molecule. Defaults to 10.
+            pocket: Optional pocket data to condition the sampling.
+            n_atoms: Optional number of atoms in the ligand to consider.
+
+        Returns:
+            The generated samples after simulating the flow, along with the trajectory.
+        """
+        simulator = TorchDiffEqSimulator(self, solver="rk4")
+
+        if pocket is not None:
+            # Check if pocket is a single sample or a batch
+            if hasattr(pocket, "batch_pocket"):
+                num_pockets = pocket.batch_pocket.max().item() + 1
+            else:
+                num_pockets = 1
+
+            if num_pockets == 1 and n_samples > 1:
+                # Repeat the single pocket for each sample
+                z_pocket_single = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+                z_pocket = z_pocket_single.repeat(n_samples, 1)
+                num_atoms_pocket = pocket.x_pocket.shape[0]
+                batch_pocket = torch.arange(
+                    n_samples, device=z_pocket.device
+                ).repeat_interleave(num_atoms_pocket)
+            else:
+                z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+                batch_pocket = pocket.batch_pocket
+
+            z_pocket = z_pocket.to(self.path.device)
+            batch_pocket = batch_pocket.to(self.path.device)
+        else:
+            z_pocket, _, _, batch_pocket, _ = self.path.sample_conditioning_variable(
+                n_samples, pocket_only=True, force_batch_size=True
+            )
+
+        if n_atoms is not None:
+            if isinstance(n_atoms, int):
+                size_ligand = torch.tensor(
+                    [n_atoms] * n_samples, device=self.path.device
+                )
+            else:
+                size_ligand = n_atoms.to(self.path.device)
+        else:
+            size_ligand = None
+
+        starting_points, batch_all, batch_lig, batch_pocket = (
+            self.path.sample_simple_distribution(
+                n_samples, batch_pocket=batch_pocket, size_ligand=size_ligand
+            )
         )
 
         is_lig = batch_lig != -1
@@ -618,7 +742,7 @@ class FlowModel(pl.LightningModule):
                 )
                 starting_points, batch_all, batch_lig, batch_pocket = (
                     self.path.sample_simple_distribution(
-                        n_samples, batch_pocket=batch_pocket
+                        n_samples, batch_pocket=batch_pocket, size_ligand=size_ligand
                     )
                 )
                 is_lig = batch_lig != -1
@@ -669,6 +793,7 @@ class FlowModel(pl.LightningModule):
         batch_size=1,
         n_steps=80,
         t_max_inpainting=1.0,
+        force_scaffold=False,
     ):
         """Performs inpainting by adding atoms to a given ligand within a pocket.
 
@@ -679,15 +804,54 @@ class FlowModel(pl.LightningModule):
             batch_size: Number of samples to generate in parallel. Defaults to 1.
             n_steps: Number of integration steps for the simulator. Defaults to 80.
             t_max_inpainting: Maximum time to consider inpainting. Defaults to 1.0.
+            force_scaffold: If True, fixes the scaffold atoms to their original values.
 
         Returns:
             The inpainted molecule after simulating the flow.
+        """
+        trajectory = self.inpainting_with_trajectory(
+            ligand,
+            pocket,
+            n_atoms_to_add,
+            batch_size,
+            n_steps,
+            t_max_inpainting,
+            force_scaffold,
+        )
+        return trajectory[-1]
+
+    @torch.no_grad()
+    def inpainting_with_trajectory(
+        self,
+        ligand,
+        pocket,
+        n_atoms_to_add,
+        batch_size=1,
+        n_steps=80,
+        t_max_inpainting=1.0,
+        force_scaffold=False,
+    ):
+        """Performs inpainting and returns the full trajectory.
+
+        Args:
+            ligand: Data object representing the initial ligand.
+            pocket: Data object representing the pocket.
+            n_atoms_to_add: Number of atoms to add to the ligand. Can be int or torch.Tensor.
+            batch_size: Number of samples to generate in parallel. Defaults to 1.
+            n_steps: Number of integration steps for the simulator. Defaults to 80.
+            t_max_inpainting: Maximum time to consider inpainting. Defaults to 1.0.
+            force_scaffold: If True, fixes the scaffold atoms to their original values.
+
+        Returns:
+            List of Data objects representing the trajectory.
         """
         ligand = ligand.to(self.path.device)
         pocket = pocket.to(self.path.device)
 
         # 1. Handle batch replication if ligand/pocket are single graphs but batch_size > 1
         if batch_size > 1:
+            from torch_geometric.data import Batch
+
             if (
                 not hasattr(ligand, "num_graphs") or ligand.num_graphs < batch_size
             ) and ligand.x_lig.numel() > 0:
@@ -813,6 +977,8 @@ class FlowModel(pl.LightningModule):
                 batch_pocket_new,
                 z=z_pocket,
                 mask=mask,
+                end_points=end_points,
+                force_scaffold=force_scaffold,
             )
         else:
             # If no scaffold is provided, just run regular forward simulation
@@ -825,26 +991,30 @@ class FlowModel(pl.LightningModule):
                 z=z_pocket,
             )
 
-        output = output[:, -1]  # Final state at t=1
+        # 8. Pack results into a trajectory of Data objects
+        data_trajectory = []
+        for i in range(output.shape[1]):
+            x_lig = output[is_lig, i, :3]
+            h_lig = output[is_lig, i, 3:]
+            x_pocket = output[is_poc, i, :3]
+            h_pocket = output[is_poc, i, 3:]
+            if self.unnorm:
+                x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
 
-        # 8. Unpack results
-        x_lig = output[is_lig, :3]
-        h_lig = output[is_lig, 3:]
-        x_pocket = output[is_poc, :3]
-        h_pocket = output[is_poc, 3:]
-        if self.unnorm:
-            x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+            data = Data(
+                x_lig=x_lig,
+                h_lig=h_lig,
+                x_pocket=x_pocket,
+                h_pocket=h_pocket,
+                batch_all=batch_all,
+                batch_lig=batch_lig[is_lig],
+                batch_pocket=batch_pocket_new[is_poc],
+            )
+            # Add scaffold mask to data for later coloring
+            data.scaffold_mask = mask[is_lig]
+            data_trajectory.append(data)
 
-        data = Data(
-            x_lig=x_lig,
-            h_lig=h_lig,
-            x_pocket=x_pocket,
-            h_pocket=h_pocket,
-            batch_all=batch_all,
-            batch_lig=batch_lig[is_lig],
-            batch_pocket=batch_pocket_new[is_poc],
-        )
-        return data
+        return data_trajectory
 
     def configure_optimizers(self):
         """Configures the optimizer and learning rate scheduler for training."""
