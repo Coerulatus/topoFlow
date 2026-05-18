@@ -1,4 +1,22 @@
-"""Script to sample molecules for different number of flow steps using TopoFlow."""
+"""Conduct an ablation study on the number of flow integration steps, sampling molecules across a range of n_steps values.
+
+This script evaluates the trade-off between sampling quality and computational cost.
+It iterates through a provided list of integration steps and performs molecular
+generation for a set of pockets at each step count. It records generation statistics
+to help determine the optimal number of steps for deployment.
+
+Parser Arguments:
+    --checkpoint_path (str): Path to the model checkpoint.
+    --pdb_dir (str): Directory with target pocket PDBs.
+    --output_base_dir (str): Base directory for step-specific results.
+    --n_steps_list (list): List of integration step counts to evaluate (e.g., 10, 20, 40, 80).
+    --mol_per_pocket (int): Number of valid molecules to generate per pocket/step combination.
+
+Files Produced:
+    - Subdirectories for each step count (e.g., steps_20/) containing:
+        - sdfs/: Generated molecules in SDF format.
+        - generation_time.txt: Efficiency metrics for that specific step count.
+"""
 
 import argparse
 import os

@@ -1,4 +1,20 @@
-"""Script to evaluate generated molecules against the test distribution of the CrossDocked dataset, calculating various chemical metrics and Wasserstein distances."""
+"""Evaluate generated molecules against test distributions using multiple splits for robust statistics.
+
+This script evaluates TopoFlow models by comparing generated molecules to the reference
+test set distribution. It maps generated SDFs back to their target pockets, converts
+them to PyG format, and calculates metrics including QED, LogP, SA Score, Lipinski,
+and GNINA scores. It specifically calculates Wasserstein (WL) distances between the
+generated and reference distributions. Results are aggregated across multiple splits.
+
+Parser Arguments:
+    --data_dir (str): Path to the CrossDocked data.
+    --output_base_dir (str): Base directory containing model subfolders with generated SDFs.
+
+Files Produced:
+    - pyg_splits.pt: PyG representation of the split data.
+    - split_results.json: Raw results for each evaluation split.
+    - evaluation_results.csv: Final aggregated stats (mean and std) for the model.
+"""
 
 import os
 import torch
@@ -60,9 +76,21 @@ def get_test_distribution(data_dir, atom_decoder):
     print(f"Generating missing metrics for test distribution: {missing_metrics}")
     test_dataset = CrossDocked(root=data_dir, split="test")
 
+    # Load Normalization Params
+    norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
+    norm_params = None
+    if os.path.exists(norm_path):
+        norm_data = np.load(norm_path, allow_pickle=True)
+        norm_params = {"mean": norm_data["mean"], "std": norm_data["std"]}
+
     for m in missing_metrics:
         print(f"Calculating metric: {m}")
-        m_dist = get_distributions(test_dataset, metrics=[m], atom_decoder=atom_decoder)
+        m_dist = get_distributions(
+            test_dataset,
+            metrics=[m],
+            atom_decoder=atom_decoder,
+            norm_params=norm_params,
+        )
         test_dist.update(m_dist)
         # Save after each metric is calculated
         np.save(dist_path, test_dist)
@@ -116,6 +144,11 @@ def main():
         folder_path = os.path.join(args.output_base_dir, model_folder)
         mapping_path = os.path.join(folder_path, "mapping.txt")
         sdfs_dir = os.path.join(folder_path, "sdfs")
+        scored_path = os.path.join(folder_path, "pyg_scored_flat.pt")
+
+        if os.path.exists(scored_path):
+            print(f"Skipping {model_folder}, pyg_scored_flat.pt already exists.")
+            continue
 
         if not os.path.exists(mapping_path) or not os.path.exists(sdfs_dir):
             print(f"Skipping {model_folder}, mapping.txt or sdfs/ not found.")
@@ -203,6 +236,13 @@ def main():
         else:
             split_results = []
 
+        # Load Normalization Params
+        norm_path = os.path.join(args.data_dir, "processed", "normalization_params.npz")
+        norm_params = None
+        if os.path.exists(norm_path):
+            norm_data = np.load(norm_path, allow_pickle=True)
+            norm_params = {"mean": norm_data["mean"], "std": norm_data["std"]}
+
         for i, split in enumerate(splits):
             if not split:
                 continue
@@ -236,9 +276,11 @@ def main():
             # Gnina metrics
             vina_scores = []
             cnn_scores = []
-            gnina_scorer = scorer_dict["gnina"]
+            gnina_scorer_func = scorer_dict["gnina"]
             for data in tqdm(split, desc=f"Calculating Gnina scores for split {i+1}"):
-                s = gnina_scorer(data)
+                s = gnina_scorer_func(
+                    data, norm_params=norm_params, atom_decoder=atom_decoder
+                )
                 if s:
                     vina_scores.append(s[0])
                     cnn_scores.append(s[1])

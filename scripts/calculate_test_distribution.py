@@ -1,4 +1,20 @@
-"""Calculate and save test set distributions for all metrics."""
+"""Calculate and save reference metric distributions for a specific dataset split (e.g., test or val).
+
+This script establishes a baseline by calculating chemical property distributions (QED, LogP,
+SA Score, Lipinski, GNINA Affinity, Molecule Size) for the original molecules in the
+CrossDocked dataset. It maps the PyTorch Geometric dataset entries back to their original
+PDB/SDF files to ensure high-fidelity scoring. The resulting distributions are saved as
+a .npy file, which is used by evaluation scripts to calculate Wasserstein-1 distances.
+
+Parser Arguments:
+    --data_dir (str): Dataset root directory.
+    --data_name (str): Dataset configuration name (e.g., "crossdock_full").
+    --split (str): The dataset split to process ("test" or "val").
+    --output_path (str): Optional. Custom path to save the .npy result.
+
+Files Produced:
+    - A .npy file (e.g., test_distribution.npy) containing a dictionary of metric distributions.
+"""
 
 import os
 import argparse

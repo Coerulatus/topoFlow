@@ -1,4 +1,23 @@
-"""Script to sample molecules from a trained TopoFlow model for given protein pockets."""
+"""Sample a specified number of molecules for every protein pocket in a dataset split using a trained TopoFlow model.
+
+This script is the primary tool for bulk molecular generation. It iterates through
+all pockets in a given dataset split (test or val) and uses a trained continuous
+normalizing flow model to generate new ligands. For each pocket, it produces multiple
+samples, saves them as a multi-molecule SDF file, and also exports the corresponding
+PyTorch Geometric data objects for further analysis.
+
+Parser Arguments:
+    --checkpoint_path (str): Path to the trained model checkpoint (.ckpt).
+    --output_dir (str): Root directory for saving generated outputs.
+    --molecules_per_pocket (int): Number of samples to generate for each target.
+    --n_steps (int): Number of integration steps for the ODE solver.
+    --split (str): Dataset split to use ("val" or "test").
+
+Files Produced:
+    - Subdirectories for each pocket containing:
+        - {pocket_id}_generated.sdf: Generated molecules in SDF format.
+        - {pocket_id}_generated.pt: PyG data objects for the generated molecules.
+"""
 
 import argparse
 import os

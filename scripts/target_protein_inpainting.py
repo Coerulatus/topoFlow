@@ -1,4 +1,24 @@
-"""Script to generate ligand molecules starting from a base scaffold, conditioned on a target protein pocket using a pre-trained flow model."""
+"""Generate ligand molecules starting from a base scaffold, conditioned on a target protein pocket using inpainting.
+
+This script implements scaffold-based generation (inpainting). Starting from a base
+scaffold SMILES and a target protein pocket, the model generates new atoms and
+bonds to complete the molecule. It performs a grid search over key hyperparameters
+like t_max_inpainting (noise level for the scaffold) and force_bonds (fixed
+scaffold bonds).
+
+Parser Arguments:
+    --pdb_path (str): Path to the target protein PDB file.
+    --base_ligand_smile (str): SMILES string of the starting scaffold.
+    --n_samples (int): Number of molecules to generate per hyperparameter combination.
+    --t_max_values (list): List of t_max values for grid search.
+    --force_bonds_values (list): List of True/False strings for fixing scaffold bonds.
+    --base_output_dir (str): Base directory for generated molecules and logs.
+
+Files Produced:
+    - {output_folder}/generated_mol_inpainting_{idx}.sdf: The generated molecule.
+    - {output_folder}/generated_mol_inpainting_{idx}.png: 2D visualization of the molecule.
+    - generation_summary.csv: A summary of success rates and attempts for each parameter combination.
+"""
 
 import argparse
 import os

@@ -1,4 +1,17 @@
-"""Script to count and validate generated molecules in SDF files, ensuring they only contain allowed atoms and are structurally valid."""
+"""Validate and count generated molecules in SDF files based on structural integrity and atom types.
+
+This script provides a strict validation of generated molecules stored in SDF format.
+It checks each molecule for: 1) Presence of "hallucinated" or unauthorized atom types
+not found in the training data, and 2) Structural/geometric validity via RDKit's
+SanitizeMol (e.g., checking for valid valence). It outputs a summary report with the
+total count, strict validity rate, and reasons for rejection.
+
+Parser Arguments:
+    (None, the script uses hardcoded target directories in the main block).
+
+Files Produced:
+    - None (outputs summary statistics directly to the console).
+"""
 
 import os
 from rdkit import Chem

@@ -1,4 +1,21 @@
-"""Script to evaluate generated molecules across multiple folders, including GNINA binding affinity."""
+"""Evaluate generated molecules in specific folders against a target pocket, including scaffold checking and GNINA docking.
+
+This script is designed for evaluating molecules generated for a specific target protein.
+It calculates standard chemical metrics (QED, LogP, SAS, Lipinski) and performs GNINA
+docking simulations to estimate binding affinity (Vina score and CNN affinity).
+Additionally, it checks for the presence of a specific chemical scaffold and reports
+the fraction of valid molecules that satisfy these structural constraints.
+
+Parser Arguments:
+    --base_dir (str): Directory containing subfolders of generated SDF files.
+    --metrics (list): List of metrics to calculate (default: qed, logp, sas, lipinski, gnina).
+    --scaffold_smiles (str): SMILES string of the scaffold to check for.
+    --pocket_pdb_path (str): Path to the target protein's PDB file.
+    --pocket_data_path (str): Path to save/load processed pocket PyG data.
+
+Files Produced:
+    - Markdown files (e.g., metrics_{folder_name}.md) containing summarized evaluation results.
+"""
 
 import argparse
 import os
