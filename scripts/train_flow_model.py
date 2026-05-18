@@ -40,7 +40,7 @@ from topoflow.flow.vector_field_models import (
     AllSetTransformerVectorField,
     TransformerDistanceVectorField,
 )
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 import topoflow.utils.constants as constants
 from topoflow.flow.utils import InverseTimeFactor, InverseTimeFactorNoClamping
 from topoflow.data.augmentations import RandomRotateTranslate

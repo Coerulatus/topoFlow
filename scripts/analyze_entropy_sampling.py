@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch_geometric.data import Batch
 
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 from topoflow.data.datasets import CrossDocked
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.schedulers import CosineAlpha, CosineBeta

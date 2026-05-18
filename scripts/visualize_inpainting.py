@@ -28,7 +28,7 @@ import lightning as pl
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 from topoflow.data.datasets import CrossDocked
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.schedulers import CosineAlpha, CosineBeta

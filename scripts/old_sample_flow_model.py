@@ -27,7 +27,7 @@ from tqdm import tqdm
 from rdkit import Chem
 from torch_geometric.data import Batch, DataLoader as PyGDataLoader
 
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 from topoflow.data.datasets import CrossDocked
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.schedulers import CosineAlpha, CosineBeta

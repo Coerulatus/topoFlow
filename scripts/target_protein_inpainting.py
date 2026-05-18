@@ -31,7 +31,7 @@ from rdkit.Chem import Draw
 import torch
 from torch_geometric.data import Data
 
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 from topoflow.data.datasets import CrossDocked
 from topoflow.data import MockDatamodule
 import topoflow.utils.constants as constants

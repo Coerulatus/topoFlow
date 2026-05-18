@@ -35,7 +35,7 @@ from mlflow.tracking import MlflowClient
 from torch_geometric.data import Batch
 
 # Assuming the model and data files are in the same directory or accessible in the python path
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 from topoflow.data.datasets import CrossDocked
 from topoflow.data import MockDatamodule
 import topoflow.utils.constants as constants
