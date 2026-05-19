@@ -240,7 +240,6 @@ def pdb_to_data_object(
     save_path: str = None,
     normalization_path: str = None,
     remove_hydrogens: bool = True,
-    center_pocket: bool = True,
     only_coords: bool = False,
     verbose: bool = False,
     force: bool = False,
@@ -261,7 +260,6 @@ def pdb_to_data_object(
         normalization_path (str, optional): Path to normalization parameters file.
         remove_hydrogens (bool): If True, all hydrogen atoms are removed from the molecule
                                  after loading and before featurization. Defaults to True.
-        center_pocket (bool): If True, centers the pocket coordinates to the origin. Defaults to True.
         only_coords (bool): If True, returns a feature tensor (h_pocket) containing only zeros.
                             Defaults to False.
         verbose (bool): If True, prints status updates and parsing details.
@@ -272,6 +270,7 @@ def pdb_to_data_object(
             - `x_pocket`: Coordinates (N_pocket x 3)
             - `h_pocket`: One-hot features (N_pocket x D_features)
             - `batch_pocket`: Batch index (constant 0 for a single file)
+            - `original_centroid`: Centroid of the pocket in Angstroms (1 x 3)
     """
     if save_path is not None and os.path.exists(save_path) and not force:
         if verbose:
@@ -285,6 +284,8 @@ def pdb_to_data_object(
             ]
         ):
             pocket = torch.load(save_path, weights_only=True)
+            return pocket
+
     try:
         # Load the molecule, sanitize=False is critical for protein structures
         # We use removeHs=False here because we will handle hydrogen removal explicitly below
@@ -315,27 +316,27 @@ def pdb_to_data_object(
     else:
         h_pocket = one_hot_features
 
+    # Mandatory: Centering happens BEFORE global normalization/scaling
+    if verbose:
+        print("Centering pocket coordinates to the origin...")
+    centroid = coords.mean(dim=0, keepdim=True)
+    coords = coords - centroid
+
     if normalization_path is not None:
         if verbose:
             print(f"Applying normalization from: {normalization_path}")
         norm_params = np.load(normalization_path, allow_pickle=True)
-        mean = norm_params["mean"]
+        # Assuming mean is 0 after mandatory centering, we focus on std
         std = norm_params["std"]
-        coords = (coords - torch.tensor(mean, dtype=torch.float32)) / torch.tensor(
-            std, dtype=torch.float32
-        )
+        coords = coords / torch.tensor(std, dtype=torch.float32)
 
-    if center_pocket:
-        if verbose:
-            print("Centering pocket coordinates to the origin...")
-        centroid = coords.mean(dim=0, keepdim=True)
-        coords = coords - centroid
     # Rename tensors for the pocket Data object
     pocket_data = Data(
         x_pocket=coords,
         h_pocket=h_pocket,
         # Use the batch index tensor, renaming to pocket context
         batch_pocket=batch_index,
+        original_centroid=centroid,  # Store in Angstroms
     )
 
     if save_path is not None:

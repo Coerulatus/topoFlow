@@ -166,7 +166,6 @@ def sample_for_pockets(
                 pdb_path,
                 atom_encoder=atom_encoder,
                 normalization_path=norm_path,
-                center_pocket=True,
                 verbose=False,
             )
 

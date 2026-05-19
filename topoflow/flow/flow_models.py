@@ -501,13 +501,14 @@ class FlowModel(pl.LightningModule):
         return x_lig, x_pocket
 
     @torch.no_grad()
-    def sample(self, n_samples, n_steps=20, pocket=None):
+    def sample(self, n_samples, n_steps=20, pocket=None, recenter=True):
         """Samples data by simulating the learned flow from the simple distribution.
 
         Args:
             n_samples: Number of samples to generate.
             n_steps: Number of integration steps for the simulator. Defaults to 20.
             pocket: Optional pocket data to condition the sampling.
+            recenter: If True, recenters the generated ligand to the pocket's original position. Defaults to True.
 
         Returns:
             The generated samples after simulating the flow.
@@ -541,6 +542,14 @@ class FlowModel(pl.LightningModule):
         h_pocket = output[is_poc, 3:]
         if self.unnorm:
             x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+
+        if recenter and pocket is not None and hasattr(pocket, "original_centroid"):
+            # Ensure centroids are on the correct device
+            centroids = pocket.original_centroid.to(x_lig.device)
+            # Add the pocket-specific centroid to every atom in that sample
+            x_lig = x_lig + centroids[batch_lig[is_lig]]
+            x_pocket = x_pocket + centroids[batch_pocket[is_poc]]
+
         data = Data(
             x_lig=x_lig,
             h_lig=h_lig,
@@ -554,7 +563,13 @@ class FlowModel(pl.LightningModule):
 
     @torch.no_grad()
     def sample_with_entropy(
-        self, n_samples, n_steps=20, pocket=None, entropy_times=None, n_atoms=None
+        self,
+        n_samples,
+        n_steps=20,
+        pocket=None,
+        entropy_times=None,
+        n_atoms=None,
+        recenter=True,
     ):
         """Samples data by simulating the learned flow and returns entropy at specified times.
 
@@ -564,6 +579,7 @@ class FlowModel(pl.LightningModule):
             pocket: Optional pocket data to condition the sampling.
             entropy_times: List of times at which to calculate the entropy.
             n_atoms: Optional number of atoms in the ligand to consider.
+            recenter: If True, recenters the generated ligand to the pocket's original position. Defaults to True.
 
         Returns:
             The generated samples after simulating the flow, and a dictionary of entropies.
@@ -630,6 +646,14 @@ class FlowModel(pl.LightningModule):
         h_pocket = last_output[is_poc, 3:]
         if self.unnorm:
             x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+
+        if recenter and pocket is not None and hasattr(pocket, "original_centroid"):
+            # Ensure centroids are on the correct device
+            centroids = pocket.original_centroid.to(x_lig.device)
+            # Add the pocket-specific centroid to every atom in that sample
+            x_lig = x_lig + centroids[batch_lig[is_lig]]
+            x_pocket = x_pocket + centroids[batch_pocket[is_poc]]
+
         data = Data(
             x_lig=x_lig,
             h_lig=h_lig,
@@ -649,6 +673,7 @@ class FlowModel(pl.LightningModule):
         max_attempts=10,
         pocket=None,
         n_atoms=None,
+        recenter=True,
     ):
         """Samples data by simulating the learned flow from the simple distribution and returns the trajectory.
 
@@ -659,6 +684,7 @@ class FlowModel(pl.LightningModule):
             max_attempts: Maximum number of attempts to generate a connected molecule. Defaults to 10.
             pocket: Optional pocket data to condition the sampling.
             n_atoms: Optional number of atoms in the ligand to consider.
+            recenter: If True, recenters the generated ligand to the pocket's original position. Defaults to True.
 
         Returns:
             The generated samples after simulating the flow, along with the trajectory.
@@ -772,6 +798,17 @@ class FlowModel(pl.LightningModule):
             h_pocket = output[is_poc, i, 3:]
             if self.unnorm:
                 x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+
+            if recenter and pocket is not None and hasattr(pocket, "original_centroid"):
+                centroids = pocket.original_centroid.to(x_lig.device)
+                # For trajectories, we need to handle batch replication if n_samples > 1
+                if centroids.shape[0] == 1 and n_samples > 1:
+                    x_lig = x_lig + centroids[0]
+                    x_pocket = x_pocket + centroids[0]
+                else:
+                    x_lig = x_lig + centroids[batch_lig[is_lig]]
+                    x_pocket = x_pocket + centroids[batch_pocket[is_poc]]
+
             data = Data(
                 batch_all=batch_all,
                 x_lig=x_lig,
@@ -794,6 +831,7 @@ class FlowModel(pl.LightningModule):
         n_steps=80,
         t_max_inpainting=1.0,
         force_scaffold=False,
+        recenter=True,
     ):
         """Performs inpainting by adding atoms to a given ligand within a pocket.
 
@@ -805,6 +843,7 @@ class FlowModel(pl.LightningModule):
             n_steps: Number of integration steps for the simulator. Defaults to 80.
             t_max_inpainting: Maximum time to consider inpainting. Defaults to 1.0.
             force_scaffold: If True, fixes the scaffold atoms to their original values.
+            recenter: If True, recenters the generated ligand to the pocket's original position. Defaults to True.
 
         Returns:
             The inpainted molecule after simulating the flow.
@@ -817,6 +856,7 @@ class FlowModel(pl.LightningModule):
             n_steps,
             t_max_inpainting,
             force_scaffold,
+            recenter=recenter,
         )
         return trajectory[-1]
 
@@ -830,6 +870,7 @@ class FlowModel(pl.LightningModule):
         n_steps=80,
         t_max_inpainting=1.0,
         force_scaffold=False,
+        recenter=True,
     ):
         """Performs inpainting and returns the full trajectory.
 
@@ -841,6 +882,7 @@ class FlowModel(pl.LightningModule):
             n_steps: Number of integration steps for the simulator. Defaults to 80.
             t_max_inpainting: Maximum time to consider inpainting. Defaults to 1.0.
             force_scaffold: If True, fixes the scaffold atoms to their original values.
+            recenter: If True, recenters the generated ligand to the pocket's original position. Defaults to True.
 
         Returns:
             List of Data objects representing the trajectory.
@@ -1000,6 +1042,15 @@ class FlowModel(pl.LightningModule):
             h_pocket = output[is_poc, i, 3:]
             if self.unnorm:
                 x_lig, x_pocket = self.unnorm_x(x_lig, x_pocket)
+
+            if recenter and pocket is not None and hasattr(pocket, "original_centroid"):
+                centroids = pocket.original_centroid.to(x_lig.device)
+                if centroids.shape[0] == 1 and batch_size > 1:
+                    x_lig = x_lig + centroids[0]
+                    x_pocket = x_pocket + centroids[0]
+                else:
+                    x_lig = x_lig + centroids[batch_lig[is_lig]]
+                    x_pocket = x_pocket + centroids[batch_pocket_new[is_poc]]
 
             data = Data(
                 x_lig=x_lig,

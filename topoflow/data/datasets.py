@@ -37,7 +37,6 @@ class CrossDocked(InMemoryDataset):
         ca_only: bool = False,
         distance_cutoff: float = 8.0,
         normalize_coords: bool = True,
-        center_pocket: bool = True,
         random_seed: int = 42,
     ):
         """Initialize the CrossDocked dataset.
@@ -54,7 +53,6 @@ class CrossDocked(InMemoryDataset):
             ca_only (bool): If True, only process C-alpha atoms in the protein pockets.
             distance_cutoff (float): Distance cutoff for processing ligand-pocket interactions.
             normalize_coords (bool): If True, normalize the coordinates of the ligands and pockets.
-            center_pocket (bool): If True, center the pocket coordinates around the origin.
             random_seed (int): Random seed for reproducibility.
         """
         self.split = split
@@ -63,7 +61,6 @@ class CrossDocked(InMemoryDataset):
         self.ca_only = ca_only
         self.distance_cutoff = distance_cutoff
         self.normalize_coords = normalize_coords
-        self.center_pocket = center_pocket
         self.random_seed = random_seed
 
         super().__init__(root, transform, pre_transform)
@@ -149,6 +146,7 @@ class CrossDocked(InMemoryDataset):
             pocket_coords_list = []
             pocket_one_hot_list = []
             pocket_mask_list = []
+            pocket_centroids_list = []
             pdb_and_mol_ids_list = []
             count = 0
 
@@ -229,12 +227,11 @@ class CrossDocked(InMemoryDataset):
                 ) and len(pocket_data["pocket_coords"]) == len(
                     pocket_data["pocket_one_hot"]
                 ):
-                    if self.center_pocket:
-                        # Center the pocket coordinates around the origin
-                        pocket_coords = pocket_data["pocket_coords"]
-                        mean_pocket = np.mean(pocket_coords, axis=0)
-                        pocket_data["pocket_coords"] -= mean_pocket
-                        ligand_data["lig_coords"] -= mean_pocket
+                    pocket_coords = pocket_data["pocket_coords"]
+                    mean_pocket = np.mean(pocket_coords, axis=0)
+                    pocket_data["pocket_coords"] -= mean_pocket
+                    ligand_data["lig_coords"] -= mean_pocket
+
                     pdb_and_mol_ids_list.append(f"{pocket_fn_rel}_{ligand_fn_rel}")
                     lig_coords_list.append(ligand_data["lig_coords"])
                     lig_one_hot_list.append(ligand_data["lig_one_hot"])
@@ -246,6 +243,7 @@ class CrossDocked(InMemoryDataset):
                     pocket_mask_list.append(
                         count * np.ones(len(pocket_data["pocket_coords"]))
                     )
+                    pocket_centroids_list.append(mean_pocket)
                     count += 1
                 else:
                     print(
@@ -281,6 +279,7 @@ class CrossDocked(InMemoryDataset):
                 pocket_coords = np.concatenate(pocket_coords_list, axis=0)
                 pocket_one_hot = np.concatenate(pocket_one_hot_list, axis=0)
                 pocket_mask = np.concatenate(pocket_mask_list, axis=0)
+                pocket_centroids = np.stack(pocket_centroids_list, axis=0)
                 saveall(
                     target_file,
                     pdb_and_mol_ids_list,
@@ -290,6 +289,7 @@ class CrossDocked(InMemoryDataset):
                     pocket_coords,
                     pocket_one_hot,
                     pocket_mask,
+                    pocket_centroids,
                 )
             else:
                 print(
@@ -330,6 +330,7 @@ class CrossDocked(InMemoryDataset):
         pocket_coords_all = loaded_data["pocket_coords"]
         pocket_one_hot_all = loaded_data["pocket_one_hot"]
         pocket_mask_all = loaded_data["pocket_mask"]
+        pocket_centroids_all = loaded_data["pocket_centroids"]
 
         unique_sample_ids = np.unique(lig_mask_all)
 
@@ -416,6 +417,12 @@ class CrossDocked(InMemoryDataset):
             ).float()
             batch_pocket = torch.zeros(len(pocket_indices), dtype=torch.long)
 
+            # Retrieve the original centroid for this sample
+            # sample_idx should correspond to the index in pocket_centroids_all
+            original_centroid = torch.from_numpy(
+                pocket_centroids_all[int(sample_idx)]
+            ).float()
+
             data = Data(
                 h_lig=lig_one_hot,
                 x_lig=lig_coords,
@@ -423,6 +430,7 @@ class CrossDocked(InMemoryDataset):
                 h_pocket=pocket_one_hot,
                 x_pocket=pocket_coords,
                 batch_pocket=batch_pocket,
+                original_centroid=original_centroid.unsqueeze(0),  # (1, 3)
             )
             data_list.append(data)
         print(

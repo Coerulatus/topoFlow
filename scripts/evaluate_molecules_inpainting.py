@@ -329,7 +329,6 @@ if __name__ == "__main__":
                 atom_encoder=ATOM_ENCODER,
                 save_path=args.pocket_data_path,
                 normalization_path=None,
-                center_pocket=False,
                 force=True,  # Set to True if you need to re-parse the PDB
             )
 
