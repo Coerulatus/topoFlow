@@ -35,7 +35,7 @@ from topoflow.flow.schedulers import LinearAlpha, LinearBeta, CosineAlpha, Cosin
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.vector_field_models import (
     MLPVectorField,
-    TransformerVectorFieldLigand,
+    TransformerVectorFieldOld,
     GATVectorField,
     AllSetTransformerVectorField,
     TransformerDistanceVectorField,
@@ -72,6 +72,7 @@ def train_flow_model(
     run_name=None,
     previous_checkpoint=None,
     skip_validation=False,
+    use_geometric_ast=False,
 ):
     """Train a Topological Flow model on the specified dataset.
 
@@ -100,6 +101,7 @@ def train_flow_model(
         run_name (str, optional): Name of the MLflow run. Defaults to None.
         previous_checkpoint (str, optional): Path to a checkpoint to resume training from. Defaults to None.
         skip_validation (bool, optional): Whether to skip validation during training. Defaults to False.
+        use_geometric_ast (bool, optional): Whether to use geometric AllSet Transformer. Defaults to False.
     """
     pl.seed_everything(seed)  # For reproducibility
     # ======================================================================
@@ -168,7 +170,7 @@ def train_flow_model(
     # Model Initialization
     # ======================================================================
     if vector_field_model == "transformer":
-        vector_field = TransformerVectorFieldLigand(
+        vector_field = TransformerVectorFieldOld(
             h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.1
         )
     elif vector_field_model == "mlp":
@@ -195,6 +197,7 @@ def train_flow_model(
             dropout=0.1,
             add_time_to="ligand",  # "ligand", "both", or "none"
             use_gat=False,
+            use_geometric_ast=use_geometric_ast,
         )
     elif vector_field_model == "ast_gat":
         vector_field = AllSetTransformerVectorField(
@@ -204,6 +207,7 @@ def train_flow_model(
             dropout=0.1,
             add_time_to="ligand",  # "ligand", "both", or "none"
             use_gat=True,
+            use_geometric_ast=use_geometric_ast,
         )
     elif vector_field_model == "distance_transformer":
         vector_field = TransformerDistanceVectorField(
@@ -423,6 +427,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to skip validation during training.",
     )
+    parser.add_argument(
+        "--use_geometric_ast",
+        action="store_true",
+        help="Whether to use geometric AllSet Transformer.",
+    )
     args = parser.parse_args()
 
     train_flow_model(
@@ -450,4 +459,5 @@ if __name__ == "__main__":
         run_name=args.run_name if args.run_name else None,
         previous_checkpoint=args.previous_checkpoint,
         skip_validation=args.skip_validation,
+        use_geometric_ast=args.use_geometric_ast,
     )
