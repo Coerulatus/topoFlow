@@ -75,25 +75,26 @@ def add_ligands_to_hyperedges(row_radius, col_radius, n_lig):
 
 
 class SinusoidalPositionalEmbedding(nn.Module):
-    """Sinusoidal positional embedding for time variables."""
+    """Sinusoidal positional embedding for temporal conditioning."""
 
-    def __init__(self, dim: int, max_period: int = 10000):
+    def __init__(self, dim: int, max_period: int = 10000, time_scale: float = 1000.0):
         """Initialize the sinusoidal positional embedding."""
         super().__init__()
         self.dim = dim
-        self.max_period = max_period
-
-    def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
-        """Compute the sinusoidal positional embedding for the given timesteps."""
+        self.time_scale = time_scale
         half_dim = self.dim // 2
         frequencies = torch.exp(
-            -math.log(self.max_period)
-            * torch.arange(
-                start=0, end=half_dim, dtype=torch.float32, device=timesteps.device
-            )
+            -math.log(max_period)
+            * torch.arange(start=0, end=half_dim, dtype=torch.float32)
             / half_dim
         )
-        args = timesteps[:, None].float() * frequencies[None, :]
+        self.register_buffer("frequencies", frequencies)
+
+    def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """Forward pass."""
+        args = (timesteps[:, None].float() * self.time_scale) * self.frequencies[
+            None, :
+        ]
         embedding = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
         if self.dim % 2 == 1:
             embedding = F.pad(embedding, (0, 1))
@@ -114,91 +115,6 @@ class AdvancedTimeEmbedding(nn.Module):
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """Compute the advanced time embedding for the given timesteps."""
         return self.net(self.sin_embed(t))
-
-
-def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int) -> torch.Tensor:
-    """Broadcasts src to the shape of other."""
-    if dim < 0:
-        dim = other.dim() + dim
-    if src.dim() == 1:
-        for _ in range(dim):
-            src = src.unsqueeze(0)
-    for _ in range(src.dim(), other.dim()):
-        src = src.unsqueeze(-1)
-    return src.expand(other.size())
-
-
-def scatter_sum(
-    src: torch.Tensor,
-    index: torch.Tensor,
-    dim: int = -1,
-    out: torch.Tensor | None = None,
-    dim_size: int | None = None,
-) -> torch.Tensor:
-    """Add all values from the src tensor into out at the indices."""
-    index = broadcast(index, src, dim)
-    if out is None:
-        size = list(src.size())
-        if dim_size is not None:
-            size[dim] = dim_size
-        elif index.numel() == 0:
-            size[dim] = 0
-        else:
-            size[dim] = int(index.max()) + 1
-        out = torch.zeros(size, dtype=src.dtype, device=src.device)
-        return out.scatter_add_(dim, index, src)
-
-    return out.scatter_add_(dim, index, src)
-
-
-def scatter_add(
-    src: torch.Tensor,
-    index: torch.Tensor,
-    dim: int = -1,
-    out: torch.Tensor | None = None,
-    dim_size: int | None = None,
-) -> torch.Tensor:
-    """Add all values from the src tensor into out at the indices."""
-    return scatter_sum(src, index, dim, out, dim_size)
-
-
-def scatter_mean(
-    src: torch.Tensor,
-    index: torch.Tensor,
-    dim: int = -1,
-    out: torch.Tensor | None = None,
-    dim_size: int | None = None,
-) -> torch.Tensor:
-    """Compute the mean value of all values from the src tensor into out."""
-    out = scatter_sum(src, index, dim, out, dim_size)
-    dim_size = out.size(dim)
-
-    index_dim = dim
-    if index_dim < 0:
-        index_dim = index_dim + src.dim()
-    if index.dim() <= index_dim:
-        index_dim = index.dim() - 1
-
-    ones = torch.ones(index.size(), dtype=src.dtype, device=src.device)
-    count = scatter_sum(ones, index, index_dim, None, dim_size)
-    count[count < 1] = 1
-    count = broadcast(count, out, dim)
-    if out.is_floating_point():
-        out.true_divide_(count)
-    else:
-        out.div_(count, rounding_mode="floor")
-    return out
-
-
-SCATTER_DICT = {"sum": scatter_sum, "mean": scatter_mean, "add": scatter_sum}
-
-
-def scatter(scatter: str):
-    """Return the scatter function."""
-    if scatter not in SCATTER_DICT:
-        raise ValueError(f"scatter must be string: {list(SCATTER_DICT.keys())}")
-
-    return SCATTER_DICT[scatter]
 
 
 class MessagePassing(torch.nn.Module):
@@ -276,23 +192,20 @@ class MessagePassing(torch.nn.Module):
 
     def aggregate(self, x_message):
         """Aggregate messages on each target cell."""
-        aggr = scatter(self.aggr_func)
-        return aggr(x_message, self.target_index_i, 0)
+        return pyg_scatter(x_message, self.target_index_i, dim=0, reduce=self.aggr_func)
 
-    def forward(self, x_source, neighborhood, x_target=None):
+    def forward(self, x_source, edge_index, x_target=None):
         r"""Forward pass."""
-        neighborhood = neighborhood.coalesce()
-        self.target_index_i, self.source_index_j = neighborhood.indices()
-        neighborhood_values = neighborhood.values()
+        self.target_index_i = edge_index[0]
+        self.source_index_j = edge_index[1]
 
         x_message = self.message(x_source=x_source, x_target=x_target)
         x_message = x_message.index_select(-2, self.source_index_j)
 
         if self.att:
             attention_values = self.attention(x_source=x_source, x_target=x_target)
-            neighborhood_values = torch.multiply(neighborhood_values, attention_values)
+            x_message = attention_values.view(-1, 1) * x_message
 
-        x_message = neighborhood_values.view(-1, 1) * x_message
         return self.aggregate(x_message)
 
 
@@ -360,36 +273,32 @@ class AllSetTransformerLayer(nn.Module):
     def forward(
         self,
         x_0,
-        incidence_1,
+        edge_index_v2e,
+        edge_index_e2v,
         t_emb=None,
         batch_all=None,
         batch_he=None,
         return_stats=False,
     ):
-        r"""Forward computation."""
-        if x_0.shape[-2] != incidence_1.shape[-2]:
-            raise ValueError(
-                f"Shape of incidence matrix ({incidence_1.shape}) does not have the correct number of nodes ({x_0.shape[0]})."
-            )
-
+        """Forward computation."""
         if return_stats:
             x_1, stats = self.vertex2edge(
                 x_0,
-                incidence_1.transpose(1, 0),
+                edge_index_v2e,
                 t_emb=t_emb,
                 batch_target=batch_he,
                 return_stats=True,
             )
         else:
             x_1 = self.vertex2edge(
-                x_0, incidence_1.transpose(1, 0), t_emb=t_emb, batch_target=batch_he
+                x_0, edge_index_v2e, t_emb=t_emb, batch_target=batch_he
             )
 
         x_1 = F.relu(x_1)
         x_1 = F.dropout(x_1, p=self.dropout, training=self.training)
 
         x_0 = F.relu(
-            self.edge2vertex(x_1, incidence_1, t_emb=t_emb, batch_target=batch_all)
+            self.edge2vertex(x_1, edge_index_e2v, t_emb=t_emb, batch_target=batch_all)
         )
         x_0 = F.dropout(x_0, p=self.dropout, training=self.training)
 
@@ -457,24 +366,21 @@ class AllSetTransformerBlock(nn.Module):
             self.mlp.reset_parameters()
 
     def forward(
-        self, x_source, neighborhood, t_emb=None, batch_target=None, return_stats=False
+        self, x_source, edge_index, t_emb=None, batch_target=None, return_stats=False
     ):
         """Forward computation."""
-        neighborhood = neighborhood.coalesce()
-        self.target_index_i, self.source_index_j = neighborhood.indices()
+        self.target_index_i = edge_index[0]
+        self.source_index_j = edge_index[1]
 
         if return_stats:
             x_message_on_target, stats = self.multihead_att(
-                x_source, neighborhood, return_stats=True
+                x_source, edge_index, return_stats=True
             )
         else:
-            x_message_on_target = self.multihead_att(x_source, neighborhood)
+            x_message_on_target = self.multihead_att(x_source, edge_index)
 
-        x_message_on_target = x_message_on_target + self.multihead_att.Q_weight.permute(
-            1, 0, 2
-        )
-        x_message_on_target = x_message_on_target.unsqueeze(2)
-        x_message_on_target = x_message_on_target.permute(0, 2, 1, 3)
+        q_weight = self.multihead_att.Q_weight.permute(1, 0, 2).unsqueeze(0)
+        x_message_on_target = x_message_on_target.unsqueeze(1) + q_weight
 
         x_message_on_target = x_message_on_target.reshape(
             -1, self.number_queries, self.hidden_channels
@@ -553,7 +459,7 @@ class MultiHeadAttention(MessagePassing):
                 "Should be either xavier_uniform or xavier_normal."
             )
 
-    def attention(self, x_source, neighborhood):
+    def attention(self, x_source, edge_index):
         """Compute attention weights for messages without entropy calculation."""
         x_K = torch.matmul(x_source, self.K_weight)
         alpha = torch.einsum("hsd,hqd->hsq", x_K, self.Q_weight)
@@ -570,7 +476,7 @@ class MultiHeadAttention(MessagePassing):
 
         return attn_weights
 
-    def attention_with_entropy(self, x_source, neighborhood):
+    def attention_with_entropy(self, x_source, edge_index):
         """Compute attention and calculate entropy per hyperedge."""
         x_K = torch.matmul(x_source, self.K_weight)
         alpha = torch.einsum("hsd,hqd->hsq", x_K, self.Q_weight)
@@ -603,17 +509,17 @@ class MultiHeadAttention(MessagePassing):
 
         return attn_weights, norm_entropy, card_msg
 
-    def forward(self, x_source, neighborhood, return_stats=False):
+    def forward(self, x_source, edge_index, return_stats=False):
         """Forward pass."""
-        neighborhood = neighborhood.coalesce()
-        self.target_index_i, self.source_index_j = neighborhood.indices()
+        self.target_index_i = edge_index[0]
+        self.source_index_j = edge_index[1]
 
         if return_stats:
             attn_weights, entropy, cardinality = self.attention_with_entropy(
-                x_source, neighborhood
+                x_source, edge_index
             )
         else:
-            attn_weights = self.attention(x_source, neighborhood)
+            attn_weights = self.attention(x_source, edge_index)
 
         x_message = torch.matmul(x_source, self.V_weight)
         x_message = x_message.permute(1, 0, 2)[
@@ -659,7 +565,8 @@ class AllSetTransformer(torch.nn.Module):
     def forward(
         self,
         x_0,
-        incidence_1,
+        edge_index_v2e,
+        edge_index_e2v,
         t_emb=None,
         batch_all=None,
         batch_he=None,
@@ -670,7 +577,8 @@ class AllSetTransformer(torch.nn.Module):
             if return_stats and i == len(self.layers) - 1:
                 x_0, x_1, stats = layer(
                     x_0,
-                    incidence_1,
+                    edge_index_v2e,
+                    edge_index_e2v,
                     t_emb=t_emb,
                     batch_all=batch_all,
                     batch_he=batch_he,
@@ -679,7 +587,8 @@ class AllSetTransformer(torch.nn.Module):
             else:
                 x_0, x_1 = layer(
                     x_0,
-                    incidence_1,
+                    edge_index_v2e,
+                    edge_index_e2v,
                     t_emb=t_emb,
                     batch_all=batch_all,
                     batch_he=batch_he,
@@ -732,8 +641,7 @@ class GeometricMessagePassing(torch.nn.Module):
 
     def aggregate(self, x_message):
         """Aggregate messages on each target cell."""
-        aggr = scatter(self.aggr_func)
-        return aggr(x_message, self.target_index_i, 0)
+        return pyg_scatter(x_message, self.target_index_i, dim=0, reduce=self.aggr_func)
 
     def forward(self, x_source, edge_index, edge_attr=None, x_target=None):
         r"""Forward pass."""
@@ -990,11 +898,8 @@ class GeometricAllSetTransformerBlock(nn.Module):
         else:
             x_message_on_target = self.multihead_att(x_source, edge_index, edge_attr)
 
-        x_message_on_target = x_message_on_target + self.multihead_att.Q_weight.permute(
-            1, 0, 2
-        )
-        x_message_on_target = x_message_on_target.unsqueeze(2)
-        x_message_on_target = x_message_on_target.permute(0, 2, 1, 3)
+        q_weight = self.multihead_att.Q_weight.permute(1, 0, 2).unsqueeze(0)
+        x_message_on_target = x_message_on_target.unsqueeze(1) + q_weight
 
         x_message_on_target = x_message_on_target.reshape(
             -1, self.number_queries, self.hidden_channels
@@ -1351,13 +1256,6 @@ class AllSetTransformerVectorField(nn.Module):
             loop=False,
             max_num_neighbors=1000,
         )
-        edge_pp = radius_graph(
-            poc_pos,
-            r=self.cutoff_poc,
-            batch=batch_pocket,
-            loop=False,
-            max_num_neighbors=1000,
-        )
 
         edge_lp = radius(
             poc_pos,
@@ -1368,11 +1266,25 @@ class AllSetTransformerVectorField(nn.Module):
             max_num_neighbors=1000,
         )
 
-        edge_pp_global = edge_pp + N1
-        edge_lp_global = torch.stack([edge_lp[0], edge_lp[1] + N1], dim=0)
+        if not self.use_gat:
+            return edge_ll, edge_lp, None
 
-        edge_index = torch.cat([edge_ll, edge_pp_global, edge_lp_global], dim=1)
-        edge_index = to_undirected(edge_index, num_nodes=N1 + N2)
+        edge_pp = radius_graph(
+            poc_pos,
+            r=self.cutoff_poc,
+            batch=batch_pocket,
+            loop=False,
+            max_num_neighbors=1000,
+        )
+
+        edge_pp_global = edge_pp + N1
+
+        edge_lp_global = torch.stack([edge_lp[0], edge_lp[1] + N1], dim=0)
+        edge_pl_global = torch.stack([edge_lp[1] + N1, edge_lp[0]], dim=0)
+
+        edge_index = torch.cat(
+            [edge_ll, edge_pp_global, edge_lp_global, edge_pl_global], dim=1
+        )
 
         return edge_ll, edge_lp, edge_index
 
@@ -1419,10 +1331,14 @@ class AllSetTransformerVectorField(nn.Module):
                 [edge_attr_v2e[:, :1], -edge_attr_v2e[:, 1:]], dim=-1
             )
         else:
-            incidence1, gat_edge_index, edge_types, batch_he = (
-                self.create_incidence_with_types(
-                    x_lig, x_pocket, batch_lig, batch_pocket
-                )
+            (
+                edge_index_v2e,
+                edge_index_e2v,
+                gat_edge_index,
+                edge_types,
+                batch_he,
+            ) = self.create_incidence_with_types(
+                x_lig, x_pocket, batch_lig, batch_pocket
             )
 
         h = torch.cat([lig_h, poc_h], dim=0)
@@ -1455,7 +1371,8 @@ class AllSetTransformerVectorField(nn.Module):
             if return_diagnostics:
                 h_ast, _, stats = self.model(
                     h,
-                    incidence1,
+                    edge_index_v2e,
+                    edge_index_e2v,
                     t_emb=layer_t_emb,
                     batch_all=batch_all,
                     batch_he=batch_he,
@@ -1464,7 +1381,8 @@ class AllSetTransformerVectorField(nn.Module):
             else:
                 h_ast, _ = self.model(
                     h,
-                    incidence1,
+                    edge_index_v2e,
+                    edge_index_e2v,
                     t_emb=layer_t_emb,
                     batch_all=batch_all,
                     batch_he=batch_he,
@@ -1509,11 +1427,10 @@ class AllSetTransformerVectorField(nn.Module):
         return {"per_cardinality": diag_dict, "summary": summary_stats}
 
     def create_incidence_with_types(self, x_lig, x_pocket, batch_lig, batch_pocket):
-        """Create hyperedges and track their semantic types."""
+        """Create hyperedges, track their semantic types, and construct incidence matrices for GAT."""
         device = x_lig.device
         n_lig = x_lig.shape[0]
         n_poc = x_pocket.shape[0]
-        n_nodes = n_lig + n_poc
 
         row_list = []
         col_list = []
@@ -1524,26 +1441,22 @@ class AllSetTransformerVectorField(nn.Module):
         is_lig = batch_lig != -1
         is_poc = batch_pocket != -1
 
-        valid_lig_batches = torch.unique(batch_lig)
-        non_zeros_lig = (
-            batch_lig.unsqueeze(1) == valid_lig_batches.unsqueeze(0)
-        ).nonzero(as_tuple=False)
-
-        row_list.append(non_zeros_lig[:, 0])
-        col_list.append(non_zeros_lig[:, 1] + current_hyperedge_id)
+        valid_lig_batches, batch_lig_inverse = torch.unique(
+            batch_lig, return_inverse=True
+        )
+        row_list.append(torch.arange(n_lig, device=device))
+        col_list.append(batch_lig_inverse + current_hyperedge_id)
 
         num_global_lig = valid_lig_batches.size(0)
         type_list.append(torch.full((num_global_lig,), 0, device=device))
         he_batches.append(valid_lig_batches)
         current_hyperedge_id += num_global_lig
 
-        valid_poc_batches = torch.unique(batch_pocket)
-        non_zeros_poc = (
-            batch_pocket.unsqueeze(1) == valid_poc_batches.unsqueeze(0)
-        ).nonzero(as_tuple=False)
-
-        row_list.append(non_zeros_poc[:, 0] + n_lig)
-        col_list.append(non_zeros_poc[:, 1] + current_hyperedge_id)
+        valid_poc_batches, batch_poc_inverse = torch.unique(
+            batch_pocket, return_inverse=True
+        )
+        row_list.append(torch.arange(n_poc, device=device) + n_lig)
+        col_list.append(batch_poc_inverse + current_hyperedge_id)
 
         num_global_poc = valid_poc_batches.size(0)
         type_list.append(torch.full((num_global_poc,), 1, device=device))
@@ -1572,22 +1485,16 @@ class AllSetTransformerVectorField(nn.Module):
         final_types = torch.cat(type_list, dim=0)
         final_batch_he = torch.cat(he_batches, dim=0)
 
-        value = torch.ones(final_rows.size(0), dtype=torch.long, device=device)
-        incidence1 = torch.sparse_coo_tensor(
-            torch.stack([final_rows, final_cols], dim=0),
-            value,
-            (n_nodes, current_hyperedge_id),
-            device=device,
-        )
+        edge_index_v2e = torch.stack([final_cols, final_rows], dim=0)
+        edge_index_e2v = torch.stack([final_rows, final_cols], dim=0)
 
-        return incidence1.coalesce(), edge_index, final_types, final_batch_he
+        return edge_index_v2e, edge_index_e2v, edge_index, final_types, final_batch_he
 
     def create_geometric_incidence(self, x_lig, x_pocket, batch_lig, batch_pocket):
         """Create hyperedges, track their semantic types, and extract geometric bipartite attributes."""
         device = x_lig.device
         n_lig = x_lig.shape[0]
         n_poc = x_pocket.shape[0]
-        n_nodes = n_lig + n_poc
 
         row_list = []
         col_list = []
@@ -1601,26 +1508,22 @@ class AllSetTransformerVectorField(nn.Module):
         lig_pos = x_lig[:, :3]
         poc_pos = x_pocket[:, :3]
 
-        valid_lig_batches = torch.unique(batch_lig)
-        non_zeros_lig = (
-            batch_lig.unsqueeze(1) == valid_lig_batches.unsqueeze(0)
-        ).nonzero(as_tuple=False)
-
-        row_list.append(non_zeros_lig[:, 0])
-        col_list.append(non_zeros_lig[:, 1] + current_hyperedge_id)
+        valid_lig_batches, batch_lig_inverse = torch.unique(
+            batch_lig, return_inverse=True
+        )
+        row_list.append(torch.arange(n_lig, device=device))
+        col_list.append(batch_lig_inverse + current_hyperedge_id)
 
         num_global_lig = valid_lig_batches.size(0)
         type_list.append(torch.full((num_global_lig,), 0, device=device))
         he_batches.append(valid_lig_batches)
         current_hyperedge_id += num_global_lig
 
-        valid_poc_batches = torch.unique(batch_pocket)
-        non_zeros_poc = (
-            batch_pocket.unsqueeze(1) == valid_poc_batches.unsqueeze(0)
-        ).nonzero(as_tuple=False)
-
-        row_list.append(non_zeros_poc[:, 0] + n_lig)
-        col_list.append(non_zeros_poc[:, 1] + current_hyperedge_id)
+        valid_poc_batches, batch_poc_inverse = torch.unique(
+            batch_pocket, return_inverse=True
+        )
+        row_list.append(torch.arange(n_poc, device=device) + n_lig)
+        col_list.append(batch_poc_inverse + current_hyperedge_id)
 
         num_global_poc = valid_poc_batches.size(0)
         type_list.append(torch.full((num_global_poc,), 1, device=device))
@@ -1650,15 +1553,14 @@ class AllSetTransformerVectorField(nn.Module):
         final_batch_he = torch.cat(he_batches, dim=0)
 
         center_pos = torch.zeros((current_hyperedge_id, 3), device=device)
+        center_pos[:num_global_lig] = pyg_scatter(
+            lig_pos, batch_lig_inverse, dim=0, reduce="mean"
+        )
+        center_pos[num_global_lig : num_global_lig + num_global_poc] = pyg_scatter(
+            poc_pos, batch_poc_inverse, dim=0, reduce="mean"
+        )
 
-        for i, b in enumerate(valid_lig_batches):
-            center_pos[i] = lig_pos[batch_lig == b].mean(dim=0)
-
-        offset = num_global_lig
-        for i, b in enumerate(valid_poc_batches):
-            center_pos[i + offset] = poc_pos[batch_pocket == b].mean(dim=0)
-
-        offset += num_global_poc
+        offset = num_global_lig + num_global_poc
         center_pos[offset : offset + n_lig] = lig_pos
 
         pos_all = torch.cat([lig_pos, poc_pos], dim=0)
