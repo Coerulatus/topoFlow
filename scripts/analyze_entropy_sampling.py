@@ -146,7 +146,9 @@ def main():
         3: "Local Radius/Cross",
     }
 
-    for t, diag in entropies.items():
+    for t, diag_full in entropies.items():
+        # diag_full is {"per_cardinality": diag, "summary": summary}
+        diag = diag_full["per_cardinality"]
         # diag is {cardinality: [{'entropy': float, 'type': int}, ...]}
         data_list = []
         for card, items in diag.items():

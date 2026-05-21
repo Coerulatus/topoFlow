@@ -206,7 +206,7 @@ class FlowModel(pl.LightningModule):
             "u_t_ref": u_t_ref,
         }
 
-    def forward(self, batch):
+    def forward(self, batch, return_diagnostics=False):
         """Forward pass for the FlowModel.
 
         Samples from the path, computes the reference vector field, and predicts
@@ -214,12 +214,15 @@ class FlowModel(pl.LightningModule):
 
         Args:
             batch: The input batch of data.
+            return_diagnostics: Whether to return diagnostics from the vector field model.
 
         Returns:
             A tuple containing:
                 - u_t_theta_lig: The predicted ligand vector field by the model.
                 - u_t_ref_lig: The reference ligand vector field from the path.
                 - t_batched_lig: The time values corresponding to ligand atoms.
+                - x_lig: The ligand coordinates.
+                - diagnostics: (Optional) Diagnostics from the model.
         """
         batch_all = batch.get("batch_all")
         batch_lig = batch.get("batch_lig")
@@ -237,12 +240,20 @@ class FlowModel(pl.LightningModule):
         u_t_ref_lig = u_t_ref[lig_indices, :]
         x_pocket = x[pocket_indices, :]
 
-        u_t_theta_lig = self.vector_field_model(
-            x_lig, t, x_pocket, batch_lig, batch_pocket
-        )
+        diagnostics = None
+        if return_diagnostics and hasattr(
+            self.vector_field_model, "format_diagnostics"
+        ):
+            u_t_theta_lig, diagnostics = self.vector_field_model(
+                x_lig, t, x_pocket, batch_lig, batch_pocket, return_diagnostics=True
+            )
+        else:
+            u_t_theta_lig = self.vector_field_model(
+                x_lig, t, x_pocket, batch_lig, batch_pocket
+            )
 
         t_batched_lig = t_batched[lig_indices]
-        return u_t_theta_lig, u_t_ref_lig, t_batched_lig, x_lig
+        return u_t_theta_lig, u_t_ref_lig, t_batched_lig, x_lig, diagnostics
 
     def training_step(self, batch, batch_idx):
         """Performs a single training step.
@@ -259,7 +270,7 @@ class FlowModel(pl.LightningModule):
         batch = self._get_data(batch)
         batch_lig = batch["batch_lig"]
         batch_lig = batch_lig[batch_lig != -1]
-        u_t_theta, u_t_ref, t, x_lig = self.forward(batch)
+        u_t_theta, u_t_ref, t, x_lig, _ = self.forward(batch)
         losses = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig, verbose=False)
 
         for name, value in losses.items():
@@ -289,7 +300,13 @@ class FlowModel(pl.LightningModule):
         batch = self._get_data(batch)
         batch_lig = batch["batch_lig"]
         batch_lig = batch_lig[batch_lig != -1]
-        u_t_theta, u_t_ref, t, x_lig = self.forward(batch)
+
+        # Log diagnostics only for the first batch to avoid clutter and overhead
+        return_diagnostics = batch_idx == 0
+
+        u_t_theta, u_t_ref, t, x_lig, diagnostics = self.forward(
+            batch, return_diagnostics=return_diagnostics
+        )
         losses = self._get_loss(u_t_theta, u_t_ref, t, x_lig, batch_lig)
 
         self.log("val/loss", losses["loss"], on_epoch=True, prog_bar=False)
@@ -299,6 +316,21 @@ class FlowModel(pl.LightningModule):
             on_epoch=True,
             prog_bar=False,
         )
+
+        if diagnostics is not None and "summary" in diagnostics:
+            summary = diagnostics["summary"]
+            self.log(
+                "val/mean_entropy",
+                summary["mean_entropy"],
+                on_epoch=True,
+                prog_bar=False,
+            )
+            self.log(
+                "val/max_entropy", summary["max_entropy"], on_epoch=True, prog_bar=False
+            )
+            self.log(
+                "val/min_entropy", summary["min_entropy"], on_epoch=True, prog_bar=False
+            )
 
         if (
             self.val_distribution is not None

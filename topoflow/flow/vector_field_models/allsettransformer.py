@@ -1194,7 +1194,7 @@ class AllSetTransformerVectorField(nn.Module):
         return vel_lig
 
     def format_diagnostics(self, stats, edge_types):
-        """Organizes entropy by cardinality."""
+        """Organizes entropy by cardinality and returns summary statistics."""
         entropy = stats["entropy"].mean(dim=-1).cpu()  # Average across heads
         cards = stats["cardinality"].cpu().int()
         types = edge_types.cpu()
@@ -1205,7 +1205,15 @@ class AllSetTransformerVectorField(nn.Module):
             if c not in diag_dict:
                 diag_dict[c] = []
             diag_dict[c].append({"entropy": entropy[i].item(), "type": types[i].item()})
-        return diag_dict
+
+        # Summary statistics over all hyperedges
+        summary_stats = {
+            "mean_entropy": entropy.mean().item(),
+            "max_entropy": entropy.max().item(),
+            "min_entropy": entropy.min().item(),
+        }
+
+        return {"per_cardinality": diag_dict, "summary": summary_stats}
 
     def create_incidence_with_types(self, x_lig, x_pocket, batch_lig, batch_pocket):
         """Create hyperedges and track their semantic types."""
