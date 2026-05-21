@@ -43,6 +43,7 @@ class FlowModel(pl.LightningModule):
         evaluator=None,
         n_val_samples=0,
         max_batched_samples=16,
+        num_workers=8,
         val_distribution=None,
         sample_every=1,
         atom_decoder=None,
@@ -70,6 +71,7 @@ class FlowModel(pl.LightningModule):
                 Defaults to 0.
             max_batched_samples: Maximum number of samples to process in a single batch.
                 Defaults to 16.
+            num_workers: Number of parallel workers to use for scoring generated samples during validation. Defaults to 8.
             val_distribution: The expected distribution of metrics for validation.
             sample_every: Frequency of sampling during validation. Defaults to 1.
             atom_decoder: Optional atom decoder for converting samples to RDKit molecules.
@@ -97,6 +99,7 @@ class FlowModel(pl.LightningModule):
             self.unguided_label = None
         self.val_samples = []
         self.n_val_samples = n_val_samples
+        self.num_workers = num_workers
         self.val_distribution = val_distribution
         self.atom_decoder = atom_decoder
         self.loss_function = torch.nn.MSELoss(reduction="none")
@@ -399,8 +402,16 @@ class FlowModel(pl.LightningModule):
         n_batches = (
             num_samples + self.max_batched_samples - 1
         ) // self.max_batched_samples
+
         mols = []
         pyg_mols = []
+
+        # Sequential sampling because vector_field_model and simulator
+        # are likely on GPU and not easily shareable across processes
+        # without complex management.
+        # However, we can still benefit from parallelism in the evaluation/docking phase
+        # if we want, or just keep sampling sequential and parallelize scoring.
+
         for i in tqdm(
             range(n_batches),
             desc="Sampling molecules",
@@ -443,24 +454,118 @@ class FlowModel(pl.LightningModule):
             torch.save(pyg_mols, pyg_save_path)
             print(f"Saved SDF to {save_path} and PyG data to {pyg_save_path}")
 
-        results = {}
-        for metric in metrics:
-            if metric not in test_distribution and metric != "gnina":
-                raise ValueError(f"Metric {metric} not found in test distribution.")
-            scorer = scorer_dict.get(metric)
-            if scorer is not None:
-                if metric == "gnina":
-                    res = []
-                    for mol in tqdm(pyg_mols, desc="Scoring with gnina"):
-                        res.append(scorer(mol.to("cpu")))
-                    results["vina"] = [r[0] for r in res]
-                    results["cnn_affinity"] = [r[1] for r in res]
-                else:
-                    results[metric] = [scorer(mol) for mol in mols]
-            else:
-                raise ValueError(f"Unsupported metric: {metric}")
+        results = {m: [] for m in metrics}
 
-        metrics_calculated = results.keys()
+        # Scoring can be parallelized
+        if self.num_workers > 1:
+            import concurrent.futures
+            import multiprocessing as mp
+
+            # We use process_single_molecule-like logic but adapted here
+            # to use available scorers in topoflow.utils.metrics
+            from topoflow.utils.metrics import scorer_dict
+
+            def score_mol_worker(mol_or_pyg, metrics, atom_decoder, norm_params):
+                """Worker to score a single molecule."""
+                mol_results = {}
+                # If gnina is in metrics, we need the PyG object
+                if "gnina" in metrics:
+                    # Expecting mol_or_pyg to be a tuple (rdmol, pyg_mol)
+                    rdmol, pyg_mol = mol_or_pyg
+                else:
+                    rdmol = mol_or_pyg
+                    pyg_mol = None
+
+                for m in metrics:
+                    if m == "gnina":
+                        scorer = scorer_dict.get(m)
+                        if scorer is not None:
+                            try:
+                                # GNINA scorer expects a PyG mol and handles its own device
+                                res = scorer(pyg_mol.to("cpu"))
+                                mol_results["vina"] = res[0]
+                                mol_results["cnn_affinity"] = res[1]
+                            except Exception:
+                                mol_results["vina"] = float("nan")
+                                mol_results["cnn_affinity"] = float("nan")
+                    else:
+                        scorer = scorer_dict.get(m)
+                        if scorer is not None and rdmol is not None:
+                            try:
+                                res = scorer(rdmol)
+                                mol_results[m] = (
+                                    res.item() if hasattr(res, "item") else res
+                                )
+                            except Exception:
+                                mol_results[m] = float("nan")
+                        else:
+                            mol_results[m] = float("nan")
+                return mol_results
+
+            ctx = mp.get_context("spawn")
+            norm_params = (
+                self.normalization_params
+                if hasattr(self, "normalization_params")
+                else None
+            )
+
+            # Prepare data for workers
+            worker_data = []
+            if "gnina" in metrics:
+                # We need both rdmol and pyg_mol
+                # mols list corresponds to pyg_mols ONLY AFTER connectivity check
+                # Actually, compute_connectivity returns kept_indices for mols
+                # So we should align them
+                for i in range(len(mols)):
+                    worker_data.append((mols[i], pyg_mols[i]))
+            else:
+                worker_data = mols
+
+            print(
+                f"Scoring {len(worker_data)} molecules with {self.num_workers} workers..."
+            )
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.num_workers, mp_context=ctx
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        score_mol_worker, d, metrics, atom_decoder, norm_params
+                    )
+                    for d in worker_data
+                ]
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                    desc="Scoring",
+                ):
+                    mol_res = future.result()
+                    for m, val in mol_res.items():
+                        if m in results:
+                            results[m].append(val)
+                        elif m in ["vina", "cnn_affinity"]:
+                            if m not in results:
+                                results[m] = []
+                            results[m].append(val)
+        else:
+            # Sequential scoring
+            for idx in tqdm(range(len(mols)), desc="Scoring molecules"):
+                mol = mols[idx]
+                pyg_mol = pyg_mols[idx]
+                for metric in metrics:
+                    scorer = scorer_dict.get(metric)
+                    if scorer is not None:
+                        if metric == "gnina":
+                            res = scorer(pyg_mol.to("cpu"))
+                            if "vina" not in results:
+                                results["vina"] = []
+                            if "cnn_affinity" not in results:
+                                results["cnn_affinity"] = []
+                            results["vina"].append(res[0])
+                            results["cnn_affinity"].append(res[1])
+                        else:
+                            results[metric].append(scorer(mol))
+
+        metrics_calculated = list(results.keys())
         validity_score = min(num_samples / len(mols), 1)
         uniqueness_ratio, connected_smiles_unique = compute_uniqueness(connected_smiles)
 

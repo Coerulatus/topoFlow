@@ -42,6 +42,7 @@ class FlowModel(pl.LightningModule):
         evaluator=None,
         n_val_samples=0,
         max_batched_samples=16,
+        num_workers=8,
         val_distribution=None,
         sample_every=1,
         atom_decoder=None,
@@ -68,6 +69,7 @@ class FlowModel(pl.LightningModule):
                 Defaults to 0.
             max_batched_samples: Maximum number of samples to process in a single batch.
                 Defaults to 16.
+            num_workers: Number of parallel workers to use for scoring generated samples during validation. Defaults to 8.
             val_distribution: The expected distribution of metrics for validation.
             sample_every: Frequency of sampling during validation. Defaults to 1.
             atom_decoder: Optional atom decoder for converting samples to RDKit molecules.
@@ -437,28 +439,87 @@ class FlowModel(pl.LightningModule):
                 n_steps=self.sample_steps,
             )
             mols += data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
-        results = {}
-        for metric in metrics:
-            if metric not in test_distribution:
-                raise ValueError(f"Metric {metric} not found in test distribution.")
-            elif metric == "qed":
-                results[metric] = [qed_scorer(mol) for mol in mols]
-                results[metric] = [s for s in results[metric] if s is not None]
-            elif metric == "logp":
-                results[metric] = [logp_scorer(mol) for mol in mols]
-                results[metric] = [s for s in results[metric] if s is not None]
-            elif metric == "sas":
-                results[metric] = [sas_scorer(mol) for mol in mols]
-                results[metric] = [s for s in results[metric] if s is not None]
-            elif metric == "lipinski":
-                results[metric] = [lipinski_scorer(mol) for mol in mols]
-                results[metric] = [s for s in results[metric] if s is not None]
-            else:
-                raise ValueError(f"Unsupported metric: {metric}")
+
+        connectivity_score, connected = compute_connectivity(mols)
+
+        if len(connected) == 0:
+            print("Warning: No valid molecules generated.")
+            return {metric: float("0") for metric in metrics}, {}
+
+        results = {m: [] for m in metrics}
+
+        # Scoring can be parallelized
+        if self.hparams.num_workers > 1:
+            import concurrent.futures
+            import multiprocessing as mp
+            from topoflow.utils.metrics import scorer_dict
+
+            def score_mol_worker(mol, metrics):
+                """Worker to score a single molecule."""
+                mol_results = {}
+                for m in metrics:
+                    scorer = scorer_dict.get(m)
+                    if scorer is not None and mol is not None:
+                        try:
+                            res = scorer(mol)
+                            mol_results[m] = res.item() if hasattr(res, "item") else res
+                        except Exception:
+                            mol_results[m] = float("nan")
+                    else:
+                        mol_results[m] = float("nan")
+                return mol_results
+
+            ctx = mp.get_context("spawn")
+
+            print(
+                f"Scoring {len(connected)} molecules with {self.hparams.num_workers} workers..."
+            )
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.hparams.num_workers, mp_context=ctx
+            ) as executor:
+                futures = [
+                    executor.submit(score_mol_worker, d, metrics) for d in connected
+                ]
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                    desc="Scoring",
+                ):
+                    mol_res = future.result()
+                    for m, val in mol_res.items():
+                        if m in results:
+                            results[m].append(val)
+
+        else:
+            # Sequential scoring
+            from topoflow.utils.metrics import (
+                qed_scorer,
+                logp_scorer,
+                sas_scorer,
+                lipinski_scorer,
+            )
+
+            for mol in tqdm(connected, desc="Scoring molecules"):
+                for metric in metrics:
+                    if metric == "qed":
+                        s = qed_scorer(mol)
+                        if s is not None:
+                            results[metric].append(s)
+                    elif metric == "logp":
+                        s = logp_scorer(mol)
+                        if s is not None:
+                            results[metric].append(s)
+                    elif metric == "sas":
+                        s = sas_scorer(mol)
+                        if s is not None:
+                            results[metric].append(s)
+                    elif metric == "lipinski":
+                        s = lipinski_scorer(mol)
+                        if s is not None:
+                            results[metric].append(s)
 
         # Check connectivity, uniqueness and novelty
         validity_score = num_samples / len(mols)
-        connectivity_score, connected = compute_connectivity(mols)
         uniqueness_ratio, unique_smiles = compute_uniqueness(connected)
         # novelty_ratio, novel_smiles = compute_novelty(
         #     connected, self.path.p_data.dataset.smiles_list
@@ -472,15 +533,16 @@ class FlowModel(pl.LightningModule):
         distances = {}
         try:
             for metric in metrics:
-                expected = test_distribution[metric]
-                expected = [e for e in expected if e is not None]
-                actual = results[metric]
-                if isinstance(expected, list):
-                    expected = torch.tensor(expected)
-                if isinstance(actual, list):
-                    actual = torch.tensor(actual, device=expected.device)
-                distance = wasserstein_1d(expected, actual)
-                distances[metric] = distance.item()
+                if metric in test_distribution and metric in results:
+                    expected = test_distribution[metric]
+                    expected = [e for e in expected if e is not None]
+                    actual = [v for v in results[metric] if not np.isnan(v)]
+                    if isinstance(expected, list):
+                        expected = torch.tensor(expected)
+                    if isinstance(actual, list):
+                        actual = torch.tensor(actual, device=expected.device)
+                    distance = wasserstein_1d(expected, actual)
+                    distances[metric] = distance.item()
 
             return distances, res
         except Exception as e:
