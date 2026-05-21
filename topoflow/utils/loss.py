@@ -83,6 +83,8 @@ class UFFBoundGuidance(InterpolantGuidance):
         endpoint_mols = data_to_rdmol(
             data, atom_decoder=self.atom_decoder, sanitize=True, verbose=verbose
         )
+        if type(endpoint_mols) is not list:
+            endpoint_mols = [endpoint_mols]
         endpoint_bounds = [self._get_uff_bounds(mol) for mol in endpoint_mols]
 
         loss = self._compute_loss(endpoint, endpoint_bounds, batch_lig)
