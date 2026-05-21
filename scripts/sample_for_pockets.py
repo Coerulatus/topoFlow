@@ -1,4 +1,24 @@
-"""Script to sample molecules for a directory of protein PDB files using TopoFlow."""
+"""Batch sample molecules for a directory of protein PDB files with resume support and strict atom type validation.
+
+This script allows for molecular generation for a custom set of protein pockets provided
+as PDB files. It features a robust sampling loop that ensures a target number of
+valid molecules is reached for each pocket. It includes a "resume" capability by
+checking existing SDF files and only generating the remaining needed samples. It
+also enforces strict atom type filtering based on the training dataset.
+
+Parser Arguments:
+    --checkpoint_path (str): Path to the TopoFlow model checkpoint (.ckpt).
+    --pdb_dir (str): Directory containing pocket PDB files.
+    --output_path (str): Root directory for output SDFs and mapping.
+    --mol_per_pocket (int): Number of valid molecules required per target.
+    --batch_size (int): Batch size for parallel generation.
+    --n_steps (int): Number of integration steps for the flow model.
+
+Files Produced:
+    - sdfs/{protein_name}.sdf: Multi-molecule SDF for each pocket.
+    - mapping.txt: A tab-separated file mapping SDF files to their original PDBs.
+    - generation_time.txt: Statistics on generation efficiency.
+"""
 
 import argparse
 import os
@@ -9,7 +29,7 @@ from tqdm import tqdm
 from rdkit import Chem
 from torch_geometric.data import Batch
 
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 from topoflow.flow.paths import GaussianConditionalProbabilityPath
 from topoflow.flow.schedulers import CosineAlpha, CosineBeta
 from topoflow.utils.molecules import pdb_to_data_object, data_to_rdmol
@@ -146,7 +166,6 @@ def sample_for_pockets(
                 pdb_path,
                 atom_encoder=atom_encoder,
                 normalization_path=norm_path,
-                center_pocket=True,
                 verbose=False,
             )
 

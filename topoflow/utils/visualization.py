@@ -133,6 +133,11 @@ def plot_molecular_complex(
     session_file_path: str = None,
     dataset_param: dict = None,
     verbose: bool = False,
+    pymol_camera: list = None,
+    width: int = 1200,
+    height: int = 1200,
+    scaffold_mask: torch.Tensor = None,
+    ligand_mask: torch.Tensor = None,
 ):
     """Plot a protein-ligand complex in PyMOL.
 
@@ -150,6 +155,11 @@ def plot_molecular_complex(
                                         specifically 'idx_to_atom_map' and 'colors_dic'
                                         for ligand atom coloring.
         verbose (bool, optional): If True, prints additional information during processing.
+        pymol_camera (list, optional): 18-element list representing the PyMOL view matrix.
+        width (int): Width of the output image in pixels.
+        height (int): Height of the output image in pixels.
+        scaffold_mask (torch.Tensor, optional): Boolean mask for scaffold atoms.
+        ligand_mask (torch.Tensor, optional): Boolean mask for which ligand atoms to show.
     """
     # Initialize PyMOL and clear previous objects for a fresh start
     pymol.finish_launching()  # Ensure PyMOL's environment is ready
@@ -184,63 +194,82 @@ def plot_molecular_complex(
 
     # Ligand Visualization - Now with custom coloring
     if ligand_path is not None:
-        pymol.cmd.show(
-            "spheres", "ligand"
-        )  # Show ligand as spheres (or 'sticks' if preferred)
+        pymol.cmd.show("spheres", "ligand")
 
-    if (
-        dataset_param
-        and "idx_to_atom_map" in dataset_param
-        and "colors_dic" in dataset_param
-    ):
-        idx_to_atom_map = dataset_param["idx_to_atom_map"]
-        colors_dic = dataset_param["colors_dic_pymol"]
-        sizes = dataset_param.get("radius_dic", None)  # Optional sizes for spheres
-        if verbose:
-            print("Applying custom ligand coloring based on dataset_param...")
-        for idx, atom_symbol in idx_to_atom_map.items():
-            # Ensure the index exists in colors_dic to prevent IndexError
-            if idx < len(colors_dic):
-                color_hex = colors_dic[idx]
-                # PyMOL selection string: "ligand and elem <atom_symbol>"
-                # For example: "ligand and elem C"
-                pymol.cmd.color(color_hex, f"ligand and elem {atom_symbol}")
-            else:
-                if verbose:
-                    print(
-                        f"Warning: No color defined for index {idx} ('{atom_symbol}') in colors_dic."
+        if (
+            dataset_param
+            and "idx_to_atom_map" in dataset_param
+            and "colors_dic" in dataset_param
+            and scaffold_mask is None
+        ):
+            idx_to_atom_map = dataset_param["idx_to_atom_map"]
+            colors_dic = dataset_param["colors_dic_pymol"]
+            sizes = dataset_param.get("radius_dic", None)  # Optional sizes for spheres
+            if verbose:
+                print("Applying custom ligand coloring based on dataset_param...")
+            for idx, atom_symbol in idx_to_atom_map.items():
+                if idx < len(colors_dic):
+                    color_hex = colors_dic[idx]
+                    pymol.cmd.color(color_hex, f"ligand and elem {atom_symbol}")
+                else:
+                    pymol.cmd.color("gray", f"ligand and elem {atom_symbol}")
+                if idx < len(sizes) and sizes is not None:
+                    pymol.cmd.set(
+                        "sphere_scale", sizes[idx], f"ligand and elem {atom_symbol}"
                     )
-                # Fallback: Use a default color for unmapped elements in ligand if necessary
-                pymol.cmd.color("gray", f"ligand and elem {atom_symbol}")
-            if idx < len(sizes) and sizes is not None:
-                pymol.cmd.set(
-                    "sphere_scale", sizes[idx], f"ligand and elem {atom_symbol}"
-                )
-    else:
-        if verbose:
-            print(
-                "dataset_param not provided or missing 'idx_to_atom_map'/'colors_dic'. Using default CPK coloring for ligand."
+        elif scaffold_mask is not None:
+            if verbose:
+                print("Applying scaffold/new atom coloring...")
+            for i, is_scaffold in enumerate(scaffold_mask):
+                color = "0x3333ff" if is_scaffold else "0xffff00"
+                pymol.cmd.color(color, f"ligand and index {i+1}")
+            sizes = (
+                dataset_param.get("radius_dic", [0.3] * 11)
+                if dataset_param
+                else [0.3] * 11
             )
-        # Fallback to PyMOL's default coloring if custom parameters are not available
-        if ligand_path is not None:
-            pymol.cmd.util.cbag("ligand")  # Color ligand by atom type (CPK)
+            pymol.cmd.set("sphere_scale", sizes[0], "ligand")
+        else:
+            if verbose:
+                print("Using default CPK coloring for ligand.")
+            pymol.cmd.util.cbag("ligand")
+
+        # Apply ligand mask if provided
+        if ligand_mask is not None:
+            if verbose:
+                print("Applying ligand mask...")
+            for i, show in enumerate(ligand_mask):
+                if not show:
+                    pymol.cmd.hide("everything", f"ligand and index {i+1}")
 
     # Plot bonds if available
     if ligand_path is not None:
-        pymol.cmd.show("sticks", "ligand")  # Show ligand bonds as sticks
-        pymol.cmd.set(
-            "stick_radius", 0.4 * sizes[0], "ligand"
-        )  # Set stick radius for better visibility
+        pymol.cmd.show("sticks", "ligand")
+        # Re-apply mask to sticks
+        if ligand_mask is not None:
+            for i, show in enumerate(ligand_mask):
+                if not show:
+                    pymol.cmd.hide("sticks", f"ligand and index {i+1}")
+
+        sizes = (
+            dataset_param.get("radius_dic", [0.3] * 11) if dataset_param else [0.3] * 11
+        )
+        pymol.cmd.set("stick_radius", 0.4 * sizes[0], "ligand")
 
     # Center and zoom on the complex
-    pymol.cmd.zoom("all", 5.0)  # Zoom to all objects with a padding
-    pymol.cmd.center("all")  # Ensure the center of rotation is correct
+    if pymol_camera is not None:
+        pymol.cmd.set_view(pymol_camera)
+    else:
+        pymol.cmd.zoom("all", 5.0)  # Zoom to all objects with a padding
+        pymol.cmd.center("all")  # Ensure the center of rotation is correct
 
     pymol.cmd.bg_color("white")
 
     # Save the image if output_image_path is provided
     if output_image_path:
-        pymol.cmd.png(output_image_path, dpi=300, ray=1)  # Ray trace for PNG
+        pymol.cmd.png(
+            output_image_path, width=width, height=height, dpi=300, ray=1
+        )  # Ray trace for PNG
         if verbose:
             print(f"Image saved to: {output_image_path}")
 
@@ -275,7 +304,7 @@ def save_ligand_to_sdf(
 
     If the data_object is a Chem.Mol, it saves directly to the file.
     If the data_object is a PyTorch Geometric Data object, it constructs the SDF
-    from the ligand's atom positions and types.
+    from the ligand's atom positions and types, reconstructing bonds using Open Babel.
 
     Args:
         data_object (Data or Chem.Mol): A PyTorch Geometric Data object or an RDKit Chem.Mol object containing ligand information.
@@ -285,16 +314,51 @@ def save_ligand_to_sdf(
     """
     if isinstance(data_object, Chem.Mol):
         writer = Chem.SDWriter(file_path)
-        writer.write(data_object)
+        try:
+            writer.write(data_object)
+        except Exception as e:
+            if verbose:
+                print(
+                    f"Warning: RDKit failed to write molecule to SDF: {e}. Attempting fallback..."
+                )
+            try:
+                # Fallback: remove aromaticity and try again
+                mol_fallback = Chem.Mol(data_object)
+                for bond in mol_fallback.GetBonds():
+                    if bond.GetBondType() == Chem.BondType.AROMATIC:
+                        bond.SetBondType(Chem.BondType.SINGLE)
+                mol_fallback.UpdatePropertyCache()
+                writer.write(mol_fallback)
+            except Exception as e2:
+                if verbose:
+                    print(f"Fallback failed: {e2}. Saving without bonds.")
+                # Final fallback: writer.write fails, we could try to construct a simple 0-bond mol but it's hard here
+                pass
         writer.close()
         if verbose:
             print(f"Successfully saved ligand to: {file_path}")
         return
 
     if atom_decoder is None:
-        # Default atom map - crucial that this matches your data's encoding!
-        atom_decoder = ["C", "N", "O", "S", "F", "P", "Cl", "Br", "I", "B", "Si", "Se"]
+        # Default atom map - match crossdock_full
+        atom_decoder = ["C", "N", "O", "S", "B", "Br", "Cl", "P", "I", "F", "OTHR"]
 
+    # --- New Logic: Use Open Babel to reconstruct bonds for GNINA ---
+    try:
+        # data_object is a PyG Data object
+        rdmol = make_mol_openbabel(
+            data_object.x_lig.cpu().numpy(), data_object.h_lig.cpu(), atom_decoder
+        )
+        if rdmol is not None:
+            # Recursively call with the reconstructed RDKit molecule to save properly
+            return save_ligand_to_sdf(rdmol, file_path, atom_decoder, verbose)
+    except Exception as e:
+        if verbose:
+            print(
+                f"Warning: Bond reconstruction with Open Babel failed: {e}. Falling back to bond-less SDF."
+            )
+
+    # --- Fallback: Bond-less SDF (Legacy) ---
     lig_elements = _get_elements_from_x_data(data_object.h_lig, atom_decoder)
     lig_coords = data_object.x_lig
     num_atoms = len(lig_elements)
@@ -315,8 +379,10 @@ def save_ligand_to_sdf(
     for i in range(num_atoms):
         x, y, z = lig_coords[i]
         element = lig_elements[i]
+        # Map OTHR to Carbon placeholder for format validity
+        element_sdf = "C" if element == "OTHR" else element[:3]
         molfile_lines.append(
-            f"{x:10.4f}{y:10.4f}{z:10.4f} {element:<3s} 0  0  0  0  0  0  0  0  0  0  0  0"
+            f"{x:10.4f}{y:10.4f}{z:10.4f} {element_sdf:<3s} 0  0  0  0  0  0  0  0  0  0  0  0"
         )
 
     molfile_lines.append("M END")
@@ -339,8 +405,8 @@ def save_pocket_to_pdb(
     Each atom is treated as a separate ATOM record.
     """
     if atom_decoder is None:
-        # Default atom map - crucial that this matches your data's encoding!
-        atom_decoder = ["C", "N", "O", "S", "F", "P", "Cl", "Br", "I", "B", "Si", "Se"]
+        # Default atom map - match crossdock_full
+        atom_decoder = ["C", "N", "O", "S", "B", "Br", "Cl", "P", "I", "F", "OTHR"]
 
     pocket_elements = _get_elements_from_x_data(data_object.h_pocket, atom_decoder)
     pocket_coords = data_object.x_pocket
@@ -351,8 +417,12 @@ def save_pocket_to_pdb(
     for i in range(len(pocket_elements)):
         x, y, z = pocket_coords[i]
         element = pocket_elements[i]
+
+        # PDB FIX: Map OTHR to C and ensure element is max 2 chars for columns 77-78
+        element_pdb = "C" if element == "OTHR" else element[:2]
+
         # Atom name can be same as element symbol for simplicity in PDB context
-        atom_name = f"{element:<4s}"
+        atom_name = f"{element_pdb:<4s}"
         res_name = "PKT"  # Generic residue name for pocket atoms
         chain_id = "A"
         res_seq = i + 1  # Each atom can be its own "residue" for unique ID
@@ -362,7 +432,7 @@ def save_pocket_to_pdb(
         pdb_line = (
             f"ATOM  {atom_serial:5d} {atom_name:^4s} {res_name:3s} {chain_id:1s}{res_seq:4d}    "
             f"{x:8.3f}{y:8.3f}{z:8.3f}{occupancy:6.2f}{temp_factor:6.2f}          "
-            f"{element:>2s}  "
+            f"{element_pdb:>2s}  "
         )
         pdb_lines.append(pdb_line)
         atom_serial += 1
@@ -385,7 +455,13 @@ def visualize_data(
     dataset_name: str = "crossdock_full",
     add_ligand_bonds: bool = True,
     norm_params: dict = None,
-    versbose: bool = False,
+    verbose: bool = False,
+    pymol_camera: list = None,
+    width: int = 1200,
+    height: int = 1200,
+    scaffold_mask: torch.Tensor = None,
+    ligand_mask: torch.Tensor = None,
+    explicit_bonds: list = None,
 ):
     """Visualization function for a Data object containing ligand and pocket information.
 
@@ -405,17 +481,44 @@ def visualize_data(
                                            Defaults to True.
         norm_params (dict, optional): Normalization parameters used for the data object. They are used to unnormalize
                                       the ligand and pocket coordinates before visualization.
-        versbose (bool, optional): If True, prints additional information during processing.
+        verbose (bool, optional): If True, prints additional information during processing.
+        pymol_camera (list, optional): 18-element list representing the PyMOL view matrix.
+        width (int): Width of the output image in pixels.
+        height (int): Height of the output image in pixels.
+        scaffold_mask (torch.Tensor, optional): Boolean mask for scaffold atoms.
+        ligand_mask (torch.Tensor, optional): Boolean mask for which ligand atoms to show.
+        explicit_bonds (list, optional): List of explicit bonds for the ligand.
     """
     data_object = data_object.to(torch.device("cpu"))  # Ensure data is on CPU for PyMOL
+
+    # Create local copies to avoid in-place modification of original data_object
+    x_lig = data_object.x_lig.clone()
+    h_lig = data_object.h_lig.clone()
+    x_pocket = data_object.x_pocket.clone()
+    h_pocket = data_object.h_pocket.clone()
+
     if norm_params is not None:
-        data_object.x_lig = (
-            data_object.x_lig * norm_params["std_pocket"] + norm_params["mean_pocket"]
-        )
-        data_object.x_pocket = (
-            data_object.x_pocket * norm_params["std_pocket"]
-            + norm_params["mean_pocket"]
-        )
+        x_lig = x_lig * norm_params["std_pocket"] + norm_params["mean_pocket"]
+        x_pocket = x_pocket * norm_params["std_pocket"] + norm_params["mean_pocket"]
+
+    # Apply ligand mask filtering if provided
+    if ligand_mask is not None:
+        if isinstance(ligand_mask, torch.Tensor):
+            ligand_mask = ligand_mask.to("cpu")
+        x_lig = x_lig[ligand_mask]
+        h_lig = h_lig[ligand_mask]
+        if scaffold_mask is not None:
+            if isinstance(scaffold_mask, torch.Tensor):
+                scaffold_mask = scaffold_mask.to("cpu")
+            scaffold_mask = scaffold_mask[ligand_mask]
+        # Since we already filtered the atoms, we don't want plot_molecular_complex
+        # to try to filter again with original indices
+        plot_ligand_mask = None
+    else:
+        if isinstance(scaffold_mask, torch.Tensor):
+            scaffold_mask = scaffold_mask.to("cpu")
+        plot_ligand_mask = None
+
     dataset_params = constants.dataset_params[dataset_name] if dataset_name else None
     # Save ligand and pocket to files
     ligand_file = "temp_ligand.sdf"
@@ -423,14 +526,23 @@ def visualize_data(
 
     if dataset_params is not None:
         atom_decoder = dataset_params.get("atom_decoder", None)
+
     if add_ligand_bonds:
         rdmol = make_mol_openbabel(
-            data_object.x_lig, data_object.h_lig, atom_decoder=atom_decoder
+            x_lig,
+            h_lig,
+            atom_decoder=atom_decoder,
+            explicit_bonds=explicit_bonds,
         )
-        save_ligand_to_sdf(rdmol, ligand_file, atom_decoder, versbose)
+        save_ligand_to_sdf(rdmol, ligand_file, atom_decoder, verbose)
     else:
-        save_ligand_to_sdf(data_object, ligand_file, atom_decoder, versbose)
-    save_pocket_to_pdb(data_object, pocket_file, atom_decoder, versbose)
+        # Construct a dummy Data object for save_ligand_to_sdf
+        temp_data = Data(x_lig=x_lig, h_lig=h_lig)
+        save_ligand_to_sdf(temp_data, ligand_file, atom_decoder, verbose)
+
+    # Construct a dummy Data object for save_pocket_to_pdb
+    temp_pocket_data = Data(x_pocket=x_pocket, h_pocket=h_pocket)
+    save_pocket_to_pdb(temp_pocket_data, pocket_file, atom_decoder, verbose)
 
     # Plot the molecular complex
     if image_path and not os.path.isdir(os.path.dirname(image_path)):
@@ -439,7 +551,17 @@ def visualize_data(
         os.makedirs(os.path.dirname(session_path))
 
     plot_molecular_complex(
-        pocket_file, ligand_file, image_path, session_path, dataset_params, versbose
+        pocket_file,
+        ligand_file,
+        image_path,
+        session_path,
+        dataset_params,
+        verbose,
+        pymol_camera,
+        width=width,
+        height=height,
+        scaffold_mask=scaffold_mask,
+        ligand_mask=plot_ligand_mask,
     )
 
     # Clean up temporary files
@@ -496,6 +618,9 @@ def visualize_trajectory(
     gif_path: str = None,
     plot_every: int = 1,
     verbose: bool = False,
+    pymol_camera: list = None,
+    width: int = 1200,
+    height: int = 1200,
 ):
     """Visualizes a list of Data objects representing a trajectory of molecular complexes.
 
@@ -516,6 +641,9 @@ def visualize_trajectory(
         plot_every (int, optional): Interval at which to plot the trajectory frames.
                                     Defaults to 1 (plot every frame).
         verbose (bool, optional): If True, prints additional information during processing.
+        pymol_camera (list, optional): 18-element list representing the PyMOL view matrix.
+        width (int): Width of the output image in pixels.
+        height (int): Height of the output image in pixels.
     """
     if not isinstance(data_list, list) or not all(
         isinstance(d, Data) for d in data_list
@@ -530,7 +658,7 @@ def visualize_trajectory(
     for idx, data_object in tqdm(
         enumerate(data_list), total=len(data_list), desc="Visualizing trajectory"
     ):
-        if idx % plot_every != 0:
+        if idx % plot_every != 0 and idx != len(data_list) - 1:
             continue
         data_object = data_object.to(
             torch.device("cpu")
@@ -542,7 +670,10 @@ def visualize_trajectory(
             session_path=f"{image_path}_{idx}.pse",
             dataset_name=dataset_name,
             add_ligand_bonds=add_ligand_bonds,
-            versbose=verbose,
+            verbose=verbose,
+            pymol_camera=pymol_camera,
+            width=width,
+            height=height,
         )
 
     if gif_path is not None:
@@ -552,7 +683,7 @@ def visualize_trajectory(
 
         images = []
         for idx in range(len(data_list)):
-            if idx % plot_every != 0:
+            if idx % plot_every != 0 and idx != len(data_list) - 1:
                 continue
             img_path = f"{image_path}_{idx}.png"
             img_data = imageio.imread(img_path)

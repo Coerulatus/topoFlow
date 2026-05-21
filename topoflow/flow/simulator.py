@@ -154,6 +154,8 @@ class TorchDiffEqSimulator:
         batch_pocket,
         z,
         mask,
+        end_points=None,
+        force_scaffold=False,
     ):
         """Generate molecule with inpainting using the inverse trajectory.
 
@@ -179,13 +181,19 @@ class TorchDiffEqSimulator:
             Optional sampled data.
         mask : torch.Tensor
             Mask to apply during inpainting. [batch_size, *dims]
+        end_points : torch.Tensor, optional
+            Ground truth data for the scaffold. [batch_size, *dims]
+        force_scaffold : bool, optional
+            If True, fixes the scaffold atoms to end_points throughout the simulation.
 
         Returns:
             torch.Tensor: Inpainted states at each time step.
         """
 
         def ode_func(t, x):
-            if t <= t_max_inpaint:
+            if force_scaffold and end_points is not None:
+                x[mask] = end_points[mask]
+            elif t <= t_max_inpaint:
                 t_idx = (ts - t).abs().argmin()
                 inverse_state = inverse_traj[:, t_idx]
                 x[mask] = inverse_state[mask]

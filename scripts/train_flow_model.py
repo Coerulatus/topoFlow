@@ -1,4 +1,26 @@
-"""Script to train a Topological Flow model on a given dataset."""
+"""Train a Topological Flow model on a given molecular dataset (e.g., CrossDocked).
+
+This is the main training script for TopoFlow. It sets up the PyTorch Lightning
+trainer, handles data loading and augmentation, and initializes the continuous
+normalizing flow (CNF) with a specified vector field architecture (Transformer,
+GAT, MLP, AllSetTransformer, etc.). The model learns to map a Gaussian prior
+distribution to the target molecular distribution conditioned on protein pocket
+features. It uses MLflow for experiment tracking and logging.
+
+Parser Arguments:
+    --data_dir (str): Directory containing the training data.
+    --vector_field_model (str): Choice of architecture (e.g., "ast_gat", "distance_transformer").
+    --hidden_dim (int): Hidden layer size.
+    --epochs (int): Total training iterations.
+    --batch_size (int): Number of samples per batch.
+    --start_lr, --max_lr, --min_lr (float): Learning rate schedule parameters.
+    --velocity_scale (float): Factor to scale the predicted velocity field.
+    --checkpoint_dir (str): Directory to save model checkpoints.
+
+Files Produced:
+    - checkpoints/topoflow/run_{name}/topoflow-epoch=xx.ckpt: Model weights and training state.
+    - MLflow logs in the specified tracking URI.
+"""
 
 import argparse
 import os
@@ -18,7 +40,7 @@ from topoflow.flow.vector_field_models import (
     AllSetTransformerVectorField,
     TransformerDistanceVectorField,
 )
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 import topoflow.utils.constants as constants
 from topoflow.flow.utils import InverseTimeFactor, InverseTimeFactorNoClamping
 from topoflow.data.augmentations import RandomRotateTranslate
@@ -128,10 +150,18 @@ def train_flow_model(
     if os.path.exists(val_metric_dist_path):
         val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
     else:
+        # Load Normalization Params for correct GNINA scoring
+        norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
+        norm_params = None
+        if os.path.exists(norm_path):
+            norm_data = np.load(norm_path, allow_pickle=True)
+            norm_params = {"mean": norm_data["mean"], "std": norm_data["std"]}
+
         val_distribution = get_distributions(
             val_dataset,
             metrics=["qed", "logp", "sas", "lipinski", "gnina"],
             atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
+            norm_params=norm_params,
         )
         np.save(val_metric_dist_path, val_distribution)
     # ======================================================================

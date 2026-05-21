@@ -1,4 +1,24 @@
-"""Script to run multiple validation loops on a trained model and aggregate results."""
+"""Run multiple validation loops on a trained model and aggregate statistics across runs.
+
+This script automates the process of running multiple validation loops (e.g., for
+different random seeds) to obtain stable performance metrics. It can either load
+a model checkpoint and run new sampling/validation tasks via PyTorch Lightning
+and MLflow, or process existing generation output folders "offline." It calculates
+aggregated means and pooled standard deviations for all metrics.
+
+Parser Arguments:
+    --checkpoint_path (str): Path to a .ckpt file or a directory containing checkpoints.
+    --data_dir (str): Path to the CrossDocked data.
+    --n_runs (int): Number of validation iterations.
+    --molecules_per_pocket (int): If > 0, performs custom sampling for every pocket in the split.
+    --split (str): Split to use ("val" or "test").
+    --mlflow_tracking_uri (str): MLflow tracking URI.
+    --mlflow_experiment_name (str): MLflow experiment name for evaluation runs.
+
+Files Produced:
+    - result_{checkpoint_name}.txt: A markdown file containing aggregated evaluation results.
+    - {split}_samples_{stem}/: Directories containing generated SDFs and PyG objects.
+"""
 
 import argparse
 import os
@@ -15,7 +35,7 @@ from mlflow.tracking import MlflowClient
 from torch_geometric.data import Batch
 
 # Assuming the model and data files are in the same directory or accessible in the python path
-from topoflow.flow.flow_models_ligand import FlowModel
+from topoflow.flow.flow_models import FlowModel
 from topoflow.data.datasets import CrossDocked
 from topoflow.data import MockDatamodule
 import topoflow.utils.constants as constants
@@ -264,10 +284,18 @@ def run_multiple_validations(
         print(
             f"Distribution file not found at {val_metric_dist_path}. Generating it from {split} dataset..."
         )
+        # Load Normalization Params for correct GNINA scoring
+        norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
+        norm_params = None
+        if os.path.exists(norm_path):
+            norm_data = np.load(norm_path, allow_pickle=True)
+            norm_params = {"mean": norm_data["mean"], "std": norm_data["std"]}
+
         val_distribution = get_distributions(
             val_dataset,
             metrics=["qed", "logp", "sas", "lipinski", "gnina"],
             atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
+            norm_params=norm_params,
         )
         np.save(val_metric_dist_path, val_distribution)
 

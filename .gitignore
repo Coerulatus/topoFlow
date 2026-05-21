@@ -207,12 +207,12 @@ __marimo__/
 /mlruns/
 /results/
 /results_equivariant/
-/notebooks/outputs/trajectory/
-/notebooks/outputs/trajectory_distance_transformer_2/
-/notebooks/outputs/trajectory_test/
+/notebooks/outputs/
 /wandb-importer/
 /outputs/
 gnina.1.3.2
 /topoflow/utils/gnina_path.py
 GEMINI.md
 /_equivariant/
+/2d_molecules/
+/paper_plots/

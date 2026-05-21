@@ -493,7 +493,7 @@ class AllSetTransformerLayer(nn.Module):
         self.vertex2edge.reset_parameters()
         self.edge2vertex.reset_parameters()
 
-    def forward(self, x_0, incidence_1):
+    def forward(self, x_0, incidence_1, return_stats=False):
         r"""Forward computation.
 
         Vertex to edge:
@@ -519,22 +519,33 @@ class AllSetTransformerLayer(nn.Module):
         Args:
             x_0 (torch.Tensor, shape = (n_nodes, channels)): Node input features.
             incidence_1 (torch.sparse, shape = (n_nodes, n_hyperedges)): Incidence matrix :math:`B_1` mapping hyperedges to nodes.
+            return_stats (bool, default=False): Whether to return attention statistics.
 
         Returns:
             torch.Tensor: Output node features.
             torch.Tensor: Output hyperedge features.
+            dict (optional): Attention statistics.
         """
         if x_0.shape[-2] != incidence_1.shape[-2]:
             raise ValueError(
                 f"Shape of incidence matrix ({incidence_1.shape}) does not have the correct number of nodes ({x_0.shape[0]})."
             )
 
-        x_1 = F.relu(self.vertex2edge(x_0, incidence_1.transpose(1, 0)))
+        if return_stats:
+            x_1, stats = self.vertex2edge(
+                x_0, incidence_1.transpose(1, 0), return_stats=True
+            )
+        else:
+            x_1 = self.vertex2edge(x_0, incidence_1.transpose(1, 0))
+
+        x_1 = F.relu(x_1)
         x_1 = F.dropout(x_1, p=self.dropout, training=self.training)
 
         x_0 = F.relu(self.edge2vertex(x_1, incidence_1))
         x_0 = F.dropout(x_0, p=self.dropout, training=self.training)
 
+        if return_stats:
+            return x_0, x_1, stats
         return x_0, x_1
 
 
@@ -608,7 +619,7 @@ class AllSetTransformerBlock(nn.Module):
         ):
             self.mlp.reset_parameters()
 
-    def forward(self, x_source, neighborhood):
+    def forward(self, x_source, neighborhood, return_stats=False):
         """Forward computation.
 
         Args:
@@ -616,6 +627,8 @@ class AllSetTransformerBlock(nn.Module):
                 Input features.
             neighborhood (torch.sparse, shape = (n_target_cells, n_source_cells)):
                 Neighborhood matrix.
+            return_stats (bool, default=False):
+                Whether to return attention statistics.
 
         Returns:
             x_message_on_target: Output sum over features on target cells.
@@ -624,7 +637,12 @@ class AllSetTransformerBlock(nn.Module):
         self.target_index_i, self.source_index_j = neighborhood.indices()
 
         # Obtain MH from Eq(7) in AllSet paper [1]
-        x_message_on_target = self.multihead_att(x_source, neighborhood)
+        if return_stats:
+            x_message_on_target, stats = self.multihead_att(
+                x_source, neighborhood, return_stats=True
+            )
+        else:
+            x_message_on_target = self.multihead_att(x_source, neighborhood)
 
         # Obtain Y from Eq(8) in AllSet paper [1]
         # Skip-connection (broadcased)
@@ -643,6 +661,8 @@ class AllSetTransformerBlock(nn.Module):
             x_message_on_target + F.relu(self.mlp(x_message_on_target))
         )
 
+        if return_stats:
+            return x_message_on_target.sum(dim=1), stats
         return x_message_on_target.sum(dim=1)
 
 
@@ -736,7 +756,51 @@ class MultiHeadAttention(MessagePassing):
         alpha = F.leaky_relu(alpha, 0.2)
         return softmax(alpha[self.source_index_j], index=self.target_index_i)
 
-    def forward(self, x_source, neighborhood):
+    def attention_with_entropy(self, x_source, neighborhood):
+        """Compute attention and calculate entropy per hyperedge."""
+        # x_source: [S, C], K_weight: [H, C, D] -> [H, S, D]
+        x_K = torch.matmul(x_source, self.K_weight)
+        # alpha shape: [H, S, Q]
+        alpha = torch.einsum("hsd,hqd->hsq", x_K, self.Q_weight)
+        # Scaling to avoid extremely large values before softmax
+        alpha = alpha / math.sqrt(self.hidden_channels // self.heads)
+        alpha = F.leaky_relu(alpha, 0.2)
+
+        # [n_source, heads, number_queries]
+        alpha = alpha.permute(1, 0, 2)
+        # [n_messages, heads, number_queries]
+        alpha_msg = alpha[self.source_index_j]
+
+        # Get attention weights (p_i)
+        attn_weights = softmax(alpha_msg, index=self.target_index_i, dim=0)
+
+        # Calculate Entropy: -sum(p * log(p))
+        eps = 1e-12
+        p = attn_weights.clamp(min=eps)
+        ent_per_msg = -p * torch.log(p)
+
+        # Sum entropy components for each target (hyperedge)
+        # [n_targets, heads, number_queries]
+        entropy = pyg_scatter(ent_per_msg, self.target_index_i, dim=0, reduce="sum")
+
+        # Calculate cardinality (k) for normalization
+        ones = torch.ones_like(self.source_index_j, dtype=torch.float)
+        card_msg = pyg_scatter(ones, self.target_index_i, dim=0, reduce="sum")
+        cardinality = card_msg.view(-1, 1, 1)
+
+        # Normalized Entropy: H / log(k)
+        log_k = torch.log(cardinality.clamp(min=1.0001))
+        mask = (cardinality > 1.1).float()
+        norm_entropy = (entropy * mask) / (log_k + (1 - mask))
+        norm_entropy = torch.clamp(norm_entropy, 0.0, 1.0)
+
+        if self.number_queries == 1:
+            attn_weights = attn_weights.squeeze(-1)
+            norm_entropy = norm_entropy.squeeze(-1)
+
+        return attn_weights, norm_entropy, card_msg
+
+    def forward(self, x_source, neighborhood, return_stats=False):
         """Forward pass.
 
         Computes (QK^T)V attention mechanism of transformer-based architectures.
@@ -745,24 +809,28 @@ class MultiHeadAttention(MessagePassing):
         Args:
             x_source (Tensor, shape = (..., n_source_cells, in_channels)): Input features on source cells. Assumes that all source cells have the same rank r.
             neighborhood (torch.sparse, shape = (n_target_cells, n_source_cells)): Neighborhood matrix.
+            return_stats (bool, default=False): Whether to return attention statistics (entropy and cardinality) along with the output.
 
         Returns:
             Tensor, shape = (..., n_target_cells, out_channels): Output features on target cells.
                 Assumes that all target cells have the same rank s.
         """
-        # Transformer-based attention mechanism
         neighborhood = neighborhood.coalesce()
         self.target_index_i, self.source_index_j = neighborhood.indices()
 
-        attention_values = self.attention(x_source, neighborhood)
+        attn_weights, entropy, cardinality = self.attention_with_entropy(
+            x_source, neighborhood
+        )
 
         x_message = torch.matmul(x_source, self.V_weight)
-
         x_message = x_message.permute(1, 0, 2)[
             self.source_index_j
-        ] * attention_values.unsqueeze(-1)
+        ] * attn_weights.unsqueeze(-1)
+        out = pyg_scatter(x_message, self.target_index_i, dim=0, reduce="sum")
 
-        return pyg_scatter(x_message, self.target_index_i, dim=0, reduce="sum")
+        if return_stats:
+            return out, {"entropy": entropy, "cardinality": cardinality}
+        return out
 
 
 class MLP(nn.Sequential):
@@ -853,19 +921,27 @@ class AllSetTransformer(torch.nn.Module):
             for i in range(n_layers)
         )
 
-    def forward(self, x_0, incidence_1):
+    def forward(self, x_0, incidence_1, return_stats=False):
         """Forward computation.
 
         Args:
             x_0 (torch.Tensor): Input features.
             incidence_1 (torch.Tensor): Incidence matrix. (n_nodes, n_hyperedges)
+            return_stats (bool, default=False): Whether to return attention statistics.
 
         Returns:
             torch.Tensor: Output prediction.
+            torch.Tensor: Output hyperedge features.
+            dict (optional): Attention statistics from the last layer.
         """
-        for layer in self.layers:
-            x_0, x_1 = layer(x_0, incidence_1)
+        for i, layer in enumerate(self.layers):
+            if return_stats and i == len(self.layers) - 1:
+                x_0, x_1, stats = layer(x_0, incidence_1, return_stats=True)
+            else:
+                x_0, x_1 = layer(x_0, incidence_1)
 
+        if return_stats:
+            return x_0, x_1, stats
         return x_0, x_1
 
 
@@ -965,11 +1041,19 @@ class AllSetTransformerVectorField(nn.Module):
         N1, N2 = lig_pos.size(0), poc_pos.size(0)
 
         edge_ll = radius_graph(
-            lig_pos, r=self.cutoff_lig, batch=batch_lig, loop=False
+            lig_pos,
+            r=self.cutoff_lig,
+            batch=batch_lig,
+            loop=False,
+            max_num_neighbors=1000,
         )  # [2, E_ll]
         # Intra-pocket edges
         edge_pp = radius_graph(
-            poc_pos, r=self.cutoff_poc, batch=batch_pocket, loop=False
+            poc_pos,
+            r=self.cutoff_poc,
+            batch=batch_pocket,
+            loop=False,
+            max_num_neighbors=1000,
         )  # [2, E_pp]
 
         # Cross edges using bipartite radius:
@@ -980,6 +1064,7 @@ class AllSetTransformerVectorField(nn.Module):
             r=self.cutoff_cross,
             batch_x=batch_pocket,
             batch_y=batch_lig,
+            max_num_neighbors=1000,
         )  # [2, E_lp] with row in [0..N1-1], col in [0..N2-1]
 
         # Offset pocket node ids by N1 to form one homogeneous graph:
@@ -1056,7 +1141,9 @@ class AllSetTransformerVectorField(nn.Module):
         incidence1 = incidence1.coalesce()
         return incidence1, edge_index
 
-    def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket):
+    def forward(
+        self, x_lig, t, x_pocket, batch_lig, batch_pocket, return_diagnostics=False
+    ):
         """Forward pass."""
         device = x_lig.device
         B = int(torch.max(batch_lig) + 1)
@@ -1077,14 +1164,17 @@ class AllSetTransformerVectorField(nn.Module):
         if self.add_time_to in ("both",):
             poc_h = poc_h + t_emb[batch_pocket[is_poc], :]
         # Create incidence matrix
-        incidence1, edge_index = self.create_incidence(
-            x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
+        incidence1, edge_index, edge_types = self.create_incidence_with_types(
+            x_lig, x_pocket, batch_lig, batch_pocket
         )
         # Creates features
         h = torch.cat([lig_h, poc_h], dim=0)
 
         # AllSetTransformer
-        h_ast = h + self.model(h, incidence1)[0]
+        if return_diagnostics:
+            h_ast, _, stats = self.model(h, incidence1, return_stats=True)
+        else:
+            h_ast, _ = self.model(h, incidence1)
 
         # GAT
         if self.use_gat:
@@ -1098,155 +1188,110 @@ class AllSetTransformerVectorField(nn.Module):
 
         # Predict ligand velocities only
         vel_lig = self.out_vel(h_lig)  # [N_lig, x_dim]
+
+        if return_diagnostics:
+            return vel_lig, self.format_diagnostics(stats, edge_types)
         return vel_lig
 
-    # def create_incidence_old(self, x_lig, x_pocket, batch_lig, batch_pocket):
-    #     """Create hyperedges."""
-    #     device = x_lig.device
-    #     n_lig = x_lig.shape[0]
-    #     n_poc = x_pocket.shape[0]
-    #     n_nodes = n_lig + n_poc
-    #     n_hyperedges = 0
-    #     n_values = 0
-    #     is_lig = batch_lig != -1
-    #     is_poc = batch_pocket != -1
-    #     # Hyperedges with all ligand atoms in same batch
-    #     valid = torch.unique(batch_lig)
-    #     non_zeros = (batch_lig.unsqueeze(1) == valid.unsqueeze(0)).nonzero(
-    #         as_tuple=False
-    #     )
-    #     row = non_zeros[:, 0]
-    #     col = non_zeros[:, 1]
-    #     n_hyperedges += valid.size(0)
-    #     n_values += row.size(0)
-    #     # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+    def format_diagnostics(self, stats, edge_types):
+        """Organizes entropy by cardinality and returns summary statistics."""
+        entropy = stats["entropy"].mean(dim=-1).cpu()  # Average across heads
+        cards = stats["cardinality"].cpu().int()
+        types = edge_types.cpu()
 
-    #     # Hyperedges with all pocket atoms in same batch
-    #     valid = torch.unique(batch_pocket)
-    #     non_zeros = (batch_pocket.unsqueeze(1) == valid.unsqueeze(0)).nonzero(
-    #         as_tuple=False
-    #     )
-    #     row = torch.cat([row, non_zeros[:, 0] + n_lig], dim=0)
-    #     col = torch.cat([col, non_zeros[:, 1] + n_hyperedges], dim=0)
-    #     n_hyperedges += valid.size(0)
-    #     n_values += non_zeros.size(0)
-    #     # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+        diag_dict = {}
+        for i in range(len(cards)):
+            c = cards[i].item()
+            if c not in diag_dict:
+                diag_dict[c] = []
+            diag_dict[c].append({"entropy": entropy[i].item(), "type": types[i].item()})
 
-    #     # Hyperedges with ligand atoms within cutoff_lig
-    #     # pos_lig = x_lig[:, :3]
-    #     # if self.cutoff_lig < torch.norm(
-    #     #     torch.max(pos_lig, dim=0)[0] - torch.min(pos_lig, dim=0)[0]
-    #     # ):
-    #     #     col_radius, row_radius = radius(
-    #     #         pos_lig,
-    #     #         pos_lig,
-    #     #         self.cutoff_lig,
-    #     #         batch_lig,
-    #     #         batch_lig,
-    #     #         max_num_neighbors=n_lig,
-    #     #     )
-    #     #     row_radius, col_radius = dedup_columns(
-    #     #         row_radius, col_radius, num_rows=pos_lig.shape[0]
-    #     #     )
-    #     #     row = torch.cat([row, row_radius], dim=0)
-    #     #     col = torch.cat([col, col_radius + n_hyperedges], dim=0)
+        # Summary statistics over all hyperedges
+        summary_stats = {
+            "mean_entropy": entropy.mean().item(),
+            "max_entropy": entropy.max().item(),
+            "min_entropy": entropy.min().item(),
+        }
 
-    #     #     n_hyperedges += torch.max(col_radius).item() + 1
-    #     #     n_values += row_radius.size(0)
-    #     # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+        return {"per_cardinality": diag_dict, "summary": summary_stats}
 
-    #     # Hyperedges with pocket atoms within cutoff_poc
-    #     # pos_poc = x_pocket[:, :3]
-    #     # row_radius, col_radius = radius(
-    #     #     pos_poc,
-    #     #     pos_poc,
-    #     #     self.cutoff_poc,
-    #     #     batch_pocket,
-    #     #     batch_pocket,
-    #     #     max_num_neighbors=n_poc,
-    #     # )
-    #     # row_radius, col_radius = dedup_columns(
-    #     #     row_radius, col_radius, num_rows=pos_poc.shape[0]
-    #     # )
-    #     # row = torch.cat([row, row_radius + n_lig], dim=0)
-    #     # col = torch.cat([col, col_radius + n_hyperedges], dim=0)
-    #     # n_hyperedges += torch.max(col_radius).item() + 1
-    #     # n_values += row_radius.size(0)
-    #     # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+    def create_incidence_with_types(self, x_lig, x_pocket, batch_lig, batch_pocket):
+        """Create hyperedges and track their semantic types."""
+        device = x_lig.device
+        n_lig = x_lig.shape[0]
+        n_poc = x_pocket.shape[0]
+        n_nodes = n_lig + n_poc
 
-    #     # Hyperedges with ligand and pocket atoms within cutoff_cross
-    #     # row_radius, col_radius = radius(
-    #     #     pos_lig,
-    #     #     pos_poc,
-    #     #     self.cutoff_cross,
-    #     #     batch_lig,
-    #     #     batch_pocket,
-    #     #     max_num_neighbors=n_poc,
-    #     # )
-    #     # row_radius, col_radius = add_ligands_to_hyperedges(
-    #     #     row_radius, col_radius, n_lig
-    #     # )
-    #     # row = torch.cat([row, row_radius], dim=0)
-    #     # col = torch.cat([col, col_radius + n_hyperedges], dim=0)
-    #     # n_hyperedges += torch.max(col_radius).item() + 1
-    #     # n_values += row_radius.size(0)
-    #     # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+        row_list = []
+        col_list = []
+        type_list = []
 
-    #     # edge_ll, edge_pp_global, edge_lp_global = self.create_edge_index(
-    #     #     x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
-    #     # )
-    #     edge_lp, edge_index = self.create_edge_index(
-    #         x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
-    #     )
+        current_hyperedge_id = 0
+        is_lig = batch_lig != -1
+        is_poc = batch_pocket != -1
 
-    #     # This creates hyperedges with degree 2
-    #     # row_graph = edge_ll.view(-1)
-    #     # col_graph = torch.arange(edge_ll.shape[1], device=device).repeat(2)
-    #     # row = torch.cat([row, row_graph], dim=0)
-    #     # col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-    #     # if col_graph.numel() > 0:
-    #     #     n_hyperedges += torch.max(col_graph).item() + 1
-    #     #     n_values += row_graph.size(0)
+        # ----- 1. Global Ligand Hyperedges (Type 0) -----
+        valid_lig_batches = torch.unique(batch_lig)
+        non_zeros_lig = (
+            batch_lig.unsqueeze(1) == valid_lig_batches.unsqueeze(0)
+        ).nonzero(as_tuple=False)
 
-    #     # row_graph = edge_pp_global.view(-1)
-    #     # col_graph = torch.arange(edge_pp_global.shape[1], device=device).repeat(2)
-    #     # row = torch.cat([row, row_graph], dim=0)
-    #     # col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-    #     # if col_graph.numel() > 0:
-    #     #     n_hyperedges += torch.max(col_graph).item() + 1
-    #     #     n_values += row_graph.size(0)
+        row_list.append(non_zeros_lig[:, 0])
+        col_list.append(non_zeros_lig[:, 1] + current_hyperedge_id)
 
-    #     # row_graph = edge_lp_global.view(-1)
-    #     # col_graph = torch.arange(edge_lp_global.shape[1], device=device).repeat(2)
-    #     # row = torch.cat([row, row_graph], dim=0)
-    #     # col = torch.cat([col, col_graph + n_hyperedges], dim=0)
-    #     # if col_graph.numel() > 0:
-    #     #     n_hyperedges += torch.max(col_graph).item() + 1
-    #     #     n_values += row_graph.size(0)
-    #     # self.check_batch_separation(row, col, n_hyperedges, n_values, n_nodes, device, batch_lig[is_lig], batch_pocket[is_poc])
+        num_global_lig = valid_lig_batches.size(0)
+        type_list.append(torch.full((num_global_lig,), 0, device=device))
+        current_hyperedge_id += num_global_lig
 
-    #     # Create incidence matrix with lp hyperedges
-    #     rows_lp = edge_lp[0]
-    #     cols_lp = edge_lp[1]
+        # ----- 2. Global Pocket Hyperedges (Type 1) -----
+        valid_poc_batches = torch.unique(batch_pocket)
+        non_zeros_poc = (
+            batch_pocket.unsqueeze(1) == valid_poc_batches.unsqueeze(0)
+        ).nonzero(as_tuple=False)
 
-    #     # Ligand self-connections: each ligand belongs to its own hyperedge
-    #     rows_lig = torch.arange(n_lig, device=device)
-    #     cols_lig = torch.arange(n_lig, device=device)
+        row_list.append(non_zeros_poc[:, 0] + n_lig)
+        col_list.append(non_zeros_poc[:, 1] + current_hyperedge_id)
 
-    #     # Concatenate all
-    #     rows = torch.cat([rows_lig, cols_lp + n_lig], dim=0)
-    #     cols = torch.cat([cols_lig, rows_lp], dim=0)
-    #     row = torch.cat([row, rows], dim=0)
-    #     col = torch.cat([col, cols + n_hyperedges], dim=0)
-    #     n_values += rows.size(0)
-    #     n_hyperedges += n_lig
-    #     # Create incidence matrix
-    #     value = torch.ones(n_values, dtype=torch.long, device=device)
-    #     incidence1 = torch.sparse_coo_tensor(
-    #         torch.stack([row, col], dim=0),
-    #         value,
-    #         (n_nodes, n_hyperedges),
-    #         device=device,
-    #     )
-    #     incidence1 = incidence1.coalesce()
-    #     return incidence1, edge_index
+        num_global_poc = valid_poc_batches.size(0)
+        type_list.append(torch.full((num_global_poc,), 1, device=device))
+        current_hyperedge_id += num_global_poc
+
+        # ----- 3. Ligand Self-loops (Type 2) -----
+        # Each ligand atom belongs to its own unique hyperedge
+        row_list.append(torch.arange(n_lig, device=device))
+        col_list.append(torch.arange(n_lig, device=device) + current_hyperedge_id)
+
+        type_list.append(torch.full((n_lig,), 2, device=device))
+        current_hyperedge_id += n_lig
+
+        # ----- 4. Local Radius / Cross-Interface (Type 3) -----
+        edge_lp, edge_index = self.create_edge_index(
+            x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
+        )
+        rows_lp = edge_lp[0]  # Ligand indices
+        cols_lp = edge_lp[1]  # Pocket indices (local within pocket set)
+
+        # In your original logic: row = cols_lp + n_lig, col = rows_lp
+        # This means one hyperedge per ligand atom, containing its pocket neighbors.
+        row_list.append(cols_lp + n_lig)
+        col_list.append(rows_lp + current_hyperedge_id)
+
+        # The number of hyperedges added here is equal to the number of ligand atoms (n_lig)
+        # because rows_lp ranges from 0 to n_lig-1
+        type_list.append(torch.full((n_lig,), 3, device=device))
+        current_hyperedge_id += n_lig
+
+        # ----- Final Assembly -----
+        final_rows = torch.cat(row_list, dim=0)
+        final_cols = torch.cat(col_list, dim=0)
+        final_types = torch.cat(type_list, dim=0)  # [n_hyperedges]
+
+        value = torch.ones(final_rows.size(0), dtype=torch.long, device=device)
+        incidence1 = torch.sparse_coo_tensor(
+            torch.stack([final_rows, final_cols], dim=0),
+            value,
+            (n_nodes, current_hyperedge_id),
+            device=device,
+        )
+
+        return incidence1.coalesce(), edge_index, final_types

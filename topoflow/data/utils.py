@@ -320,6 +320,7 @@ def saveall(
     pocket_coords,
     pocket_one_hot,
     pocket_mask,
+    pocket_centroids,
 ):
     """Saves processed data to a .npz file."""
     np.savez(
@@ -331,6 +332,7 @@ def saveall(
         pocket_coords=pocket_coords,
         pocket_one_hot=pocket_one_hot,
         pocket_mask=pocket_mask,
+        pocket_centroids=pocket_centroids,
     )
     return True
 
