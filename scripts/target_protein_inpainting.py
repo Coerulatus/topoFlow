@@ -72,6 +72,7 @@ def run_inpainting(args):
 
     # --- 1. Global Setup ---
     print("Initializing environment and loading models...")
+    print(f"Ligand smiles: {args.base_ligand_smile}")
 
     rdkit_ligand = None
     if args.base_ligand_smile and args.base_ligand_smile.strip():
@@ -119,7 +120,7 @@ def run_inpainting(args):
             base_ligand.x_lig = base_ligand.x_lig / std
 
     data_dir = "./data/CrossDocked/"
-    checkpoint_path = "/home/marco/Documents/phd/topoFlow/checkpoints/runs_cluster/to_evaluate/03_11_1199e_ast_gat_scaled_vel.ckpt"
+    checkpoint_path = "/data/petretto/home/gmsv2427/Documents/topoFlow/checkpoints/to_evaluate/03_11_1199e_ast_gat_scaled_vel.ckpt"
     val_dataset = CrossDocked(root=data_dir, split="val")
     datamodule = MockDatamodule(
         train_length=1,
