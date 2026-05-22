@@ -114,7 +114,11 @@ class AdvancedTimeEmbedding(nn.Module):
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """Compute the advanced time embedding for the given timesteps."""
-        return self.net(self.sin_embed(t)).mean(dim=1)
+        t_emb = self.net(self.sin_embed(t))
+        if len(t_emb.shape) == 2:
+            return t_emb
+        else:
+            return t_emb.mean(1)
 
 
 class MessagePassing(torch.nn.Module):
