@@ -123,14 +123,8 @@ class CrossDocked(InMemoryDataset):
             print(f"Found 'test' split with {len(data_split['test'])} samples.")
 
         if "val" not in data_split:
-            if "test" in data_split:
-                print("No 'val' split found. Using 'test' split for validation.")
-                data_split["val"] = data_split["test"]
-            else:
-                print(
-                    "No 'val' or 'test' split found. Sampling 512 samples from 'train' for 'val'."
-                )
-                data_split["val"] = random.sample(data_split["train"], 512)
+            print("No 'val' split found. Sampling 64 samples for 'val'.")
+            data_split["val"] = random.sample(data_split["train"], 64)
 
         n_train_before = len(data_split.get("train", []))
         n_val_before = len(data_split.get("val", []))
@@ -491,9 +485,9 @@ class CrossDocked(InMemoryDataset):
                     constants.dataset_params["crossdock_full"]["atom_decoder"],
                     norm_params_path=norm_params_path,
                 )
-                if len(mol) == 0:
-                    continue
-                mol = mol[0]
+                # if len(mol) == 0:
+                #     continue
+                # mol = mol[0]
                 smiles_list.append(rdmol_to_smiles(mol))
             with open(smiles_path, "w") as f:
                 for smiles in smiles_list:
