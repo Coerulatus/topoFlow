@@ -114,7 +114,7 @@ class AdvancedTimeEmbedding(nn.Module):
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """Compute the advanced time embedding for the given timesteps."""
-        return self.net(self.sin_embed(t))
+        return self.net(self.sin_embed(t)).mean(dim=1)
 
 
 class MessagePassing(torch.nn.Module):
@@ -239,8 +239,17 @@ class AllSetTransformerLayer(nn.Module):
                 f"hidden_channels ({hidden_channels}) must be divisible by heads ({heads})"
             )
 
-        self.dropout = dropout
+        if hidden_channels < heads:
+            raise ValueError(
+                f"hidden_channels ({hidden_channels}) must be greater than or equal to heads ({heads})"
+            )
 
+        self.dropout = dropout
+        self.skip_proj = (
+            nn.Linear(in_channels, hidden_channels)
+            if in_channels != hidden_channels
+            else nn.Identity()
+        )
         self.vertex2edge = AllSetTransformerBlock(
             in_channels=in_channels,
             hidden_channels=hidden_channels,
@@ -281,6 +290,7 @@ class AllSetTransformerLayer(nn.Module):
         return_stats=False,
     ):
         """Forward computation."""
+        x_0_skip = self.skip_proj(x_0)
         if return_stats:
             x_1, stats = self.vertex2edge(
                 x_0,
@@ -297,10 +307,12 @@ class AllSetTransformerLayer(nn.Module):
         x_1 = F.relu(x_1)
         x_1 = F.dropout(x_1, p=self.dropout, training=self.training)
 
-        x_0 = F.relu(
+        x_0_new = F.relu(
             self.edge2vertex(x_1, edge_index_e2v, t_emb=t_emb, batch_target=batch_all)
         )
-        x_0 = F.dropout(x_0, p=self.dropout, training=self.training)
+        x_0_new = F.dropout(x_0_new, p=self.dropout, training=self.training)
+
+        x_0 = x_0_skip + x_0_new
 
         if return_stats:
             return x_0, x_1, stats
@@ -397,8 +409,8 @@ class AllSetTransformerBlock(nn.Module):
         )
 
         if return_stats:
-            return x_message_on_target.sum(dim=1), stats
-        return x_message_on_target.sum(dim=1)
+            return x_message_on_target.mean(dim=1), stats
+        return x_message_on_target.mean(dim=1)
 
 
 class MultiHeadAttention(MessagePassing):
@@ -415,7 +427,7 @@ class MultiHeadAttention(MessagePassing):
         initialization: Literal["xavier_uniform", "xavier_normal"] = "xavier_uniform",
         initialization_gain: float = 1.414,
     ) -> None:
-        """MH module for AllSet paper."""
+        """Implementation of the multi-head attention mechanism."""
         super().__init__(
             att=True,
             initialization=initialization,
@@ -424,10 +436,8 @@ class MultiHeadAttention(MessagePassing):
 
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
-
         self.aggr_norm = aggr_norm
         self.update_func = update_func
-
         self.heads = heads
         self.number_queries = number_queries
 
@@ -442,28 +452,24 @@ class MultiHeadAttention(MessagePassing):
         )
 
     def reset_parameters(self):
-        r"""Reset learnable parameters."""
+        """Reset learnable parameters."""
         if self.initialization == "xavier_uniform":
             torch.nn.init.xavier_uniform_(self.K_weight, gain=self.initialization_gain)
             torch.nn.init.xavier_uniform_(self.Q_weight, gain=self.initialization_gain)
             torch.nn.init.xavier_uniform_(self.V_weight, gain=self.initialization_gain)
-
         elif self.initialization == "xavier_normal":
             torch.nn.init.xavier_normal_(self.K_weight, gain=self.initialization_gain)
             torch.nn.init.xavier_normal_(self.Q_weight, gain=self.initialization_gain)
             torch.nn.init.xavier_normal_(self.V_weight, gain=self.initialization_gain)
-
         else:
-            raise RuntimeError(
-                "Initialization method not recognized. "
-                "Should be either xavier_uniform or xavier_normal."
-            )
+            raise RuntimeError("Initialization method not recognized.")
 
     def attention(self, x_source, edge_index):
-        """Compute attention weights for messages without entropy calculation."""
-        x_K = torch.matmul(x_source, self.K_weight)
+        """Compute attention weights for messages."""
+        # Explicit einsum replaces matmul to prevent dim=0 broadcasting errors
+        x_K = torch.einsum("nc,hcd->hnd", x_source, self.K_weight)
         alpha = torch.einsum("hsd,hqd->hsq", x_K, self.Q_weight)
-        alpha = alpha / math.sqrt(self.hidden_channels // self.heads)
+        alpha = alpha / math.sqrt(self.hidden_channels)
         alpha = F.leaky_relu(alpha, 0.2)
 
         alpha = alpha.permute(1, 0, 2)
@@ -477,10 +483,10 @@ class MultiHeadAttention(MessagePassing):
         return attn_weights
 
     def attention_with_entropy(self, x_source, edge_index):
-        """Compute attention and calculate entropy per hyperedge."""
-        x_K = torch.matmul(x_source, self.K_weight)
+        """Compute attention weights and their normalized entropy for messages."""
+        x_K = torch.einsum("nc,hcd->hnd", x_source, self.K_weight)
         alpha = torch.einsum("hsd,hqd->hsq", x_K, self.Q_weight)
-        alpha = alpha / math.sqrt(self.hidden_channels // self.heads)
+        alpha = alpha / math.sqrt(self.hidden_channels)
         alpha = F.leaky_relu(alpha, 0.2)
 
         alpha = alpha.permute(1, 0, 2)
@@ -521,10 +527,9 @@ class MultiHeadAttention(MessagePassing):
         else:
             attn_weights = self.attention(x_source, edge_index)
 
-        x_message = torch.matmul(x_source, self.V_weight)
-        x_message = x_message.permute(1, 0, 2)[
-            self.source_index_j
-        ] * attn_weights.unsqueeze(-1)
+        # Explicit einsum here as well
+        x_message = torch.einsum("nc,hcd->nhd", x_source, self.V_weight)
+        x_message = x_message[self.source_index_j] * attn_weights.unsqueeze(-1)
         out = pyg_scatter(x_message, self.target_index_i, dim=0, reduce="sum")
 
         if return_stats:
@@ -681,7 +686,7 @@ class GeometricMultiHeadAttention(GeometricMessagePassing):
         initialization_gain: float = 1.414,
         edge_dim: int | None = None,
     ) -> None:
-        """MH module for geometric constraints."""
+        """Implementation of the multi-head attention mechanism with geometric edge features."""
         super().__init__(
             att=True,
             initialization=initialization,
@@ -690,10 +695,8 @@ class GeometricMultiHeadAttention(GeometricMessagePassing):
 
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
-
         self.aggr_norm = aggr_norm
         self.update_func = update_func
-
         self.heads = heads
         self.number_queries = number_queries
 
@@ -715,7 +718,7 @@ class GeometricMultiHeadAttention(GeometricMessagePassing):
             self.edge_proj_v = None
 
     def reset_parameters(self):
-        r"""Reset learnable parameters."""
+        """Reset learnable parameters."""
         if self.initialization == "xavier_uniform":
             torch.nn.init.xavier_uniform_(self.K_weight, gain=self.initialization_gain)
             torch.nn.init.xavier_uniform_(self.Q_weight, gain=self.initialization_gain)
@@ -725,14 +728,11 @@ class GeometricMultiHeadAttention(GeometricMessagePassing):
             torch.nn.init.xavier_normal_(self.Q_weight, gain=self.initialization_gain)
             torch.nn.init.xavier_normal_(self.V_weight, gain=self.initialization_gain)
         else:
-            raise RuntimeError(
-                "Initialization method not recognized. "
-                "Should be either xavier_uniform or xavier_normal."
-            )
+            raise RuntimeError("Initialization method not recognized.")
 
     def attention(self, x_source, edge_index, edge_attr=None):
-        """Compute attention weights with geometric features without entropy calculation."""
-        x_K = torch.matmul(x_source, self.K_weight)
+        """Compute attention weights for messages, incorporating edge attributes if provided."""
+        x_K = torch.einsum("nc,hcd->hnd", x_source, self.K_weight)
 
         if edge_attr is not None and self.edge_proj_k is not None:
             e_k = self.edge_proj_k(edge_attr)
@@ -754,8 +754,8 @@ class GeometricMultiHeadAttention(GeometricMessagePassing):
         return attn_weights
 
     def attention_with_entropy(self, x_source, edge_index, edge_attr=None):
-        """Compute attention and calculate entropy per hyperedge."""
-        x_K = torch.matmul(x_source, self.K_weight)
+        """Compute attention weights and their normalized entropy for messages, incorporating edge attributes if provided."""
+        x_K = torch.einsum("nc,hcd->hnd", x_source, self.K_weight)
 
         if edge_attr is not None and self.edge_proj_k is not None:
             e_k = self.edge_proj_k(edge_attr)
@@ -804,7 +804,7 @@ class GeometricMultiHeadAttention(GeometricMessagePassing):
         else:
             attn_weights = self.attention(x_source, edge_index, edge_attr)
 
-        x_message = torch.matmul(x_source, self.V_weight)
+        x_message = torch.einsum("nc,hcd->hnd", x_source, self.V_weight)
         x_message = x_message.permute(1, 0, 2)[self.source_index_j]
 
         if edge_attr is not None and self.edge_proj_v is not None:
@@ -916,8 +916,8 @@ class GeometricAllSetTransformerBlock(nn.Module):
         )
 
         if return_stats:
-            return x_message_on_target.sum(dim=1), stats
-        return x_message_on_target.sum(dim=1)
+            return x_message_on_target.mean(dim=1), stats
+        return x_message_on_target.mean(dim=1)
 
 
 class GeometricAllSetTransformerLayer(nn.Module):
@@ -1165,7 +1165,7 @@ class GATModel(nn.Module):
             x_res = layer(x, edge_index)
             x_res = F.silu(x_res)
             if t_emb is not None and batch_all is not None:
-                x_res = x_res + time_proj(t_emb)[batch_all]
+                x_res = x_res + (time_proj(t_emb)[batch_all])
             x_res = norm(x_res)
             x = x + x_res
         return x
@@ -1242,45 +1242,89 @@ class AllSetTransformerVectorField(nn.Module):
             nn.LayerNorm(h_dim), nn.Linear(h_dim, self.x_dim, bias=False)
         )
 
-    def create_edge_index(self, x_lig, x_pocket, batch_lig, batch_pocket):
-        """Create edge index for GATv2Conv."""
+    def format_diagnostics(self, stats, edge_types):
+        """Organizes entropy by cardinality and returns summary statistics."""
+        entropy = stats["entropy"].mean(dim=-1).cpu()
+        cards = stats["cardinality"].cpu().int()
+        types = edge_types.cpu()
+
+        diag_dict = {}
+        for i in range(len(cards)):
+            c = cards[i].item()
+            if c not in diag_dict:
+                diag_dict[c] = []
+            diag_dict[c].append({"entropy": entropy[i].item(), "type": types[i].item()})
+
+        summary_stats = {
+            "mean_entropy": entropy.mean().item(),
+            "max_entropy": entropy.max().item(),
+            "min_entropy": entropy.min().item(),
+        }
+
+        return {"per_cardinality": diag_dict, "summary": summary_stats}
+
+    def create_edge_index(self, x_lig, x_pocket, filt_batch_lig, filt_batch_poc):
+        """Create edge index for GATv2Conv directly using dense node inputs."""
         lig_pos = x_lig[:, :3]
         poc_pos = x_pocket[:, :3]
 
-        N1, N2 = lig_pos.size(0), poc_pos.size(0)
+        N1 = lig_pos.size(0)
 
+        # 1. Ligand-Ligand Edges
         edge_ll = radius_graph(
             lig_pos,
             r=self.cutoff_lig,
-            batch=batch_lig,
+            batch=filt_batch_lig,
             loop=False,
-            max_num_neighbors=1000,
+            max_num_neighbors=10000,
         )
+        if edge_ll.numel() > 0:
+            # Bulletproof mask to prevent cross-batch edges if data is unsorted
+            valid_ll = filt_batch_lig[edge_ll[0]] == filt_batch_lig[edge_ll[1]]
+            edge_ll = edge_ll[:, valid_ll]
 
+        # 2. Ligand-Pocket Edges (Bipartite)
         edge_lp = radius(
             poc_pos,
             lig_pos,
             r=self.cutoff_cross,
-            batch_x=batch_pocket,
-            batch_y=batch_lig,
-            max_num_neighbors=1000,
+            batch_x=filt_batch_poc,
+            batch_y=filt_batch_lig,
+            max_num_neighbors=10000,
         )
 
         if not self.use_gat:
             return edge_ll, edge_lp, None
 
+        # 3. Pocket-Pocket Edges
         edge_pp = radius_graph(
             poc_pos,
             r=self.cutoff_poc,
-            batch=batch_pocket,
+            batch=filt_batch_poc,
             loop=False,
-            max_num_neighbors=1000,
+            max_num_neighbors=10000,
+        )
+        if edge_pp.numel() > 0:
+            valid_pp = filt_batch_poc[edge_pp[0]] == filt_batch_poc[edge_pp[1]]
+            edge_pp = edge_pp[:, valid_pp]
+
+        # Shift pocket indices by N1 to build the global bipartite graph
+        edge_pp_global = (
+            edge_pp + N1
+            if edge_pp.numel() > 0
+            else torch.empty((2, 0), dtype=torch.long, device=x_lig.device)
         )
 
-        edge_pp_global = edge_pp + N1
-
-        edge_lp_global = torch.stack([edge_lp[0], edge_lp[1] + N1], dim=0)
-        edge_pl_global = torch.stack([edge_lp[1] + N1, edge_lp[0]], dim=0)
+        edge_lp_global = (
+            torch.stack([edge_lp[0], edge_lp[1] + N1], dim=0)
+            if edge_lp.numel() > 0
+            else torch.empty((2, 0), dtype=torch.long, device=x_lig.device)
+        )
+        edge_pl_global = (
+            torch.stack([edge_lp[1] + N1, edge_lp[0]], dim=0)
+            if edge_lp.numel() > 0
+            else torch.empty((2, 0), dtype=torch.long, device=x_lig.device)
+        )
 
         edge_index = torch.cat(
             [edge_ll, edge_pp_global, edge_lp_global, edge_pl_global], dim=1
@@ -1288,15 +1332,190 @@ class AllSetTransformerVectorField(nn.Module):
 
         return edge_ll, edge_lp, edge_index
 
+    def create_incidence_with_types(self, x_lig, x_pocket, batch_lig, batch_pocket):
+        """Create incidence matrices for hyperedges with type annotations and batch assignments."""
+        device = x_lig.device
+        n_lig = x_lig.shape[0]
+        n_poc = x_pocket.shape[0]
+
+        # Extract valid batch assignments to match the dense node lengths exactly
+        filt_batch_lig = batch_lig[batch_lig != -1].view(-1)
+        filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
+
+        row_list, col_list, type_list, he_batches = [], [], [], []
+        current_hyperedge_id = 0
+
+        # 1. Global ligand hyperedges
+        valid_lig_batches, batch_lig_inverse = torch.unique(
+            filt_batch_lig, return_inverse=True
+        )
+        row_list.append(torch.arange(n_lig, device=device))
+        col_list.append(batch_lig_inverse + current_hyperedge_id)
+
+        num_global_lig = valid_lig_batches.size(0)
+        type_list.append(torch.full((num_global_lig,), 0, device=device))
+        he_batches.append(valid_lig_batches)
+        current_hyperedge_id += num_global_lig
+
+        # 2. Global pocket hyperedges
+        valid_poc_batches, batch_poc_inverse = torch.unique(
+            filt_batch_poc, return_inverse=True
+        )
+        row_list.append(torch.arange(n_poc, device=device) + n_lig)
+        col_list.append(batch_poc_inverse + current_hyperedge_id)
+
+        num_global_poc = valid_poc_batches.size(0)
+        type_list.append(torch.full((num_global_poc,), 1, device=device))
+        he_batches.append(valid_poc_batches)
+        current_hyperedge_id += num_global_poc
+
+        # 3. Local pairwise edges via PyG (Now Bulletproofed)
+        edge_ll, edge_lp, edge_index = self.create_edge_index(
+            x_lig, x_pocket, filt_batch_lig, filt_batch_poc
+        )
+
+        # 4. Local ligand hyperedges (Ligand-Centric)
+        lig_idx_to_he = torch.arange(n_lig, device=device) + current_hyperedge_id
+
+        row_list.append(torch.arange(n_lig, device=device))
+        col_list.append(lig_idx_to_he)
+
+        if edge_lp is not None and edge_lp.numel() > 0:
+            row_list.append(edge_lp[1] + n_lig)
+            col_list.append(lig_idx_to_he[edge_lp[0]])
+
+        if edge_ll is not None and edge_ll.numel() > 0:
+            row_list.append(edge_ll[1])
+            col_list.append(lig_idx_to_he[edge_ll[0]])
+
+        type_list.append(torch.full((n_lig,), 2, device=device))
+        he_batches.append(filt_batch_lig)
+        current_hyperedge_id += n_lig
+
+        final_rows = torch.cat(row_list, dim=0)
+        final_cols = torch.cat(col_list, dim=0)
+        final_types = torch.cat(type_list, dim=0)
+        final_batch_he = torch.cat(he_batches, dim=0)
+
+        edge_index_v2e = torch.stack([final_cols, final_rows], dim=0)
+        edge_index_e2v = torch.stack([final_rows, final_cols], dim=0)
+
+        return edge_index_v2e, edge_index_e2v, edge_index, final_types, final_batch_he
+
+    def create_geometric_incidence(self, x_lig, x_pocket, batch_lig, batch_pocket):
+        """Create incidence matrices for hyperedges with geometric attributes, type annotations, and batch assignments."""
+        device = x_lig.device
+        n_lig = x_lig.shape[0]
+        n_poc = x_pocket.shape[0]
+
+        # Extract valid batch assignments to match the dense node lengths exactly
+        filt_batch_lig = batch_lig[batch_lig != -1].view(-1)
+        filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
+
+        lig_pos = x_lig[:, :3]
+        poc_pos = x_pocket[:, :3]
+
+        row_list, col_list, type_list, he_batches = [], [], [], []
+        current_hyperedge_id = 0
+
+        # 1. Global ligand hyperedges
+        valid_lig_batches, batch_lig_inverse = torch.unique(
+            filt_batch_lig, return_inverse=True
+        )
+        row_list.append(torch.arange(n_lig, device=device))
+        col_list.append(batch_lig_inverse + current_hyperedge_id)
+
+        num_global_lig = valid_lig_batches.size(0)
+        type_list.append(torch.full((num_global_lig,), 0, device=device))
+        he_batches.append(valid_lig_batches)
+        current_hyperedge_id += num_global_lig
+
+        # 2. Global pocket hyperedges
+        valid_poc_batches, batch_poc_inverse = torch.unique(
+            filt_batch_poc, return_inverse=True
+        )
+        row_list.append(torch.arange(n_poc, device=device) + n_lig)
+        col_list.append(batch_poc_inverse + current_hyperedge_id)
+
+        num_global_poc = valid_poc_batches.size(0)
+        type_list.append(torch.full((num_global_poc,), 1, device=device))
+        he_batches.append(valid_poc_batches)
+        current_hyperedge_id += num_global_poc
+
+        # 3. Local pairwise edges via PyG (Now Bulletproofed)
+        edge_ll, edge_lp, gat_edge_index = self.create_edge_index(
+            x_lig, x_pocket, filt_batch_lig, filt_batch_poc
+        )
+
+        # 4. Local ligand hyperedges (Ligand-Centric)
+        lig_idx_to_he = torch.arange(n_lig, device=device) + current_hyperedge_id
+
+        row_list.append(torch.arange(n_lig, device=device))
+        col_list.append(lig_idx_to_he)
+
+        if edge_lp is not None and edge_lp.numel() > 0:
+            row_list.append(edge_lp[1] + n_lig)
+            col_list.append(lig_idx_to_he[edge_lp[0]])
+
+        if edge_ll is not None and edge_ll.numel() > 0:
+            row_list.append(edge_ll[1])
+            col_list.append(lig_idx_to_he[edge_ll[0]])
+
+        type_list.append(torch.full((n_lig,), 2, device=device))
+        he_batches.append(filt_batch_lig)
+        current_hyperedge_id += n_lig
+
+        final_rows = torch.cat(row_list, dim=0)
+        final_cols = torch.cat(col_list, dim=0)
+        final_types = torch.cat(type_list, dim=0)
+        final_batch_he = torch.cat(he_batches, dim=0)
+
+        # 5. Extract geometric bipartite attributes
+        center_pos = torch.zeros((current_hyperedge_id, 3), device=device)
+
+        center_pos[:num_global_lig] = pyg_scatter(
+            lig_pos, batch_lig_inverse, dim=0, reduce="mean"
+        )
+        center_pos[num_global_lig : num_global_lig + num_global_poc] = pyg_scatter(
+            poc_pos, batch_poc_inverse, dim=0, reduce="mean"
+        )
+
+        offset = num_global_lig + num_global_poc
+        center_pos[offset : offset + n_lig] = lig_pos
+
+        pos_all = torch.cat([lig_pos, poc_pos], dim=0)
+        source_pos = pos_all[final_rows]
+        target_pos = center_pos[final_cols]
+
+        rel_vec = source_pos - target_pos
+        dist = torch.norm(rel_vec, dim=-1, keepdim=True)
+        direction = rel_vec / (dist + 1e-6)
+        edge_attr = torch.cat([dist, direction], dim=-1)
+
+        edge_index_v2e = torch.stack([final_cols, final_rows], dim=0)
+        edge_index_e2v = torch.stack([final_rows, final_cols], dim=0)
+
+        return (
+            edge_index_v2e,
+            edge_index_e2v,
+            edge_attr,
+            gat_edge_index,
+            final_types,
+            final_batch_he,
+        )
+
     def forward(
         self, x_lig, t, x_pocket, batch_lig, batch_pocket, return_diagnostics=False
     ):
         """Forward pass."""
         device = x_lig.device
-        B = int(torch.max(batch_lig) + 1)
 
-        is_lig = batch_lig != -1
-        is_poc = batch_pocket != -1
+        # Extract valid batch indices
+        filt_batch_lig = batch_lig[batch_lig != -1].view(-1)
+        filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
+
+        # Handle purely single-graph edge cases gracefully
+        B = int(torch.max(filt_batch_lig) + 1) if filt_batch_lig.numel() > 0 else 1
 
         lig_h = self.lig_embed(x_lig)
         poc_h = self.poc_embed(x_pocket)
@@ -1307,11 +1526,11 @@ class AllSetTransformerVectorField(nn.Module):
             t = t.repeat(B)
         t_emb = self.time_embed(t)
 
-        batch_all = torch.cat([batch_lig[is_lig], batch_pocket[is_poc]], dim=0)
+        batch_all = torch.cat([filt_batch_lig, filt_batch_poc], dim=0)
 
         if self.add_time_to == "input":
-            lig_h = lig_h + t_emb[batch_lig[is_lig], :]
-            poc_h = poc_h + t_emb[batch_pocket[is_poc], :]
+            lig_h = lig_h + t_emb[filt_batch_lig, :]
+            poc_h = poc_h + t_emb[filt_batch_poc, :]
             layer_t_emb = None
         else:
             layer_t_emb = t_emb
@@ -1404,182 +1623,3 @@ class AllSetTransformerVectorField(nn.Module):
         if return_diagnostics:
             return vel_lig, self.format_diagnostics(stats, edge_types)
         return vel_lig
-
-    def format_diagnostics(self, stats, edge_types):
-        """Organizes entropy by cardinality and returns summary statistics."""
-        entropy = stats["entropy"].mean(dim=-1).cpu()
-        cards = stats["cardinality"].cpu().int()
-        types = edge_types.cpu()
-
-        diag_dict = {}
-        for i in range(len(cards)):
-            c = cards[i].item()
-            if c not in diag_dict:
-                diag_dict[c] = []
-            diag_dict[c].append({"entropy": entropy[i].item(), "type": types[i].item()})
-
-        summary_stats = {
-            "mean_entropy": entropy.mean().item(),
-            "max_entropy": entropy.max().item(),
-            "min_entropy": entropy.min().item(),
-        }
-
-        return {"per_cardinality": diag_dict, "summary": summary_stats}
-
-    def create_incidence_with_types(self, x_lig, x_pocket, batch_lig, batch_pocket):
-        """Create hyperedges, track their semantic types, and construct incidence matrices for GAT."""
-        device = x_lig.device
-        n_lig = x_lig.shape[0]
-        n_poc = x_pocket.shape[0]
-
-        row_list = []
-        col_list = []
-        type_list = []
-        he_batches = []
-
-        current_hyperedge_id = 0
-        is_lig = batch_lig != -1
-        is_poc = batch_pocket != -1
-
-        valid_lig_batches, batch_lig_inverse = torch.unique(
-            batch_lig, return_inverse=True
-        )
-        row_list.append(torch.arange(n_lig, device=device))
-        col_list.append(batch_lig_inverse + current_hyperedge_id)
-
-        num_global_lig = valid_lig_batches.size(0)
-        type_list.append(torch.full((num_global_lig,), 0, device=device))
-        he_batches.append(valid_lig_batches)
-        current_hyperedge_id += num_global_lig
-
-        valid_poc_batches, batch_poc_inverse = torch.unique(
-            batch_pocket, return_inverse=True
-        )
-        row_list.append(torch.arange(n_poc, device=device) + n_lig)
-        col_list.append(batch_poc_inverse + current_hyperedge_id)
-
-        num_global_poc = valid_poc_batches.size(0)
-        type_list.append(torch.full((num_global_poc,), 1, device=device))
-        he_batches.append(valid_poc_batches)
-        current_hyperedge_id += num_global_poc
-
-        edge_ll, edge_lp, edge_index = self.create_edge_index(
-            x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
-        )
-
-        row_list.append(torch.arange(n_lig, device=device))
-        col_list.append(torch.arange(n_lig, device=device) + current_hyperedge_id)
-
-        row_list.append(edge_lp[1] + n_lig)
-        col_list.append(edge_lp[0] + current_hyperedge_id)
-
-        row_list.append(edge_ll[1])
-        col_list.append(edge_ll[0] + current_hyperedge_id)
-
-        type_list.append(torch.full((n_lig,), 2, device=device))
-        he_batches.append(batch_lig[is_lig])
-        current_hyperedge_id += n_lig
-
-        final_rows = torch.cat(row_list, dim=0)
-        final_cols = torch.cat(col_list, dim=0)
-        final_types = torch.cat(type_list, dim=0)
-        final_batch_he = torch.cat(he_batches, dim=0)
-
-        edge_index_v2e = torch.stack([final_cols, final_rows], dim=0)
-        edge_index_e2v = torch.stack([final_rows, final_cols], dim=0)
-
-        return edge_index_v2e, edge_index_e2v, edge_index, final_types, final_batch_he
-
-    def create_geometric_incidence(self, x_lig, x_pocket, batch_lig, batch_pocket):
-        """Create hyperedges, track their semantic types, and extract geometric bipartite attributes."""
-        device = x_lig.device
-        n_lig = x_lig.shape[0]
-        n_poc = x_pocket.shape[0]
-
-        row_list = []
-        col_list = []
-        type_list = []
-        he_batches = []
-
-        current_hyperedge_id = 0
-        is_lig = batch_lig != -1
-        is_poc = batch_pocket != -1
-
-        lig_pos = x_lig[:, :3]
-        poc_pos = x_pocket[:, :3]
-
-        valid_lig_batches, batch_lig_inverse = torch.unique(
-            batch_lig, return_inverse=True
-        )
-        row_list.append(torch.arange(n_lig, device=device))
-        col_list.append(batch_lig_inverse + current_hyperedge_id)
-
-        num_global_lig = valid_lig_batches.size(0)
-        type_list.append(torch.full((num_global_lig,), 0, device=device))
-        he_batches.append(valid_lig_batches)
-        current_hyperedge_id += num_global_lig
-
-        valid_poc_batches, batch_poc_inverse = torch.unique(
-            batch_pocket, return_inverse=True
-        )
-        row_list.append(torch.arange(n_poc, device=device) + n_lig)
-        col_list.append(batch_poc_inverse + current_hyperedge_id)
-
-        num_global_poc = valid_poc_batches.size(0)
-        type_list.append(torch.full((num_global_poc,), 1, device=device))
-        he_batches.append(valid_poc_batches)
-        current_hyperedge_id += num_global_poc
-
-        edge_ll, edge_lp, gat_edge_index = self.create_edge_index(
-            x_lig, x_pocket, batch_lig[is_lig], batch_pocket[is_poc]
-        )
-
-        row_list.append(torch.arange(n_lig, device=device))
-        col_list.append(torch.arange(n_lig, device=device) + current_hyperedge_id)
-
-        row_list.append(edge_lp[1] + n_lig)
-        col_list.append(edge_lp[0] + current_hyperedge_id)
-
-        row_list.append(edge_ll[1])
-        col_list.append(edge_ll[0] + current_hyperedge_id)
-
-        type_list.append(torch.full((n_lig,), 2, device=device))
-        he_batches.append(batch_lig[is_lig])
-        current_hyperedge_id += n_lig
-
-        final_rows = torch.cat(row_list, dim=0)
-        final_cols = torch.cat(col_list, dim=0)
-        final_types = torch.cat(type_list, dim=0)
-        final_batch_he = torch.cat(he_batches, dim=0)
-
-        center_pos = torch.zeros((current_hyperedge_id, 3), device=device)
-        center_pos[:num_global_lig] = pyg_scatter(
-            lig_pos, batch_lig_inverse, dim=0, reduce="mean"
-        )
-        center_pos[num_global_lig : num_global_lig + num_global_poc] = pyg_scatter(
-            poc_pos, batch_poc_inverse, dim=0, reduce="mean"
-        )
-
-        offset = num_global_lig + num_global_poc
-        center_pos[offset : offset + n_lig] = lig_pos
-
-        pos_all = torch.cat([lig_pos, poc_pos], dim=0)
-        source_pos = pos_all[final_rows]
-        target_pos = center_pos[final_cols]
-
-        rel_vec = source_pos - target_pos
-        dist = torch.norm(rel_vec, dim=-1, keepdim=True)
-        direction = rel_vec / (dist + 1e-6)
-        edge_attr = torch.cat([dist, direction], dim=-1)
-
-        edge_index_v2e = torch.stack([final_cols, final_rows], dim=0)
-        edge_index_e2v = torch.stack([final_rows, final_cols], dim=0)
-
-        return (
-            edge_index_v2e,
-            edge_index_e2v,
-            edge_attr,
-            gat_edge_index,
-            final_types,
-            final_batch_he,
-        )
