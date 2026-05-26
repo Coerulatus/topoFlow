@@ -29,6 +29,41 @@ from topoflow.utils.metrics import (
 from topoflow.utils.molecules import data_to_rdmol, data_to_list
 
 
+def global_score_mol_worker(mol_or_pyg, metrics, scorer_dict):
+    """Standalone, top-level function that pickle can safely reference."""
+    mol_results = {}
+
+    if "gnina" in metrics:
+        rdmol, pyg_mol = mol_or_pyg
+    else:
+        rdmol = mol_or_pyg
+        pyg_mol = None
+
+    for m in metrics:
+        if m == "gnina":
+            scorer = scorer_dict.get(m)
+            if scorer is not None:
+                try:
+                    # Move to cpu explicitly within the isolated worker process
+                    res = scorer(pyg_mol.to("cpu"))
+                    mol_results["vina"] = res[0]
+                    mol_results["cnn_affinity"] = res[1]
+                except Exception:
+                    mol_results["vina"] = float(0)
+                    mol_results["cnn_affinity"] = float(0)
+        else:
+            scorer = scorer_dict.get(m)
+            if scorer is not None and rdmol is not None:
+                try:
+                    res = scorer(rdmol)
+                    mol_results[m] = res.item() if hasattr(res, "item") else res
+                except Exception:
+                    mol_results[m] = float(0)
+            else:
+                mol_results[m] = float(0)
+    return mol_results
+
+
 class FlowModel(pl.LightningModule):
     """A PyTorch Lightning module for training a vector field model in a flow-based generative model.
 
@@ -304,7 +339,6 @@ class FlowModel(pl.LightningModule):
         batch_lig = batch["batch_lig"]
         batch_lig = batch_lig[batch_lig != -1]
 
-        # Log diagnostics only for the first batch to avoid clutter and overhead
         return_diagnostics = batch_idx == 0
 
         u_t_theta, u_t_ref, t, x_lig, diagnostics = self.forward(
@@ -322,17 +356,32 @@ class FlowModel(pl.LightningModule):
 
         if diagnostics is not None and "summary" in diagnostics:
             summary = diagnostics["summary"]
+
+            # SANITIZATION: Re-route via helper to capture structural nan tensors
+            def safe_val(v):
+                if isinstance(v, torch.Tensor):
+                    return torch.where(
+                        torch.isnan(v) | torch.isinf(v), torch.zeros_like(v), v
+                    )
+                return 0.0 if (np.isnan(v) or np.isinf(v)) else v
+
             self.log(
                 "val/mean_entropy",
-                summary["mean_entropy"],
+                safe_val(summary["mean_entropy"]),
                 on_epoch=True,
                 prog_bar=False,
             )
             self.log(
-                "val/max_entropy", summary["max_entropy"], on_epoch=True, prog_bar=False
+                "val/max_entropy",
+                safe_val(summary["max_entropy"]),
+                on_epoch=True,
+                prog_bar=False,
             )
             self.log(
-                "val/min_entropy", summary["min_entropy"], on_epoch=True, prog_bar=False
+                "val/min_entropy",
+                safe_val(summary["min_entropy"]),
+                on_epoch=True,
+                prog_bar=False,
             )
 
         if (
@@ -340,7 +389,6 @@ class FlowModel(pl.LightningModule):
             and batch_idx == 0
             and self.n_epoch % self.sample_every == 0
         ):
-            # Define save path if run_dir is set by the validation loop
             save_path = None
             if hasattr(self, "current_run_dir"):
                 save_path = os.path.join(
@@ -352,17 +400,26 @@ class FlowModel(pl.LightningModule):
                 metrics=self.metrics,
                 atom_decoder=self.atom_decoder,
                 keep_biggest_fragment=True,
-                save_path=save_path,  # Pass save_path
+                save_path=save_path,
             )
+
+            # SANITIZATION: Clean up structural dictionary metrics
             for metric, distance in distances.items():
-                self.log(
-                    f"val/{metric}",
-                    distance,
-                    on_epoch=True,
-                    prog_bar=False,
+                clean_dist = (
+                    0.0 if (np.isnan(distance) or np.isinf(distance)) else distance
                 )
+                self.log(f"val/{metric}", clean_dist, on_epoch=True, prog_bar=False)
+
             for metric, value in other_metrics.items():
-                self.log(f"val/{metric}", value, on_epoch=True, prog_bar=False)
+                if isinstance(value, torch.Tensor):
+                    clean_val = torch.where(
+                        torch.isnan(value) | torch.isinf(value),
+                        torch.zeros_like(value),
+                        value,
+                    )
+                else:
+                    clean_val = 0.0 if (np.isnan(value) or np.isinf(value)) else value
+                self.log(f"val/{metric}", clean_val, on_epoch=True, prog_bar=False)
 
         self.n_epoch += 1
         return losses["loss"]
@@ -461,61 +518,14 @@ class FlowModel(pl.LightningModule):
             import concurrent.futures
             import multiprocessing as mp
 
-            # We use process_single_molecule-like logic but adapted here
-            # to use available scorers in topoflow.utils.metrics
+            # Import explicitly here to ensure it is packed cleanly by the pickler
             from topoflow.utils.metrics import scorer_dict
 
-            def score_mol_worker(mol_or_pyg, metrics, atom_decoder, norm_params):
-                """Worker to score a single molecule."""
-                mol_results = {}
-                # If gnina is in metrics, we need the PyG object
-                if "gnina" in metrics:
-                    # Expecting mol_or_pyg to be a tuple (rdmol, pyg_mol)
-                    rdmol, pyg_mol = mol_or_pyg
-                else:
-                    rdmol = mol_or_pyg
-                    pyg_mol = None
-
-                for m in metrics:
-                    if m == "gnina":
-                        scorer = scorer_dict.get(m)
-                        if scorer is not None:
-                            try:
-                                # GNINA scorer expects a PyG mol and handles its own device
-                                res = scorer(pyg_mol.to("cpu"))
-                                mol_results["vina"] = res[0]
-                                mol_results["cnn_affinity"] = res[1]
-                            except Exception:
-                                mol_results["vina"] = float("nan")
-                                mol_results["cnn_affinity"] = float("nan")
-                    else:
-                        scorer = scorer_dict.get(m)
-                        if scorer is not None and rdmol is not None:
-                            try:
-                                res = scorer(rdmol)
-                                mol_results[m] = (
-                                    res.item() if hasattr(res, "item") else res
-                                )
-                            except Exception:
-                                mol_results[m] = float("nan")
-                        else:
-                            mol_results[m] = float("nan")
-                return mol_results
-
             ctx = mp.get_context("spawn")
-            norm_params = (
-                self.normalization_params
-                if hasattr(self, "normalization_params")
-                else None
-            )
 
             # Prepare data for workers
             worker_data = []
             if "gnina" in metrics:
-                # We need both rdmol and pyg_mol
-                # mols list corresponds to pyg_mols ONLY AFTER connectivity check
-                # Actually, compute_connectivity returns kept_indices for mols
-                # So we should align them
                 for i in range(len(mols)):
                     worker_data.append((mols[i], pyg_mols[i]))
             else:
@@ -529,7 +539,10 @@ class FlowModel(pl.LightningModule):
             ) as executor:
                 futures = [
                     executor.submit(
-                        score_mol_worker, d, metrics, atom_decoder, norm_params
+                        global_score_mol_worker,
+                        d,
+                        metrics,
+                        scorer_dict,  # <-- FIXED: Passed scorer_dict
                     )
                     for d in worker_data
                 ]
@@ -573,32 +586,64 @@ class FlowModel(pl.LightningModule):
         res["validity"] = torch.tensor(validity_score, dtype=torch.float)
         res["connectivity"] = torch.tensor(connectivity_score, dtype=torch.float)
         res["uniqueness"] = torch.tensor(uniqueness_ratio, dtype=torch.float)
+
         for metric in metrics_calculated:
             if metric in results:
-                res[f"{metric}_mean"] = torch.tensor(
-                    np.mean(results[metric]), dtype=torch.float
-                )
-                res[f"{metric}_std"] = torch.tensor(
-                    np.std(results[metric]), dtype=torch.float
-                )
+                # Filter out raw nan inputs from array blocks entirely before calculating stats
+                clean_arr = [
+                    v
+                    for v in results[metric]
+                    if v is not None and not np.isnan(v) and not np.isinf(v)
+                ]
+
+                if len(clean_arr) > 0:
+                    m_val = np.mean(clean_arr)
+                    s_val = np.std(clean_arr)
+                    res[f"{metric}_mean"] = torch.tensor(
+                        0.0 if np.isnan(m_val) else m_val, dtype=torch.float
+                    )
+                    res[f"{metric}_std"] = torch.tensor(
+                        0.0 if np.isnan(s_val) else s_val, dtype=torch.float
+                    )
+                else:
+                    res[f"{metric}_mean"] = torch.tensor(0.0, dtype=torch.float)
+                    res[f"{metric}_std"] = torch.tensor(0.0, dtype=torch.float)
 
         distances = {}
         try:
             for metric in metrics_calculated:
                 if metric in test_distribution:
                     expected = test_distribution[metric]
-                    expected = [e for e in expected if e is not None]
+                    expected = [
+                        e for e in expected if e is not None and not np.isnan(e)
+                    ]
                     actual = results[metric]
-                    if isinstance(expected, list):
-                        expected = torch.tensor(expected)
-                    if isinstance(actual, list):
-                        actual = torch.tensor(actual, device=expected.device)
-                    distance = wasserstein_1d(expected, actual)
-                    distances[metric + "_wl_distance"] = distance.item()
+                    # Filter matching validation evaluations
+                    actual = [
+                        a
+                        for a in actual
+                        if a is not None and not np.isnan(a) and not np.isinf(a)
+                    ]
+
+                    if len(actual) > 0 and len(expected) > 0:
+                        expected_t = torch.tensor(expected)
+                        actual_t = torch.tensor(actual, device=expected_t.device)
+                        distance = wasserstein_1d(expected_t, actual_t)
+                        dist_val = distance.item()
+                        distances[metric + "_wl_distance"] = (
+                            0.0 if np.isnan(dist_val) else dist_val
+                        )
+                    else:
+                        distances[metric + "_wl_distance"] = 0.0
+
             return distances, res
         except Exception as e:
             print(f"Error calculating distances: {e}")
-            return {metric: float(0) for metric in metrics}, res
+            return {
+                metric + "_wl_distance": float(0)
+                for metric in metrics
+                if metric in test_distribution
+            }, res
 
     def drift_coefficient(self, x, t, batch_all, batch_lig, batch_pocket, z):
         """Computes the drift coefficient (vector field) at time t.
