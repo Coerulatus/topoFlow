@@ -114,10 +114,13 @@ def run_inpainting(args):
         # Scale if normalization was applied to pocket
         if args.normalization_path is not None:
             norm_params = np.load(args.normalization_path, allow_pickle=True)
+            mean = torch.tensor(norm_params["mean"], dtype=torch.float32).to(
+                base_ligand.x_lig.device
+            )
             std = torch.tensor(norm_params["std"], dtype=torch.float32).to(
                 base_ligand.x_lig.device
             )
-            base_ligand.x_lig = base_ligand.x_lig / std
+            base_ligand.x_lig = (base_ligand.x_lig - mean) / std
 
     data_dir = "./data/CrossDocked/"
     checkpoint_path = "/data/petretto/home/gmsv2427/Documents/topoFlow/checkpoints/to_evaluate/03_11_1199e_ast_gat_scaled_vel.ckpt"

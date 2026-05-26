@@ -518,9 +518,6 @@ class FlowModel(pl.LightningModule):
             import concurrent.futures
             import multiprocessing as mp
 
-            # Import explicitly here to ensure it is packed cleanly by the pickler
-            from topoflow.utils.metrics import scorer_dict
-
             ctx = mp.get_context("spawn")
 
             # Prepare data for workers
@@ -542,7 +539,7 @@ class FlowModel(pl.LightningModule):
                         global_score_mol_worker,
                         d,
                         metrics,
-                        scorer_dict,  # <-- FIXED: Passed scorer_dict
+                        scorer_dict,
                     )
                     for d in worker_data
                 ]
