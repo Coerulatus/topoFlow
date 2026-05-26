@@ -463,8 +463,6 @@ class FlowModel(pl.LightningModule):
 
             # We use process_single_molecule-like logic but adapted here
             # to use available scorers in topoflow.utils.metrics
-            from topoflow.utils.metrics import scorer_dict
-
             def score_mol_worker(mol_or_pyg, metrics, atom_decoder, norm_params):
                 """Worker to score a single molecule."""
                 mol_results = {}

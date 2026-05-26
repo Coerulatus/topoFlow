@@ -363,7 +363,7 @@ class InverseTimeFactorNoClamping(BaseTimeFactor):
 
     def __init__(
         self,
-        max_value: float = 100.0,
+        max_value: float = 10.0,
         min_value: float = 0.05,
         zero_before: float = 0.0,
     ) -> None:

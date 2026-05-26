@@ -326,9 +326,11 @@ def pdb_to_data_object(
         if verbose:
             print(f"Applying normalization from: {normalization_path}")
         norm_params = np.load(normalization_path, allow_pickle=True)
-        # Assuming mean is 0 after mandatory centering, we focus on std
+        mean = norm_params["mean"]
         std = norm_params["std"]
-        coords = coords / torch.tensor(std, dtype=torch.float32)
+        coords = (coords - torch.tensor(mean, dtype=torch.float32)) / torch.tensor(
+            std, dtype=torch.float32
+        )
 
     # Rename tensors for the pocket Data object
     pocket_data = Data(
