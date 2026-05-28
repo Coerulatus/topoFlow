@@ -1274,45 +1274,34 @@ class AllSetTransformerVectorField(nn.Module):
 
         N1 = lig_pos.size(0)
 
-        # 1. Ligand-Ligand Edges
         edge_ll = radius_graph(
             lig_pos,
             r=self.cutoff_lig,
             batch=filt_batch_lig,
             loop=False,
-            max_num_neighbors=10000,
+            max_num_neighbors=512,
         )
-        if edge_ll.numel() > 0:
-            # Bulletproof mask to prevent cross-batch edges if data is unsorted
-            valid_ll = filt_batch_lig[edge_ll[0]] == filt_batch_lig[edge_ll[1]]
-            edge_ll = edge_ll[:, valid_ll]
 
-        # 2. Ligand-Pocket Edges (Bipartite)
         edge_lp = radius(
             poc_pos,
             lig_pos,
             r=self.cutoff_cross,
             batch_x=filt_batch_poc,
             batch_y=filt_batch_lig,
-            max_num_neighbors=10000,
+            max_num_neighbors=512,
         )
 
         if not self.use_gat:
             return edge_ll, edge_lp, None
 
-        # 3. Pocket-Pocket Edges
         edge_pp = radius_graph(
             poc_pos,
             r=self.cutoff_poc,
             batch=filt_batch_poc,
             loop=False,
-            max_num_neighbors=10000,
+            max_num_neighbors=512,
         )
-        if edge_pp.numel() > 0:
-            valid_pp = filt_batch_poc[edge_pp[0]] == filt_batch_poc[edge_pp[1]]
-            edge_pp = edge_pp[:, valid_pp]
 
-        # Shift pocket indices by N1 to build the global bipartite graph
         edge_pp_global = (
             edge_pp + N1
             if edge_pp.numel() > 0
@@ -1342,43 +1331,43 @@ class AllSetTransformerVectorField(nn.Module):
         n_lig = x_lig.shape[0]
         n_poc = x_pocket.shape[0]
 
-        # Extract valid batch assignments to match the dense node lengths exactly
         filt_batch_lig = batch_lig[batch_lig != -1].view(-1)
         filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
+
+        B_lig = (
+            int(torch.max(filt_batch_lig).item()) + 1
+            if filt_batch_lig.numel() > 0
+            else 1
+        )
+        B_poc = (
+            int(torch.max(filt_batch_poc).item()) + 1
+            if filt_batch_poc.numel() > 0
+            else 1
+        )
 
         row_list, col_list, type_list, he_batches = [], [], [], []
         current_hyperedge_id = 0
 
-        # 1. Global ligand hyperedges
-        valid_lig_batches, batch_lig_inverse = torch.unique(
-            filt_batch_lig, return_inverse=True
-        )
+        valid_lig_batches = torch.arange(B_lig, device=device)
         row_list.append(torch.arange(n_lig, device=device))
-        col_list.append(batch_lig_inverse + current_hyperedge_id)
+        col_list.append(filt_batch_lig + current_hyperedge_id)
 
-        num_global_lig = valid_lig_batches.size(0)
-        type_list.append(torch.full((num_global_lig,), 0, device=device))
+        type_list.append(torch.full((B_lig,), 0, device=device))
         he_batches.append(valid_lig_batches)
-        current_hyperedge_id += num_global_lig
+        current_hyperedge_id += B_lig
 
-        # 2. Global pocket hyperedges
-        valid_poc_batches, batch_poc_inverse = torch.unique(
-            filt_batch_poc, return_inverse=True
-        )
+        valid_poc_batches = torch.arange(B_poc, device=device)
         row_list.append(torch.arange(n_poc, device=device) + n_lig)
-        col_list.append(batch_poc_inverse + current_hyperedge_id)
+        col_list.append(filt_batch_poc + current_hyperedge_id)
 
-        num_global_poc = valid_poc_batches.size(0)
-        type_list.append(torch.full((num_global_poc,), 1, device=device))
+        type_list.append(torch.full((B_poc,), 1, device=device))
         he_batches.append(valid_poc_batches)
-        current_hyperedge_id += num_global_poc
+        current_hyperedge_id += B_poc
 
-        # 3. Local pairwise edges via PyG (Now Bulletproofed)
         edge_ll, edge_lp, edge_index = self.create_edge_index(
             x_lig, x_pocket, filt_batch_lig, filt_batch_poc
         )
 
-        # 4. Local ligand hyperedges (Ligand-Centric)
         lig_idx_to_he = torch.arange(n_lig, device=device) + current_hyperedge_id
 
         row_list.append(torch.arange(n_lig, device=device))
@@ -1412,9 +1401,19 @@ class AllSetTransformerVectorField(nn.Module):
         n_lig = x_lig.shape[0]
         n_poc = x_pocket.shape[0]
 
-        # Extract valid batch assignments to match the dense node lengths exactly
         filt_batch_lig = batch_lig[batch_lig != -1].view(-1)
         filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
+
+        B_lig = (
+            int(torch.max(filt_batch_lig).item()) + 1
+            if filt_batch_lig.numel() > 0
+            else 1
+        )
+        B_poc = (
+            int(torch.max(filt_batch_poc).item()) + 1
+            if filt_batch_poc.numel() > 0
+            else 1
+        )
 
         lig_pos = x_lig[:, :3]
         poc_pos = x_pocket[:, :3]
@@ -1422,36 +1421,26 @@ class AllSetTransformerVectorField(nn.Module):
         row_list, col_list, type_list, he_batches = [], [], [], []
         current_hyperedge_id = 0
 
-        # 1. Global ligand hyperedges
-        valid_lig_batches, batch_lig_inverse = torch.unique(
-            filt_batch_lig, return_inverse=True
-        )
+        valid_lig_batches = torch.arange(B_lig, device=device)
         row_list.append(torch.arange(n_lig, device=device))
-        col_list.append(batch_lig_inverse + current_hyperedge_id)
+        col_list.append(filt_batch_lig + current_hyperedge_id)
 
-        num_global_lig = valid_lig_batches.size(0)
-        type_list.append(torch.full((num_global_lig,), 0, device=device))
+        type_list.append(torch.full((B_lig,), 0, device=device))
         he_batches.append(valid_lig_batches)
-        current_hyperedge_id += num_global_lig
+        current_hyperedge_id += B_lig
 
-        # 2. Global pocket hyperedges
-        valid_poc_batches, batch_poc_inverse = torch.unique(
-            filt_batch_poc, return_inverse=True
-        )
+        valid_poc_batches = torch.arange(B_poc, device=device)
         row_list.append(torch.arange(n_poc, device=device) + n_lig)
-        col_list.append(batch_poc_inverse + current_hyperedge_id)
+        col_list.append(filt_batch_poc + current_hyperedge_id)
 
-        num_global_poc = valid_poc_batches.size(0)
-        type_list.append(torch.full((num_global_poc,), 1, device=device))
+        type_list.append(torch.full((B_poc,), 1, device=device))
         he_batches.append(valid_poc_batches)
-        current_hyperedge_id += num_global_poc
+        current_hyperedge_id += B_poc
 
-        # 3. Local pairwise edges via PyG (Now Bulletproofed)
         edge_ll, edge_lp, gat_edge_index = self.create_edge_index(
             x_lig, x_pocket, filt_batch_lig, filt_batch_poc
         )
 
-        # 4. Local ligand hyperedges (Ligand-Centric)
         lig_idx_to_he = torch.arange(n_lig, device=device) + current_hyperedge_id
 
         row_list.append(torch.arange(n_lig, device=device))
@@ -1474,17 +1463,14 @@ class AllSetTransformerVectorField(nn.Module):
         final_types = torch.cat(type_list, dim=0)
         final_batch_he = torch.cat(he_batches, dim=0)
 
-        # 5. Extract geometric bipartite attributes
         center_pos = torch.zeros((current_hyperedge_id, 3), device=device)
 
-        center_pos[:num_global_lig] = pyg_scatter(
-            lig_pos, batch_lig_inverse, dim=0, reduce="mean"
-        )
-        center_pos[num_global_lig : num_global_lig + num_global_poc] = pyg_scatter(
-            poc_pos, batch_poc_inverse, dim=0, reduce="mean"
+        center_pos[:B_lig] = pyg_scatter(lig_pos, filt_batch_lig, dim=0, reduce="mean")
+        center_pos[B_lig : B_lig + B_poc] = pyg_scatter(
+            poc_pos, filt_batch_poc, dim=0, reduce="mean"
         )
 
-        offset = num_global_lig + num_global_poc
+        offset = B_lig + B_poc
         center_pos[offset : offset + n_lig] = lig_pos
 
         pos_all = torch.cat([lig_pos, poc_pos], dim=0)

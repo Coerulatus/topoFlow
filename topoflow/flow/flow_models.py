@@ -188,20 +188,27 @@ class FlowModel(pl.LightningModule):
         verbose=True,
     ):
         """Calculates the loss only on the ligand vector field."""
-        last_step_loss_idxs = (t > self.t_last_step).squeeze()
-        if torch.any(last_step_loss_idxs) and x_lig is not None:
-            loss_last_step = self.loss_function_last_step(
-                u_t_theta_lig[last_step_loss_idxs],
-                x_lig[last_step_loss_idxs],
-                t[last_step_loss_idxs],
-                batch_lig[last_step_loss_idxs],
+        time_mask = (t > self.t_last_step).float()
+
+        if x_lig is not None:
+            # Compute loss for EVERYTHING (GPU loves predictable, uniform workloads)
+            raw_loss_last_step = self.loss_function_last_step(
+                u_t_theta_lig,
+                x_lig,
+                t,
+                batch_lig,
                 verbose=verbose,
-                mean=torch.tensor(self.normalization_params["mean"]).to(x_lig.device),
-                std=torch.tensor(self.normalization_params["std"]).to(x_lig.device),
+                mean=torch.tensor(
+                    self.normalization_params["mean"], device=x_lig.device
+                ),
+                std=torch.tensor(self.normalization_params["std"], device=x_lig.device),
             )
-            loss_last_step = loss_last_step.mean(dim=-1) * self.w_loss_last_step
+
+            loss_last_step = (raw_loss_last_step * time_mask.unsqueeze(-1)).mean(
+                dim=-1
+            ) * self.w_loss_last_step
         else:
-            loss_last_step = torch.tensor(0, dtype=torch.float32)
+            loss_last_step = torch.tensor(0.0, device=u_t_theta_lig.device)
 
         loss_mse = self.loss_function(u_t_theta_lig, u_t_ref_lig)
         loss_pos = loss_mse[:, :3].mean()
@@ -1249,7 +1256,7 @@ class FlowModel(pl.LightningModule):
     def configure_optimizers(self):
         """Configures the optimizer and learning rate scheduler for training."""
         # 1. Define the optimizer
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.start_lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.start_lr, fused=True)
 
         # 2. Define the scheduler
         scheduler = CustomScheduler(

@@ -138,7 +138,10 @@ def train_flow_model(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=len(psutil.Process().cpu_affinity()),
+        num_workers=min(8, len(psutil.Process().cpu_affinity())),
+        persistent_workers=True,
+        pin_memory=True,
+        prefetch_factor=3,
     )
     path = GaussianConditionalProbabilityPath(
         p_data=p_data,
@@ -279,6 +282,7 @@ def train_flow_model(
         # gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
         num_sanity_val_steps=0,
+        precision="16-mixed",
     )
     # ======================================================================
     # Start Training
@@ -288,6 +292,13 @@ def train_flow_model(
         datamodule=datamodule,
         ckpt_path=previous_checkpoint if previous_checkpoint is not None else None,
     )
+
+    if (
+        hasattr(flow_model.path.p_data, "_iterator")
+        and flow_model.path.p_data._iterator is not None
+    ):
+        flow_model.path.p_data._iterator._shutdown_workers()
+        del flow_model.path.p_data._iterator
 
 
 if __name__ == "__main__":
