@@ -2,6 +2,7 @@
 
 import torch
 import math
+import numpy as np
 from typing import Literal
 import torch.nn.functional as F
 from torch import nn
@@ -1189,6 +1190,7 @@ class AllSetTransformerVectorField(nn.Module):
         add_time_to="layers",
         use_gat=True,
         use_geometric_ast=False,
+        norm_std=None,
     ):
         """Ligand-only prediction with self-attention inside each ligand and cross-attention to pocket atoms."""
         super().__init__()
@@ -1199,9 +1201,20 @@ class AllSetTransformerVectorField(nn.Module):
         self.add_time_to = add_time_to
         self.use_geometric_ast = use_geometric_ast
 
-        self.cutoff_lig = 10.0
-        self.cutoff_poc = 1.0
-        self.cutoff_cross = 1.5
+        # Cutoffs in Angstroms
+        self.cutoff_lig = 5.0
+        self.cutoff_poc = 5.0
+        self.cutoff_cross = 5.0
+
+        if norm_std is not None:
+            if isinstance(norm_std, (torch.Tensor, np.ndarray, list, tuple)):
+                std_val = float(np.mean(norm_std))
+            else:
+                std_val = float(norm_std)
+            # Scale down cutoffs to match normalized space
+            self.cutoff_lig /= std_val
+            self.cutoff_poc /= std_val
+            self.cutoff_cross /= std_val
 
         self.lig_embed = nn.Sequential(
             nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)

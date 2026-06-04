@@ -158,9 +158,11 @@ def train_flow_model(
         # Load Normalization Params for correct GNINA scoring
         norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
         norm_params = None
+        norm_std = None
         if os.path.exists(norm_path):
             norm_data = np.load(norm_path, allow_pickle=True)
             norm_params = {"mean": norm_data["mean"], "std": norm_data["std"]}
+            norm_std = norm_data["std"]
 
         val_distribution = get_distributions(
             val_dataset,
@@ -169,59 +171,61 @@ def train_flow_model(
             norm_params=norm_params,
         )
         np.save(val_metric_dist_path, val_distribution)
-    # ======================================================================
-    # Model Initialization
-    # ======================================================================
-    if vector_field_model == "transformer":
-        vector_field = TransformerVectorFieldOld(
-            h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.1
-        )
-    elif vector_field_model == "mlp":
-        vector_field = MLPVectorField(
-            input_dim=14,  # Assuming 14 features as per the dataset
-            output_dim=14,  # Assuming 3D vector field output
-            hidden_dims=[hidden_dim, hidden_dim],
-            activation=torch.nn.SiLU,
-            additional_features="add",  # Use 'add' to incorporate time and conditioning features
-        )
-    elif vector_field_model == "gat":
-        vector_field = GATVectorField(
-            h_dim=hidden_dim,
-            num_heads=16,
-            num_layers=2,
-            dropout=0.1,
-            add_time_to="ligand",  # "ligand", "both", or "none"
-        )
-    elif vector_field_model == "ast":
-        vector_field = AllSetTransformerVectorField(
-            h_dim=hidden_dim,
-            num_heads=16,
-            num_layers=2,
-            dropout=0.1,
-            add_time_to="ligand",  # "ligand", "both", or "none"
-            use_gat=False,
-            use_geometric_ast=use_geometric_ast,
-        )
-    elif vector_field_model == "ast_gat":
-        vector_field = AllSetTransformerVectorField(
-            h_dim=hidden_dim,
-            num_heads=16,
-            num_layers=2,
-            dropout=0.1,
-            add_time_to="ligand",  # "ligand", "both", or "none"
-            use_gat=True,
-            use_geometric_ast=use_geometric_ast,
-        )
-    elif vector_field_model == "distance_transformer":
-        vector_field = TransformerDistanceVectorField(
-            h_dim=hidden_dim,
-            num_heads=16,
-            num_layers=2,
-            dropout=0.1,
-            add_time_to="ligand",  # "ligand", "both", or "none"
-        )
-    else:
-        raise ValueError(f"Unsupported vector field model: {vector_field_model}")
+        # ======================================================================
+        # Model Initialization
+        # ======================================================================
+        if vector_field_model == "transformer":
+            vector_field = TransformerVectorFieldOld(
+                h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.1
+            )
+        elif vector_field_model == "mlp":
+            vector_field = MLPVectorField(
+                input_dim=14,  # Assuming 14 features as per the dataset
+                output_dim=14,  # Assuming 3D vector field output
+                hidden_dims=[hidden_dim, hidden_dim],
+                activation=torch.nn.SiLU,
+                additional_features="add",  # Use 'add' to incorporate time and conditioning features
+            )
+        elif vector_field_model == "gat":
+            vector_field = GATVectorField(
+                h_dim=hidden_dim,
+                num_heads=16,
+                num_layers=2,
+                dropout=0.1,
+                add_time_to="ligand",  # "ligand", "both", or "none"
+            )
+        elif vector_field_model == "ast":
+            vector_field = AllSetTransformerVectorField(
+                h_dim=hidden_dim,
+                num_heads=16,
+                num_layers=2,
+                dropout=0.1,
+                add_time_to="ligand",  # "ligand", "both", or "none"
+                use_gat=False,
+                use_geometric_ast=use_geometric_ast,
+                norm_std=norm_std,
+            )
+        elif vector_field_model == "ast_gat":
+            vector_field = AllSetTransformerVectorField(
+                h_dim=hidden_dim,
+                num_heads=16,
+                num_layers=2,
+                dropout=0.1,
+                add_time_to="ligand",  # "ligand", "both", or "none"
+                use_gat=True,
+                use_geometric_ast=use_geometric_ast,
+                norm_std=norm_std,
+            )
+        elif vector_field_model == "distance_transformer":
+            vector_field = TransformerDistanceVectorField(
+                h_dim=hidden_dim,
+                num_heads=16,
+                num_layers=2,
+                dropout=0.1,
+                add_time_to="ligand",  # "ligand", "both", or "none"
+            )
+        else:
+            raise ValueError(f"Unsupported vector field model: {vector_field_model}")
 
     norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
     if not os.path.exists(norm_path):

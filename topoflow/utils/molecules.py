@@ -411,18 +411,23 @@ def data_to_list(data):
     batch_pocket = batch_pocket[batch_pocket != -1]  # Remove -1 entries
     unique_batches = torch.unique(torch.cat([batch_lig, batch_pocket]))
 
+    # Move entire data to CPU once to avoid multiple small transfers
+    data_cpu = {
+        k: v.to("cpu") if isinstance(v, torch.Tensor) else v for k, v in data.items()
+    }
+
     data_list = []
     for batch_id in unique_batches:
         if batch_id != -1:
-            mask_lig = batch_lig == batch_id
-            mask_pocket = batch_pocket == batch_id
+            mask_lig = data_cpu["batch_lig"] == batch_id
+            mask_pocket = data_cpu["batch_pocket"] == batch_id
 
             data_item = Data(
-                x_lig=data["x_lig"][mask_lig],
-                h_lig=data["h_lig"][mask_lig],
+                x_lig=data_cpu["x_lig"][mask_lig],
+                h_lig=data_cpu["h_lig"][mask_lig],
                 batch_lig=torch.zeros(mask_lig.sum(), dtype=torch.long),
-                x_pocket=data["x_pocket"][mask_pocket],
-                h_pocket=data["h_pocket"][mask_pocket],
+                x_pocket=data_cpu["x_pocket"][mask_pocket],
+                h_pocket=data_cpu["h_pocket"][mask_pocket],
                 batch_pocket=torch.zeros(mask_pocket.sum(), dtype=torch.long),
             )
             data_list.append(data_item)
