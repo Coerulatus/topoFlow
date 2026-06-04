@@ -282,7 +282,7 @@ def train_flow_model(
         # gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
         num_sanity_val_steps=0,
-        precision="16-mixed",
+        # precision="16-mixed",
     )
     # ======================================================================
     # Start Training

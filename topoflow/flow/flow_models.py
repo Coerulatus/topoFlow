@@ -286,6 +286,9 @@ class FlowModel(pl.LightningModule):
         x_pocket = x[pocket_indices, :]
 
         diagnostics = None
+        num_graphs = batch.get(
+            "num_graphs", int(batch_lig.max().item() if len(batch_lig) > 0 else 0) + 1
+        )
         if return_diagnostics and hasattr(
             self.vector_field_model, "format_diagnostics"
         ):
@@ -294,7 +297,7 @@ class FlowModel(pl.LightningModule):
             )
         else:
             u_t_theta_lig = self.vector_field_model(
-                x_lig, t, x_pocket, batch_lig, batch_pocket
+                x_lig, t, x_pocket, batch_lig, batch_pocket, num_graphs=num_graphs
             )
 
         t_batched_lig = t_batched[lig_indices]
@@ -1256,7 +1259,7 @@ class FlowModel(pl.LightningModule):
     def configure_optimizers(self):
         """Configures the optimizer and learning rate scheduler for training."""
         # 1. Define the optimizer
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.start_lr, fused=True)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.start_lr, foreach=True)
 
         # 2. Define the scheduler
         scheduler = CustomScheduler(

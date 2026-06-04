@@ -1325,7 +1325,9 @@ class AllSetTransformerVectorField(nn.Module):
 
         return edge_ll, edge_lp, edge_index
 
-    def create_incidence_with_types(self, x_lig, x_pocket, batch_lig, batch_pocket):
+    def create_incidence_with_types(
+        self, x_lig, x_pocket, batch_lig, batch_pocket, num_graphs
+    ):
         """Create incidence matrices for hyperedges with type annotations and batch assignments."""
         device = x_lig.device
         n_lig = x_lig.shape[0]
@@ -1334,17 +1336,8 @@ class AllSetTransformerVectorField(nn.Module):
         filt_batch_lig = batch_lig[batch_lig != -1].view(-1)
         filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
 
-        B_lig = (
-            int(torch.max(filt_batch_lig).item()) + 1
-            if filt_batch_lig.numel() > 0
-            else 1
-        )
-        B_poc = (
-            int(torch.max(filt_batch_poc).item()) + 1
-            if filt_batch_poc.numel() > 0
-            else 1
-        )
-
+        B_lig = num_graphs
+        B_poc = num_graphs
         row_list, col_list, type_list, he_batches = [], [], [], []
         current_hyperedge_id = 0
 
@@ -1395,7 +1388,9 @@ class AllSetTransformerVectorField(nn.Module):
 
         return edge_index_v2e, edge_index_e2v, edge_index, final_types, final_batch_he
 
-    def create_geometric_incidence(self, x_lig, x_pocket, batch_lig, batch_pocket):
+    def create_geometric_incidence(
+        self, x_lig, x_pocket, batch_lig, batch_pocket, num_graphs
+    ):
         """Create incidence matrices for hyperedges with geometric attributes, type annotations, and batch assignments."""
         device = x_lig.device
         n_lig = x_lig.shape[0]
@@ -1404,17 +1399,8 @@ class AllSetTransformerVectorField(nn.Module):
         filt_batch_lig = batch_lig[batch_lig != -1].view(-1)
         filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
 
-        B_lig = (
-            int(torch.max(filt_batch_lig).item()) + 1
-            if filt_batch_lig.numel() > 0
-            else 1
-        )
-        B_poc = (
-            int(torch.max(filt_batch_poc).item()) + 1
-            if filt_batch_poc.numel() > 0
-            else 1
-        )
-
+        B_lig = num_graphs
+        B_poc = num_graphs
         lig_pos = x_lig[:, :3]
         poc_pos = x_pocket[:, :3]
 
@@ -1495,7 +1481,14 @@ class AllSetTransformerVectorField(nn.Module):
         )
 
     def forward(
-        self, x_lig, t, x_pocket, batch_lig, batch_pocket, return_diagnostics=False
+        self,
+        x_lig,
+        t,
+        x_pocket,
+        batch_lig,
+        batch_pocket,
+        return_diagnostics=False,
+        num_graphs=None,
     ):
         """Forward pass."""
         device = x_lig.device
@@ -1505,7 +1498,16 @@ class AllSetTransformerVectorField(nn.Module):
         filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
 
         # Handle purely single-graph edge cases gracefully
-        B = int(torch.max(filt_batch_lig) + 1) if filt_batch_lig.numel() > 0 else 1
+        # B = int(torch.max(filt_batch_lig) + 1) if filt_batch_lig.numel() > 0 else 1
+        B = (
+            num_graphs
+            if num_graphs is not None
+            else (
+                int(torch.max(filt_batch_lig).item()) + 1
+                if filt_batch_lig.numel() > 0
+                else 1
+            )
+        )
 
         lig_h = self.lig_embed(x_lig)
         poc_h = self.poc_embed(x_pocket)
@@ -1534,7 +1536,7 @@ class AllSetTransformerVectorField(nn.Module):
                 edge_types,
                 batch_he,
             ) = self.create_geometric_incidence(
-                x_lig, x_pocket, batch_lig, batch_pocket
+                x_lig, x_pocket, batch_lig, batch_pocket, B
             )
             edge_attr_e2v = torch.cat(
                 [edge_attr_v2e[:, :1], -edge_attr_v2e[:, 1:]], dim=-1
@@ -1547,7 +1549,7 @@ class AllSetTransformerVectorField(nn.Module):
                 edge_types,
                 batch_he,
             ) = self.create_incidence_with_types(
-                x_lig, x_pocket, batch_lig, batch_pocket
+                x_lig, x_pocket, batch_lig, batch_pocket, B
             )
 
         h = torch.cat([lig_h, poc_h], dim=0)
