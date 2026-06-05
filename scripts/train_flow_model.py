@@ -74,36 +74,9 @@ def train_flow_model(
     skip_validation=False,
     use_geometric_ast=False,
 ):
-    """Train a Topological Flow model on the specified dataset.
-
-    Args:
-        data_dir (str): Directory containing the training data.
-        data_name (str): Name of the dataset to use.
-        augment (bool): Whether to apply data augmentations.
-        vector_field_model (str): Type of vector field model to use.
-        hidden_dim (int): Dimension of the hidden layers in the model.
-        evaluator (str): Evaluator to use for model evaluation. Either 'rdkit' or a path to a GATEvaluator checkpoint.
-        checkpoint_dir (str): Directory to save the trained model.
-        epochs (int): Number of training epochs.
-        batch_size (int): Batch size for training.
-        start_lr (float): Initial learning rate for the optimizer.
-        max_lr (float): Maximum learning rate for the scheduler.
-        min_lr (float): Minimum learning rate for the scheduler.
-        max_frac (float): When to stop increasing the learning rate.
-        min_time_factor (float): Minimum time factor for the flow model.
-        max_time_factor (float): Maximum time factor for the flow model.
-        max_atom_time (float): Maximum atom time for the flow model.
-        w_loss_last_step (float): Weight for the loss at the last time step.
-        velocity_scale (float): Scaling factor for the velocity in the loss computation.
-        seed (int): Random seed for reproducibility.
-        mlflow_tracking_uri (str): MLflow tracking URI.
-        experiment_name (str): MLflow experiment name.
-        run_name (str, optional): Name of the MLflow run. Defaults to None.
-        previous_checkpoint (str, optional): Path to a checkpoint to resume training from. Defaults to None.
-        skip_validation (bool, optional): Whether to skip validation during training. Defaults to False.
-        use_geometric_ast (bool, optional): Whether to use geometric AllSet Transformer. Defaults to False.
-    """
+    """Train a Topological Flow model on the specified dataset."""
     pl.seed_everything(seed)  # For reproducibility
+
     # ======================================================================
     # Data Preparation
     # ======================================================================
@@ -114,17 +87,16 @@ def train_flow_model(
             transform=RandomRotateTranslate() if augment else None,
         )
         val_dataset = CrossDocked(root=data_dir, split="val")
-
     else:
         raise ValueError(f"Unsupported dataset: {data_name}")
+
     datamodule = MockDatamodule(
         train_length=len(train_dataset),
         val_length=len(val_dataset),
         batch_size=batch_size,
         test_length=100,
     )
-    # alpha = LinearAlpha()
-    # beta = LinearBeta()
+
     alpha = CosineAlpha()
     beta = CosineBeta()
     if max_atom_time is not None and max_atom_time != 1.0:
@@ -151,19 +123,22 @@ def train_flow_model(
         beta_atom=beta_atom,
     )
 
+    # Load Normalization Params reliably
+    norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
+    if not os.path.exists(norm_path):
+        raise FileNotFoundError(
+            f"Normalization parameters not found at {norm_path}. Please run the preprocessing script."
+        )
+
+    norm_data = np.load(norm_path, allow_pickle=True)
+    norm_params = {"mean": norm_data["mean"], "std": norm_data["std"]}
+    norm_std = norm_data["std"]
+
+    # Load Val Distribution for scoring
     val_metric_dist_path = os.path.join(data_dir, "processed", "val_distribution.npy")
     if os.path.exists(val_metric_dist_path):
         val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
     else:
-        # Load Normalization Params for correct GNINA scoring
-        norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
-        norm_params = None
-        norm_std = None
-        if os.path.exists(norm_path):
-            norm_data = np.load(norm_path, allow_pickle=True)
-            norm_params = {"mean": norm_data["mean"], "std": norm_data["std"]}
-            norm_std = norm_data["std"]
-
         val_distribution = get_distributions(
             val_dataset,
             metrics=["qed", "logp", "sas", "lipinski", "gnina"],
@@ -171,67 +146,62 @@ def train_flow_model(
             norm_params=norm_params,
         )
         np.save(val_metric_dist_path, val_distribution)
-        # ======================================================================
-        # Model Initialization
-        # ======================================================================
-        if vector_field_model == "transformer":
-            vector_field = TransformerVectorFieldOld(
-                h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.1
-            )
-        elif vector_field_model == "mlp":
-            vector_field = MLPVectorField(
-                input_dim=14,  # Assuming 14 features as per the dataset
-                output_dim=14,  # Assuming 3D vector field output
-                hidden_dims=[hidden_dim, hidden_dim],
-                activation=torch.nn.SiLU,
-                additional_features="add",  # Use 'add' to incorporate time and conditioning features
-            )
-        elif vector_field_model == "gat":
-            vector_field = GATVectorField(
-                h_dim=hidden_dim,
-                num_heads=16,
-                num_layers=2,
-                dropout=0.1,
-                add_time_to="ligand",  # "ligand", "both", or "none"
-            )
-        elif vector_field_model == "ast":
-            vector_field = AllSetTransformerVectorField(
-                h_dim=hidden_dim,
-                num_heads=16,
-                num_layers=2,
-                dropout=0.1,
-                add_time_to="ligand",  # "ligand", "both", or "none"
-                use_gat=False,
-                use_geometric_ast=use_geometric_ast,
-                norm_std=norm_std,
-            )
-        elif vector_field_model == "ast_gat":
-            vector_field = AllSetTransformerVectorField(
-                h_dim=hidden_dim,
-                num_heads=16,
-                num_layers=2,
-                dropout=0.1,
-                add_time_to="ligand",  # "ligand", "both", or "none"
-                use_gat=True,
-                use_geometric_ast=use_geometric_ast,
-                norm_std=norm_std,
-            )
-        elif vector_field_model == "distance_transformer":
-            vector_field = TransformerDistanceVectorField(
-                h_dim=hidden_dim,
-                num_heads=16,
-                num_layers=2,
-                dropout=0.1,
-                add_time_to="ligand",  # "ligand", "both", or "none"
-            )
-        else:
-            raise ValueError(f"Unsupported vector field model: {vector_field_model}")
 
-    norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
-    if not os.path.exists(norm_path):
-        raise FileNotFoundError(
-            f"Normalization parameters not found at {norm_path}. Please run the preprocessing script."
+    # ======================================================================
+    # Model Initialization
+    # ======================================================================
+    if vector_field_model == "transformer":
+        vector_field = TransformerVectorFieldOld(
+            h_dim=hidden_dim, num_heads=32, num_layers=3, dropout=0.1
         )
+    elif vector_field_model == "mlp":
+        vector_field = MLPVectorField(
+            input_dim=14,
+            output_dim=14,
+            hidden_dims=[hidden_dim, hidden_dim],
+            activation=torch.nn.SiLU,
+            additional_features="add",
+        )
+    elif vector_field_model == "gat":
+        vector_field = GATVectorField(
+            h_dim=hidden_dim,
+            num_heads=16,
+            num_layers=2,
+            dropout=0.1,
+            add_time_to="ligand",
+        )
+    elif vector_field_model == "ast":
+        vector_field = AllSetTransformerVectorField(
+            h_dim=hidden_dim,
+            num_heads=16,
+            num_layers=2,
+            dropout=0.1,
+            add_time_to="ligand",
+            use_gat=False,
+            use_geometric_ast=use_geometric_ast,
+            norm_std=norm_std,
+        )
+    elif vector_field_model == "ast_gat":
+        vector_field = AllSetTransformerVectorField(
+            h_dim=hidden_dim,
+            num_heads=16,
+            num_layers=2,
+            dropout=0.1,
+            add_time_to="ligand",
+            use_gat=True,
+            use_geometric_ast=use_geometric_ast,
+            norm_std=norm_std,
+        )
+    elif vector_field_model == "distance_transformer":
+        vector_field = TransformerDistanceVectorField(
+            h_dim=hidden_dim,
+            num_heads=16,
+            num_layers=2,
+            dropout=0.1,
+            add_time_to="ligand",
+        )
+    else:
+        raise ValueError(f"Unsupported vector field model: {vector_field_model}")
 
     time_factor = InverseTimeFactorNoClamping(
         max_value=max_time_factor,
@@ -257,13 +227,14 @@ def train_flow_model(
         w_loss_last_step=w_loss_last_step,
         velocity_scale=velocity_scale,
     )
+
     # ======================================================================
     # Training Setup
     # ======================================================================
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=checkpoint_dir + "/run_" + (run_name if run_name else "default"),
         filename="topoflow-{epoch:02d}",
-        monitor="train/loss",  # validation is just copying train samples
+        monitor="train/loss",
         mode="min",
         save_top_k=-1,
     )
@@ -282,12 +253,10 @@ def train_flow_model(
         enable_progress_bar=True,
         check_val_every_n_epoch=5,
         limit_val_batches=1.0 if not skip_validation else 0.0,
-        # gradient_clip_val=0.5,
-        # gradient_clip_algorithm="norm",
         limit_train_batches=1.0,
         num_sanity_val_steps=0,
-        # precision="16-mixed",
     )
+
     # ======================================================================
     # Start Training
     # ======================================================================
@@ -343,7 +312,7 @@ if __name__ == "__main__":
         "--evaluator",
         type=str,
         default="rdkit",
-        help="Evaluator to use for model evaluation. Either 'rdkit' or a path to a GATEvaluator checkpoint.",
+        help="Evaluator to use for model evaluation.",
     )
     parser.add_argument(
         "--checkpoint_dir",
@@ -355,7 +324,7 @@ if __name__ == "__main__":
         "--previous_checkpoint",
         type=str,
         default=None,
-        help="Path to a checkpoint to resume training from (optional).",
+        help="Path to a checkpoint to resume training from.",
     )
     parser.add_argument(
         "--epochs", type=int, default=200, help="Number of training epochs."
@@ -435,7 +404,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--run_name",
         type=str,
-        help="Name of the MLflow run (optional).",
+        help="Name of the MLflow run.",
     )
     parser.add_argument(
         "--skip_validation",
