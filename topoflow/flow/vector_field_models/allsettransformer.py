@@ -1176,6 +1176,11 @@ class GATModel(nn.Module):
         return x
 
 
+from topoflow.flow.vector_field_models.equivariant_ast import (
+    EquivariantAllSetTransformer,
+)
+
+
 class AllSetTransformerVectorField(nn.Module):
     """Ligand-only prediction with AllSetTransformer model."""
 
@@ -1217,23 +1222,16 @@ class AllSetTransformerVectorField(nn.Module):
             self.cutoff_cross /= std_val
 
         self.lig_embed = nn.Sequential(
-            nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
+            nn.Linear(self.atom_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
         self.poc_embed = nn.Sequential(
-            nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
+            nn.Linear(self.atom_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
         self.time_embed = AdvancedTimeEmbedding(h_dim)
 
         if self.use_geometric_ast:
-            self.model = GeometricAllSetTransformer(
-                in_channels=h_dim,
-                hidden_channels=h_dim,
-                edge_dim=4,
-                n_layers=num_layers,
-                heads=num_heads,
-                dropout=dropout,
-                mlp_num_layers=2,
-                mlp_dropout=dropout,
+            self.model = EquivariantAllSetTransformer(
+                h_dim=h_dim, num_layers=num_layers
             )
         else:
             self.model = AllSetTransformer(
@@ -1256,7 +1254,7 @@ class AllSetTransformerVectorField(nn.Module):
             )
 
         self.out_vel = nn.Sequential(
-            nn.LayerNorm(h_dim), nn.Linear(h_dim, self.x_dim, bias=False)
+            nn.LayerNorm(h_dim), nn.Linear(h_dim, self.atom_dim, bias=False)
         )
 
     def format_diagnostics(self, stats, edge_types):
@@ -1522,8 +1520,14 @@ class AllSetTransformerVectorField(nn.Module):
             )
         )
 
-        lig_h = self.lig_embed(x_lig)
-        poc_h = self.poc_embed(x_pocket)
+        # Extract spatial and atom dims
+        lig_pos = x_lig[:, :3]
+        poc_pos = x_pocket[:, :3]
+        lig_feat = x_lig[:, 3:]
+        poc_feat = x_pocket[:, 3:]
+
+        lig_h = self.lig_embed(lig_feat)
+        poc_h = self.poc_embed(poc_feat)
 
         if not torch.is_tensor(t):
             t = torch.tensor(t, device=device)
@@ -1566,64 +1570,63 @@ class AllSetTransformerVectorField(nn.Module):
             )
 
         h = torch.cat([lig_h, poc_h], dim=0)
-
-        if self.use_geometric_ast:
-            if return_diagnostics:
-                h_ast, _, stats = self.model(
-                    h,
-                    edge_index_v2e,
-                    edge_index_e2v,
-                    edge_attr_v2e,
-                    edge_attr_e2v,
-                    t_emb=layer_t_emb,
-                    batch_all=batch_all,
-                    batch_he=batch_he,
-                    return_stats=True,
-                )
-            else:
-                h_ast, _ = self.model(
-                    h,
-                    edge_index_v2e,
-                    edge_index_e2v,
-                    edge_attr_v2e,
-                    edge_attr_e2v,
-                    t_emb=layer_t_emb,
-                    batch_all=batch_all,
-                    batch_he=batch_he,
-                )
-        else:
-            if return_diagnostics:
-                h_ast, _, stats = self.model(
-                    h,
-                    edge_index_v2e,
-                    edge_index_e2v,
-                    t_emb=layer_t_emb,
-                    batch_all=batch_all,
-                    batch_he=batch_he,
-                    return_stats=True,
-                )
-            else:
-                h_ast, _ = self.model(
-                    h,
-                    edge_index_v2e,
-                    edge_index_e2v,
-                    t_emb=layer_t_emb,
-                    batch_all=batch_all,
-                    batch_he=batch_he,
-                )
+        x = torch.cat([lig_pos, poc_pos], dim=0)
 
         if self.use_gat:
             h_gat = self.gat_model(
                 h, gat_edge_index, t_emb=layer_t_emb, batch_all=batch_all
             )
-            h = h_gat + h_ast
+            h = h_gat + h
+
+        if self.use_geometric_ast:
+            # Equivariant model now takes (x, h)
+            x_out, h_ast = self.model(
+                x,
+                h,
+                edge_index_v2e,
+                edge_index_e2v,
+            )
+            stats = {
+                "entropy": torch.zeros(1),
+                "cardinality": torch.zeros(1),
+            }  # Mock stats
         else:
-            h = h_ast
+            x_out = x  # fallback to non-equivariant output mapping if needed
+            if return_diagnostics:
+                h_ast, _, stats = self.model(
+                    h,
+                    edge_index_v2e,
+                    edge_index_e2v,
+                    t_emb=layer_t_emb,
+                    batch_all=batch_all,
+                    batch_he=batch_he,
+                    return_stats=True,
+                )
+            else:
+                h_ast, _ = self.model(
+                    h,
+                    edge_index_v2e,
+                    edge_index_e2v,
+                    t_emb=layer_t_emb,
+                    batch_all=batch_all,
+                    batch_he=batch_he,
+                )
+
+        h_final = h_ast
 
         N1 = lig_h.size(0)
-        h_lig = h[:N1, :]
+        h_lig = h_final[:N1, :]
 
-        vel_lig = self.out_vel(h_lig)
+        # Velocity for spatial coords is exact coordinate difference
+        if self.use_geometric_ast:
+            vel_pos = x_out[:N1, :] - x[:N1, :]
+        else:
+            vel_pos = torch.zeros_like(
+                x[:N1, :]
+            )  # should not be used if use_geometric_ast=False
+
+        vel_h = self.out_vel(h_lig)
+        vel_lig = torch.cat([vel_pos, vel_h], dim=-1)
 
         if return_diagnostics:
             return vel_lig, self.format_diagnostics(stats, edge_types)
