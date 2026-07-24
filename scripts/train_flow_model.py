@@ -254,7 +254,7 @@ def train_flow_model(
         check_val_every_n_epoch=5,
         limit_val_batches=1.0 if not skip_validation else 0.0,
         limit_train_batches=1.0,
-        num_sanity_val_steps=0,
+        num_sanity_val_steps=1,
     )
 
     # ======================================================================
