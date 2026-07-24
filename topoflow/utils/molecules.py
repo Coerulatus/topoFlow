@@ -409,7 +409,7 @@ def data_to_list(data):
     batch_lig = batch_lig[batch_lig != -1]  # Remove -1 entries
     batch_pocket = data["batch_pocket"]
     batch_pocket = batch_pocket[batch_pocket != -1]  # Remove -1 entries
-    unique_batches = torch.unique(torch.cat([batch_lig, batch_pocket]))
+    unique_batches = torch.unique(torch.cat([batch_lig, batch_pocket])).to("cpu")
 
     # Move entire data to CPU once to avoid multiple small transfers
     data_cpu = {

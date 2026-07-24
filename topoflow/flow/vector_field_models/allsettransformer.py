@@ -1263,6 +1263,11 @@ class AllSetTransformerVectorField(nn.Module):
         cards = stats["cardinality"].cpu().int()
         types = edge_types.cpu()
 
+        if entropy.dim() == 0:
+            entropy = entropy.unsqueeze(0)
+        if cards.dim() == 0:
+            cards = cards.unsqueeze(0)
+
         diag_dict = {}
         for i in range(len(cards)):
             c = cards[i].item()
@@ -1504,12 +1509,9 @@ class AllSetTransformerVectorField(nn.Module):
         """Forward pass."""
         device = x_lig.device
 
-        # Extract valid batch indices
         filt_batch_lig = batch_lig[batch_lig != -1].view(-1)
         filt_batch_poc = batch_pocket[batch_pocket != -1].view(-1)
 
-        # Handle purely single-graph edge cases gracefully
-        # B = int(torch.max(filt_batch_lig) + 1) if filt_batch_lig.numel() > 0 else 1
         B = (
             num_graphs
             if num_graphs is not None
@@ -1520,7 +1522,6 @@ class AllSetTransformerVectorField(nn.Module):
             )
         )
 
-        # Extract spatial and atom dims
         lig_pos = x_lig[:, :3]
         poc_pos = x_pocket[:, :3]
         lig_feat = x_lig[:, 3:]
@@ -1579,19 +1580,19 @@ class AllSetTransformerVectorField(nn.Module):
             h = h_gat + h
 
         if self.use_geometric_ast:
-            # Equivariant model now takes (x, h)
             x_out, h_ast = self.model(
                 x,
                 h,
                 edge_index_v2e,
                 edge_index_e2v,
             )
+            num_hyperedges = edge_types.size(0)
             stats = {
-                "entropy": torch.zeros(1),
-                "cardinality": torch.zeros(1),
-            }  # Mock stats
+                "entropy": torch.zeros((num_hyperedges, 1), device=device),
+                "cardinality": torch.zeros(num_hyperedges, device=device),
+            }
         else:
-            x_out = x  # fallback to non-equivariant output mapping if needed
+            x_out = x
             if return_diagnostics:
                 h_ast, _, stats = self.model(
                     h,
@@ -1617,13 +1618,10 @@ class AllSetTransformerVectorField(nn.Module):
         N1 = lig_h.size(0)
         h_lig = h_final[:N1, :]
 
-        # Velocity for spatial coords is exact coordinate difference
         if self.use_geometric_ast:
             vel_pos = x_out[:N1, :] - x[:N1, :]
         else:
-            vel_pos = torch.zeros_like(
-                x[:N1, :]
-            )  # should not be used if use_geometric_ast=False
+            vel_pos = torch.zeros_like(x[:N1, :])
 
         vel_h = self.out_vel(h_lig)
         vel_lig = torch.cat([vel_pos, vel_h], dim=-1)
