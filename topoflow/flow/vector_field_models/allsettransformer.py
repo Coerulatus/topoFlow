@@ -1580,11 +1580,14 @@ class AllSetTransformerVectorField(nn.Module):
 
         if self.use_geometric_ast:
             # Equivariant model now takes (x, h)
+            # Create a mask so only ligand atoms update their coordinates
+            num_nodes = x.size(0)
+            node_mask = torch.zeros((num_nodes, 1), device=device)
+            N1 = lig_pos.size(0)
+            node_mask[:N1] = 1.0
+
             x_out, h_ast = self.model(
-                x,
-                h,
-                edge_index_v2e,
-                edge_index_e2v,
+                x, h, edge_index_v2e, edge_index_e2v, node_mask=node_mask
             )
             stats = {
                 "entropy": torch.zeros(1),

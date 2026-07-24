@@ -41,12 +41,13 @@ class EquivariantAllSetTransformerLayer(nn.Module):
             nn.Linear(h_dim * 2, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
 
-    def forward(self, x, h, edge_index_v2e, edge_index_e2v):
+    def forward(self, x, h, edge_index_v2e, edge_index_e2v, node_mask=None):
         """Forward pass of the equivariant AllSet layer.
 
         x: [N, 3]
         h: [N, h_dim]
         edge_index_v2e: [2, E] (row 0: hyperedge, row 1: node)
+        node_mask: [N, 1] boolean or float mask indicating which nodes can move (e.g. ligand)
         """
         num_nodes = h.size(0)
         num_hyperedges = (
@@ -114,6 +115,9 @@ class EquivariantAllSetTransformerLayer(nn.Module):
         delta_x_msg = (x[n_idx2] - x_e[he_idx2]) * phi_x
         delta_x = scatter(delta_x_msg, n_idx2, dim=0, dim_size=num_nodes, reduce="sum")
 
+        if node_mask is not None:
+            delta_x = delta_x * node_mask
+
         x_out = x + delta_x
 
         # 4. Feature update
@@ -138,8 +142,8 @@ class EquivariantAllSetTransformer(nn.Module):
             [EquivariantAllSetTransformerLayer(h_dim) for _ in range(num_layers)]
         )
 
-    def forward(self, x, h, edge_index_v2e, edge_index_e2v):
+    def forward(self, x, h, edge_index_v2e, edge_index_e2v, node_mask=None):
         """Forward pass for the network."""
         for layer in self.layers:
-            x, h = layer(x, h, edge_index_v2e, edge_index_e2v)
+            x, h = layer(x, h, edge_index_v2e, edge_index_e2v, node_mask=node_mask)
         return x, h
