@@ -83,9 +83,10 @@ class EquivariantAllSetTransformerLayer(nn.Module):
 
         # 3. Invariant distances
         dist_sq_v2e = torch.sum((x[n_idx] - x_e[he_idx]) ** 2, dim=-1, keepdim=True)
+        dist_v2e = torch.sqrt(dist_sq_v2e + 1e-8)
 
         # 4. Invariant messages to hyperedge
-        msg_v2e_input = torch.cat([h[n_idx], dist_sq_v2e], dim=-1)
+        msg_v2e_input = torch.cat([h[n_idx], dist_v2e], dim=-1)
         m_v2e = self.v2e_msg(msg_v2e_input)
         h_e = scatter(
             alpha_norm * m_v2e,
@@ -108,11 +109,12 @@ class EquivariantAllSetTransformerLayer(nn.Module):
 
         # 2. Invariant distances for E2V
         dist_sq_e2v = torch.sum((x[n_idx2] - x_e[he_idx2]) ** 2, dim=-1, keepdim=True)
+        dist_e2v = torch.sqrt(dist_sq_e2v + 1e-8)
 
         # 3. Coordinate update (Equivariant)
-        coord_update_input = torch.cat([h[n_idx2], h_e[he_idx2], dist_sq_e2v], dim=-1)
+        coord_update_input = torch.cat([h[n_idx2], h_e[he_idx2], dist_e2v], dim=-1)
         phi_x = self.e2v_coord(coord_update_input)  # [E, 1]
-        delta_x_msg = (x[n_idx2] - x_e[he_idx2]) * phi_x
+        delta_x_msg = (x[n_idx2] - x_e[he_idx2]) * phi_x * beta_norm
         delta_x = scatter(delta_x_msg, n_idx2, dim=0, dim_size=num_nodes, reduce="sum")
 
         if node_mask is not None:
@@ -121,7 +123,7 @@ class EquivariantAllSetTransformerLayer(nn.Module):
         x_out = x + delta_x
 
         # 4. Feature update
-        msg_e2v_input = torch.cat([h_e[he_idx2], dist_sq_e2v], dim=-1)
+        msg_e2v_input = torch.cat([h_e[he_idx2], dist_e2v], dim=-1)
         m_e2v = self.e2v_msg(msg_e2v_input)
         h_update_msg = scatter(
             beta_norm * m_e2v, n_idx2, dim=0, dim_size=num_nodes, reduce="sum"
