@@ -60,25 +60,36 @@ class PoseBusters:
     module_args: list
     fname: list
 
-    def __init__(self, config: str | dict[str, Any] = "redock", top_n: int | None = None):
+    def __init__(
+        self, config: str | dict[str, Any] = "redock", top_n: int | None = None
+    ):
         """Initialize PoseBusters object."""
         self.module_func: list  # dict[str, Callable]
         self.module_args: list  # dict[str, set[str]]
 
         if isinstance(config, str) and config in {"dock", "redock", "mol", "gen"}:
             logger.info("Using default configuration for mode %s.", config)
-            with open(Path(__file__).parent / "config" / f"{config}.yml", encoding="utf-8") as config_file:
+            with open(
+                Path(__file__).parent / "config" / f"{config}.yml", encoding="utf-8"
+            ) as config_file:
                 self.config = safe_load(config_file)
         elif isinstance(config, dict):
             logger.info("Using configuration dictionary provided by user.")
             self.config = config
         else:
-            logger.error("Configuration %s not valid. Provide 'dock', 'redock', 'mol', 'gen' or a dictionary.", config)
-        assert len(set(self.config.get("tests", {}).keys()) - set(module_dict.keys())) == 0
+            logger.error(
+                "Configuration %s not valid. Provide 'dock', 'redock', 'mol', 'gen' or a dictionary.",
+                config,
+            )
+        assert (
+            len(set(self.config.get("tests", {}).keys()) - set(module_dict.keys())) == 0
+        )
 
         self.config["top_n"] = self.config.get("top_n", top_n)
 
-        self.results: dict[tuple[str, str], list[tuple[str, str, Any]]] = defaultdict(list)
+        self.results: dict[tuple[str, str], list[tuple[str, str, Any]]] = defaultdict(
+            list
+        )
 
     def bust(
         self,
@@ -101,20 +112,32 @@ class PoseBusters:
         Returns:
             Pandas dataframe with results.
         """
-        mol_pred_list: Iterable[Mol | Path | str] = [mol_pred] if isinstance(mol_pred, (Mol, Path, str)) else mol_pred
+        mol_pred_list: Iterable[Mol | Path | str] = (
+            [mol_pred] if isinstance(mol_pred, (Mol, Path, str)) else mol_pred
+        )
 
         columns = ["mol_pred", "mol_true", "mol_cond"]
-        self.file_paths = pd.DataFrame([[mol_pred, mol_true, mol_cond] for mol_pred in mol_pred_list], columns=columns)
+        self.file_paths = pd.DataFrame(
+            [[mol_pred, mol_true, mol_cond] for mol_pred in mol_pred_list],
+            columns=columns,
+        )
 
         results_gen = self._run()
 
-        df = pd.concat([_dataframe_from_output(d, self.config, full_report=full_report) for d in results_gen])
+        df = pd.concat(
+            [
+                _dataframe_from_output(d, self.config, full_report=full_report)
+                for d in results_gen
+            ]
+        )
         df.index.names = ["file", "molecule"]
         df.columns = [c.lower().replace(" ", "_") for c in df.columns]
 
         return df
 
-    def bust_table(self, mol_table: pd.DataFrame, full_report: bool = False) -> pd.DataFrame:
+    def bust_table(
+        self, mol_table: pd.DataFrame, full_report: bool = False
+    ) -> pd.DataFrame:
         """Run tests on molecules provided in pandas dataframe as paths or rdkit molecule objects.
 
         Args:
@@ -128,7 +151,12 @@ class PoseBusters:
 
         results_gen = self._run()
 
-        df = pd.concat([_dataframe_from_output(d, self.config, full_report=full_report) for d in results_gen])
+        df = pd.concat(
+            [
+                _dataframe_from_output(d, self.config, full_report=full_report)
+                for d in results_gen
+            ]
+        )
         df.index.names = ["file", "molecule"]
         df.columns = [c.lower().replace(" ", "_") for c in df.columns]
 
@@ -145,14 +173,24 @@ class PoseBusters:
         for _, paths in self.file_paths.iterrows():
             mol_args = {}
             if "mol_cond" in paths and paths["mol_cond"] is not None:
-                mol_cond_load_params = self.config.get("loading", {}).get("mol_cond", {})
-                mol_args["mol_cond"] = safe_load_mol(path=paths["mol_cond"], **mol_cond_load_params)
+                mol_cond_load_params = self.config.get("loading", {}).get(
+                    "mol_cond", {}
+                )
+                mol_args["mol_cond"] = safe_load_mol(
+                    path=paths["mol_cond"], **mol_cond_load_params
+                )
             if "mol_true" in paths and paths["mol_true"] is not None:
-                mol_true_load_params = self.config.get("loading", {}).get("mol_true", {})
-                mol_args["mol_true"] = safe_load_mol(path=paths["mol_true"], **mol_true_load_params)
+                mol_true_load_params = self.config.get("loading", {}).get(
+                    "mol_true", {}
+                )
+                mol_args["mol_true"] = safe_load_mol(
+                    path=paths["mol_true"], **mol_true_load_params
+                )
 
             mol_pred_load_params = self.config.get("loading", {}).get("mol_pred", {})
-            for i, mol_pred in enumerate(safe_supply_mols(paths["mol_pred"], **mol_pred_load_params)):
+            for i, mol_pred in enumerate(
+                safe_supply_mols(paths["mol_pred"], **mol_pred_load_params)
+            ):
                 if self.config["top_n"] is not None and i >= self.config["top_n"]:
                     break
 
@@ -160,20 +198,26 @@ class PoseBusters:
 
                 results_key = (str(paths["mol_pred"]), self._get_name(mol_pred, i))
 
-                for name, fname, func, args in zip(self.module_name, self.fname, self.module_func, self.module_args):
+                for name, fname, func, args in zip(
+                    self.module_name, self.fname, self.module_func, self.module_args
+                ):
                     # pick needed arguments for module
                     args_needed = {k: v for k, v in mol_args.items() if k in args}
                     # loading takes all inputs
                     if fname == "loading":
                         args_needed = {k: args_needed.get(k, None) for k in args_needed}
                     # run module when all needed input molecules are valid Mol objects
-                    if fname != "loading" and not all(args_needed.get(m, None) for m in args_needed):
+                    if fname != "loading" and not all(
+                        args_needed.get(m, None) for m in args_needed
+                    ):
                         module_output: dict[str, Any] = {"results": {}}
                     else:
                         module_output = func(**args_needed)
 
                     # save to object
-                    self.results[results_key].extend([(name, k, v) for k, v in module_output["results"].items()])
+                    self.results[results_key].extend(
+                        [(name, k, v) for k, v in module_output["results"].items()]
+                    )
                     # self.results[results_key]["details"].append(module_output["details"])
 
                 # return results for this entry
@@ -187,7 +231,9 @@ class PoseBusters:
         for module in self.config["modules"]:
             function = module_dict[module["function"]]
             parameters = module.get("parameters", {})
-            module_args = set(inspect.signature(function).parameters).intersection({"mol_pred", "mol_true", "mol_cond"})
+            module_args = set(inspect.signature(function).parameters).intersection(
+                {"mol_pred", "mol_true", "mol_cond"}
+            )
 
             self.module_name.append(module["name"])
             self.fname.append(module["function"])
@@ -205,13 +251,28 @@ class PoseBusters:
         return mol.GetProp("_Name")
 
 
-def _dataframe_from_output(results_dict, config, full_report: bool = False) -> pd.DataFrame:
-    d = {id: {(module, output): value for module, output, value in results} for id, results in results_dict.items()}
+def _dataframe_from_output(
+    results_dict, config, full_report: bool = False
+) -> pd.DataFrame:
+    d = {
+        id: {(module, output): value for module, output, value in results}
+        for id, results in results_dict.items()
+    }
     df = pd.DataFrame.from_dict(d, orient="index")
 
-    test_columns = [(c["name"], n) for c in config["modules"] for n in c.get("chosen_binary_test_output", [])]
-    names_lookup = {(c["name"], k): v for c in config["modules"] for k, v in c.get("rename_outputs", {}).items()}
-    suffix_lookup = {c["name"]: c["rename_suffix"] for c in config["modules"] if "rename_suffix" in c}
+    test_columns = [
+        (c["name"], n)
+        for c in config["modules"]
+        for n in c.get("chosen_binary_test_output", [])
+    ]
+    names_lookup = {
+        (c["name"], k): v
+        for c in config["modules"]
+        for k, v in c.get("rename_outputs", {}).items()
+    }
+    suffix_lookup = {
+        c["name"]: c["rename_suffix"] for c in config["modules"] if "rename_suffix" in c
+    }
 
     available_columns = df.columns.tolist()
     missing_columns = [c for c in test_columns if c not in available_columns]
@@ -220,6 +281,8 @@ def _dataframe_from_output(results_dict, config, full_report: bool = False) -> p
 
     df[missing_columns] = pd.NA
     df = df[columns]
-    df.columns = [names_lookup.get(c, c[-1] + suffix_lookup.get(c[0], "")) for c in df.columns]
+    df.columns = [
+        names_lookup.get(c, c[-1] + suffix_lookup.get(c[0], "")) for c in df.columns
+    ]
 
     return df

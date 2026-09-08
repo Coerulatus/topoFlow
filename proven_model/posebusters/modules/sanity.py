@@ -23,10 +23,15 @@ def check_chemistry_using_rdkit(mol_pred: Mol):
     RDLogger.EnableLog("rdApp.*")
 
     messages = [error.Message() for error in errors]
-    atom_indices = [e.GetAtomIndices() if hasattr(e, "GetAtomIndices") else e.GetAtomIdx() for e in errors]
+    atom_indices = [
+        e.GetAtomIndices() if hasattr(e, "GetAtomIndices") else e.GetAtomIdx()
+        for e in errors
+    ]
     types = [error.GetType() for error in errors]
 
-    details = pd.DataFrame(dict(messages=messages, atom_indices=atom_indices, types=types))
+    details = pd.DataFrame(
+        dict(messages=messages, atom_indices=atom_indices, types=types)
+    )
 
     results = {
         "passes_valence_checks": "AtomValenceException" not in types,
@@ -54,7 +59,10 @@ def check_chemistry_using_inchi(mol_pred: Mol):
         errors = str(e)
         inchi = None
 
-    return {"results": {"inchi_convertible": passes}, "details": dict(errors=errors, inchi=inchi)}
+    return {
+        "results": {"inchi_convertible": passes},
+        "details": dict(errors=errors, inchi=inchi),
+    }
 
 
 def check_all_atoms_connected(mol_pred: Mol):

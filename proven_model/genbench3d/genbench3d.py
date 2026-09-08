@@ -207,7 +207,6 @@ class GenBench3D:
         )
         return self.get_results_for_cel(cel, average=average)
 
-
     def get_results_for_sdf_dir(
         self,
         dirpath: str,

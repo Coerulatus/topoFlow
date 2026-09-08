@@ -45,7 +45,7 @@ def validate_flow_model(
     # ======================================================================
     val_dataset = CrossDocked(root=data_dir, split="val")
     datamodule = MockDatamodule(
-        train_length=1, # Not used for validation
+        train_length=1,  # Not used for validation
         val_length=len(val_dataset),
         test_length=1,
         batch_size=batch_size,
@@ -70,7 +70,7 @@ def validate_flow_model(
 
     val_metric_dist_path = os.path.join(data_dir, "processed", "val_distribution.npy")
     norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
-    
+
     if os.path.exists(val_metric_dist_path):
         val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
     else:

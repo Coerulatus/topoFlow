@@ -8,7 +8,9 @@ import torch.nn.functional as F
 
 import flowr.util.functional as smolF
 from flowr.models.semla import BondRefine, LengthsMLP, adj_to_attn_mask
-from topoflow.flow.vector_field_models.equivariant_ast import EquivariantAllSetTransformer
+from topoflow.flow.vector_field_models.equivariant_ast import (
+    EquivariantAllSetTransformer,
+)
 
 # *****************************************************************************
 # ******************************* Helper Modules ******************************
@@ -1629,13 +1631,12 @@ class LigandDecoder(torch.nn.Module):
     def _get_clones(self, module, n):
         return [copy.deepcopy(module) for _ in range(n)]
 
+        # *****************************************************************************
+        # ****************************** Overall Models *******************************
+        # *****************************************************************************
 
-# *****************************************************************************
-# ****************************** Overall Models *******************************
-# *****************************************************************************
+        arch = ("flowr",)
 
-
-        arch='flowr',
 
 class ASTLigandDecoder(nn.Module):
     def __init__(
@@ -1669,7 +1670,7 @@ class ASTLigandDecoder(nn.Module):
         self.d_inv = d_inv
         self.self_cond = self_cond
         self.split_continuous_discrete_time = split_continuous_discrete_time
-        
+
         self.hparams = {
             "d_equi": d_equi,
             "d_inv": d_inv,
@@ -1711,14 +1712,12 @@ class ASTLigandDecoder(nn.Module):
             h_dim=d_inv,
             num_layers=n_layers,
         )
-        
+
         self.atom_type_proj = nn.Linear(d_inv, n_atom_types)
         self.charge_proj = nn.Linear(d_inv, n_charge_types)
-        
+
         self.bond_mlp = nn.Sequential(
-            nn.Linear(2 * d_inv + 1, d_inv),
-            nn.ReLU(),
-            nn.Linear(d_inv, n_bond_types)
+            nn.Linear(2 * d_inv + 1, d_inv), nn.ReLU(), nn.Linear(d_inv, n_bond_types)
         )
 
     def forward(
@@ -1740,115 +1739,140 @@ class ASTLigandDecoder(nn.Module):
         device = coords.device
         B, N_lig = coords.shape[:2]
         if atom_types.ndim == 2:
-            atom_types = F.one_hot(atom_types.long(), num_classes=self.n_atom_types).float()
-            
+            atom_types = F.one_hot(
+                atom_types.long(), num_classes=self.n_atom_types
+            ).float()
+
         lig_h = self.atom_type_emb(atom_types)
         if extra_feats is not None and self.extra_atom_emb is not None:
             if isinstance(extra_feats, (list, tuple)):
                 lig_h = lig_h + self.extra_atom_emb(extra_feats[1])
             else:
                 lig_h = lig_h + self.extra_atom_emb(extra_feats)
-                
+
         if pocket_invs is not None:
             poc_h = self.pocket_proj(pocket_invs)
         else:
             poc_h = torch.empty((B, 0, self.d_inv), device=device)
             pocket_coords = torch.empty((B, 0, 3), device=device)
             pocket_atom_mask = torch.empty((B, 0), dtype=torch.bool, device=device)
-            
+
         if atom_mask is None:
             atom_mask = torch.ones((B, N_lig), dtype=torch.bool, device=device)
         else:
             atom_mask = atom_mask.bool()
-            
+
         if pocket_atom_mask is not None:
             pocket_atom_mask = pocket_atom_mask.bool()
-            
+
         N_poc = poc_h.shape[1]
-        
+
         # Flatten
         lig_h_flat = lig_h[atom_mask]
         poc_h_flat = poc_h[pocket_atom_mask]
         h = torch.cat([lig_h_flat, poc_h_flat], dim=0)
-        
+
         lig_coords_flat = coords[atom_mask]
         poc_coords_flat = pocket_coords[pocket_atom_mask]
         x = torch.cat([lig_coords_flat, poc_coords_flat], dim=0)
-        
+
         # Batch indices
-        batch_lig = torch.arange(B, device=device).unsqueeze(1).expand(B, N_lig)[atom_mask]
-        batch_poc = torch.arange(B, device=device).unsqueeze(1).expand(B, N_poc)[pocket_atom_mask]
-        
+        batch_lig = (
+            torch.arange(B, device=device).unsqueeze(1).expand(B, N_lig)[atom_mask]
+        )
+        batch_poc = (
+            torch.arange(B, device=device)
+            .unsqueeze(1)
+            .expand(B, N_poc)[pocket_atom_mask]
+        )
+
         # Create hyperedges using torch_geometric.nn.pool.radius and radius_graph
         from torch_geometric.nn.pool import radius, radius_graph
-        
+
         # Pocket to Ligand (radius)
         # radius(x, y, r, batch_x, batch_y, max_num_neighbors)
         # Returns [2, E] where row 0 is y (target), row 1 is x (source).
         # We want hyperedges centered at pocket atoms, containing ligand atoms.
         # So each pocket atom is a hyperedge.
         poc_idx_start = lig_h_flat.shape[0]
-        
+
         # Radius graph for Ligand-Ligand
-        ll_edge_index = radius_graph(lig_coords_flat, r=4.0, batch=batch_lig, max_num_neighbors=100)
-        
+        ll_edge_index = radius_graph(
+            lig_coords_flat, r=4.0, batch=batch_lig, max_num_neighbors=100
+        )
+
         # Radius for Pocket-Ligand: pocket as centers, ligand as neighbors
-        pl_edge_index = radius(lig_coords_flat, poc_coords_flat, r=4.0, batch_x=batch_lig, batch_y=batch_poc, max_num_neighbors=100)
-        
+        pl_edge_index = radius(
+            lig_coords_flat,
+            poc_coords_flat,
+            r=4.0,
+            batch_x=batch_lig,
+            batch_y=batch_poc,
+            max_num_neighbors=100,
+        )
+
         # Build v2e and e2v
         # Let's say we have N_lig hyperedges (centered at each ligand) and N_poc hyperedges (centered at each pocket).
         # Hyperedge IDs will be 0 to N_lig-1 (ligand centers), and N_lig to N_lig+N_poc-1 (pocket centers).
-        
+
         # For LL: center is y (row 0), neighbor is x (row 1)
-        he_ll = ll_edge_index[0] # The ligand center
-        node_ll = ll_edge_index[1] # The ligand neighbor
-        
+        he_ll = ll_edge_index[0]  # The ligand center
+        node_ll = ll_edge_index[1]  # The ligand neighbor
+
         # For PL: center is pocket (row 0), neighbor is ligand (row 1)
         he_pl = pl_edge_index[0] + poc_idx_start
         node_pl = pl_edge_index[1]
-        
+
         # Also each node is in its own hyperedge
         he_self_lig = torch.arange(lig_h_flat.shape[0], device=device)
         node_self_lig = torch.arange(lig_h_flat.shape[0], device=device)
-        
+
         he_self_poc = torch.arange(poc_h_flat.shape[0], device=device) + poc_idx_start
         node_self_poc = torch.arange(poc_h_flat.shape[0], device=device) + poc_idx_start
-        
+
         he_idx = torch.cat([he_ll, he_pl, he_self_lig, he_self_poc], dim=0)
         node_idx = torch.cat([node_ll, node_pl, node_self_lig, node_self_poc], dim=0)
-        
+
         edge_index_v2e = torch.stack([he_idx, node_idx], dim=0)
         edge_index_e2v = torch.stack([node_idx, he_idx], dim=0)
-        
+
         node_mask_tensor = torch.zeros((h.shape[0], 1), device=device)
-        node_mask_tensor[:poc_idx_start] = 1.0 # Only ligand moves
-        
-        x_out, h_out = self.model(x, h, edge_index_v2e, edge_index_e2v, node_mask=node_mask_tensor)
-        
+        node_mask_tensor[:poc_idx_start] = 1.0  # Only ligand moves
+
+        x_out, h_out = self.model(
+            x, h, edge_index_v2e, edge_index_e2v, node_mask=node_mask_tensor
+        )
+
         # Map back to [B, N_lig]
         lig_h_out = h_out[:poc_idx_start]
         lig_x_out = x_out[:poc_idx_start]
-        
+
         h_dense = torch.zeros((B, N_lig, self.d_inv), device=device)
         h_dense[atom_mask] = lig_h_out
-        
+
         x_dense = coords.clone()
         x_dense[atom_mask] = lig_x_out
-        
+
         atom_logits = self.atom_type_proj(h_dense)
         charge_logits = self.charge_proj(h_dense)
-        
+
         # Bonds
         # [B, N, N, 2 * d_inv + 1]
         h_i = h_dense.unsqueeze(2).expand(B, N_lig, N_lig, self.d_inv)
         h_j = h_dense.unsqueeze(1).expand(B, N_lig, N_lig, self.d_inv)
-        dist = torch.sqrt(torch.sum((x_dense.unsqueeze(2) - x_dense.unsqueeze(1))**2, dim=-1, keepdim=True) + 1e-8)
-        
+        dist = torch.sqrt(
+            torch.sum(
+                (x_dense.unsqueeze(2) - x_dense.unsqueeze(1)) ** 2, dim=-1, keepdim=True
+            )
+            + 1e-8
+        )
+
         bond_feat = torch.cat([h_i, h_j, dist], dim=-1)
         bond_logits = self.bond_mlp(bond_feat)
         bond_logits = 0.5 * (bond_logits + bond_logits.transpose(1, 2))
-        
+
         return x_dense, atom_logits, bond_logits, charge_logits, atom_mask
+
 
 class LigandGenerator(torch.nn.Module):
     """Main entry point class for generating ligands.
@@ -1901,18 +1925,32 @@ class LigandGenerator(torch.nn.Module):
         self.d_equi = d_equi
         self.duplicate_pocket_equi = duplicate_pocket_equi
 
-
         self.arch = arch
         if arch == "ast":
             ligand_dec = ASTLigandDecoder(
-                d_equi, d_inv, d_message, n_layers, n_attn_heads, d_message_ff, d_edge,
-                n_atom_types, n_bond_types, n_charge_types=n_charge_types, emb_size=emb_size,
-                d_pocket_inv=d_pocket_inv, predict_interactions=predict_interactions,
-                flow_interactions=flow_interactions, use_lig_pocket_rbf=use_lig_pocket_rbf,
-                use_rbf=use_rbf, use_sphcs=use_sphcs, n_interaction_types=n_interaction_types,
-                n_extra_atom_feats=n_extra_atom_feats, self_cond=self_cond,
-                coord_skip_connect=coord_skip_connect, split_continuous_discrete_time=split_continuous_discrete_time,
-                eps=eps
+                d_equi,
+                d_inv,
+                d_message,
+                n_layers,
+                n_attn_heads,
+                d_message_ff,
+                d_edge,
+                n_atom_types,
+                n_bond_types,
+                n_charge_types=n_charge_types,
+                emb_size=emb_size,
+                d_pocket_inv=d_pocket_inv,
+                predict_interactions=predict_interactions,
+                flow_interactions=flow_interactions,
+                use_lig_pocket_rbf=use_lig_pocket_rbf,
+                use_rbf=use_rbf,
+                use_sphcs=use_sphcs,
+                n_interaction_types=n_interaction_types,
+                n_extra_atom_feats=n_extra_atom_feats,
+                self_cond=self_cond,
+                coord_skip_connect=coord_skip_connect,
+                split_continuous_discrete_time=split_continuous_discrete_time,
+                eps=eps,
             )
         else:
             ligand_dec = LigandDecoder(

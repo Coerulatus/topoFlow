@@ -43,11 +43,15 @@ def safe_load_mol(path: Path, load_all: bool = False, **load_params) -> Mol | No
             mol = _load_mol(path, load_all=load_all, **load_params)
         return mol
     except Exception as exception:
-        logger.warning("Could not load molecule from %s with error: %s", path, exception)
+        logger.warning(
+            "Could not load molecule from %s with error: %s", path, exception
+        )
     return None
 
 
-def safe_supply_mols(path: Path, load_all=True, sanitize=True, **load_params) -> Generator[Mol | None, None, None]:
+def safe_supply_mols(
+    path: Path, load_all=True, sanitize=True, **load_params
+) -> Generator[Mol | None, None, None]:
     """Supply molecules from a file, optionally adding hydrogens and assigning bond orders.
 
     Args:
@@ -67,7 +71,9 @@ def safe_supply_mols(path: Path, load_all=True, sanitize=True, **load_params) ->
         yield safe_load_mol(path, sanitize=True, **load_params)
         return None
     else:
-        raise ValueError(f"Molecule file {path} has unknown format. Only .sdf, .mol and .mol2 are supported.")
+        raise ValueError(
+            f"Molecule file {path} has unknown format. Only .sdf, .mol and .mol2 are supported."
+        )
 
     supplier = SDMolSupplier(str(path), sanitize=False, strictParsing=True)
     i = 0
@@ -93,20 +99,45 @@ def _load_mol(  # noqa: PLR0913
     """Load molecule(s) from a file, picking the right RDKit function."""
 
     if load_all and path.suffix == ".sdf":
-        mol = _load_and_combine_mols(path, sanitize=False, removeHs=removeHs, strictParsing=strictParsing)
+        mol = _load_and_combine_mols(
+            path, sanitize=False, removeHs=removeHs, strictParsing=strictParsing
+        )
     elif path.suffix == ".sdf":
-        mol = MolFromMolFile(str(path), sanitize=False, removeHs=removeHs, strictParsing=strictParsing)
+        mol = MolFromMolFile(
+            str(path), sanitize=False, removeHs=removeHs, strictParsing=strictParsing
+        )
     elif path.suffix == ".mol2":
         # MolFromMol2File only loads first molecule from mol2 file
-        if load_all and sum(ln.strip().startswith("@<TRIPOS>MOLECULE") for ln in open(path).readlines()) > 1:
-            logger.error("Cannot load multiple molecules from mol2 file, only loading first.")
-        mol = MolFromMol2File(str(path), sanitize=False, removeHs=removeHs, cleanupSubstructures=cleanupSubstructures)
+        if (
+            load_all
+            and sum(
+                ln.strip().startswith("@<TRIPOS>MOLECULE")
+                for ln in open(path).readlines()
+            )
+            > 1
+        ):
+            logger.error(
+                "Cannot load multiple molecules from mol2 file, only loading first."
+            )
+        mol = MolFromMol2File(
+            str(path),
+            sanitize=False,
+            removeHs=removeHs,
+            cleanupSubstructures=cleanupSubstructures,
+        )
     elif path.suffix == ".pdb":
-        mol = MolFromPDBFile(str(path), sanitize=False, removeHs=removeHs, proximityBonding=proximityBonding)
+        mol = MolFromPDBFile(
+            str(path),
+            sanitize=False,
+            removeHs=removeHs,
+            proximityBonding=proximityBonding,
+        )
     elif path.suffix == ".mol":
         # .mol files only contain one molecule
         block = "".join(open(path).readlines()).strip() + "\nM  END"
-        mol = MolFromMolBlock(block, sanitize=False, removeHs=removeHs, strictParsing=strictParsing)
+        mol = MolFromMolBlock(
+            block, sanitize=False, removeHs=removeHs, strictParsing=strictParsing
+        )
     else:
         raise ValueError(f"Unknown file type {path.suffix}")
 
@@ -128,9 +159,13 @@ def _check_path(path: Path | str) -> Path:
     return path
 
 
-def _load_and_combine_mols(path: Path, sanitize=True, removeHs=True, strictParsing=True) -> Mol | None:
+def _load_and_combine_mols(
+    path: Path, sanitize=True, removeHs=True, strictParsing=True
+) -> Mol | None:
     """Load mols from SDF file and combine into one molecule."""
-    supplier = SDMolSupplier(str(path), sanitize=sanitize, removeHs=removeHs, strictParsing=strictParsing)
+    supplier = SDMolSupplier(
+        str(path), sanitize=sanitize, removeHs=removeHs, strictParsing=strictParsing
+    )
 
     # warning: combines molecules without checking identity or atom order
     mol = next(supplier)

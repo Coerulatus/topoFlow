@@ -6,14 +6,15 @@ from flowr.util.pocket import PocketComplexBatch
 from flowr.data.preprocess_pdbs import process_complex
 import argparse
 
+
 def main(args):
     data_dir = Path(args.data_dir)
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    
+
     splits = torch.load(data_dir / "split_by_name.pt")
     crossdocked_dir = data_dir / "crossdocked_pocket10"
-    
+
     for split, items in splits.items():
         if args.debug and split == "train":
             items = items[:100]
@@ -24,7 +25,7 @@ def main(args):
         for pocket_pdb, ligand_sdf in tqdm(items, desc=f"Processing {split}"):
             pdb_path = crossdocked_dir / pocket_pdb
             sdf_path = crossdocked_dir / ligand_sdf
-            
+
             if not pdb_path.exists() or not sdf_path.exists():
                 print(f"Skipping {pocket_pdb} or {ligand_sdf} as it doesn't exist.")
                 continue
@@ -53,6 +54,7 @@ def main(args):
         bytes_data = batch.to_bytes()
         save_file.write_bytes(bytes_data)
         print(f"Saved {len(systems)} systems to {save_file.resolve()}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

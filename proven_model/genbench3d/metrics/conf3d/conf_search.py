@@ -10,10 +10,11 @@ from typing import List
 
 hartree2ev = 27.211386245988
 
+
 class EnForce_ANI(torch.nn.Module):
     """Takes in an torch model, then defines two forward functions for it.
     The input model should be able to calculate energy and disp_energy given
-    coordiantes, species and charges of a molecule. 
+    coordiantes, species and charges of a molecule.
 
     Arguments:
         ani: model
@@ -22,24 +23,22 @@ class EnForce_ANI(torch.nn.Module):
     Returns:
         the energies and forces for the input molecules. One time calculation.
     """
-    def __init__(self, 
-                 ani, 
-                 name, 
-                 batchsize_atoms=1024*16):
+
+    def __init__(self, ani, name, batchsize_atoms=1024 * 16):
         super().__init__()
-        self.add_module('ani', ani)
+        self.add_module("ani", ani)
         self.name = name
         self.batchsize_atoms = batchsize_atoms
 
     def forward(self, coord, numbers, charges):
         """Calculate the energies and forces for input molecules. Called by self.forward_batched
-        
+
         Arguments:
             coord: coordinates for all input structures. size (B, N, 3), where
                   B is the number of structures in coord, N is the number of
                   atoms in each structure, 3 represents xyz dimensions.
             numbers: the periodic numbers for all atoms.
-            
+
         Returns:
             energies
             forces
@@ -47,8 +46,10 @@ class EnForce_ANI(torch.nn.Module):
         charge = torch.zeros_like(numbers[:, 0])
 
         if self.name == "AIMNET":
-            d = self.ani(dict(coord=coord, numbers=numbers, charge=charges))  #Output from the model
-            e = (d['energy'] + d['disp_energy']).to(torch.double)
+            d = self.ani(
+                dict(coord=coord, numbers=numbers, charge=charges)
+            )  # Output from the model
+            e = (d["energy"] + d["disp_energy"]).to(torch.double)
             g = torch.autograd.grad([e.sum()], [coord])[0]  # size(100, 23, 3)
             assert g is not None
             f = -g
@@ -56,22 +57,24 @@ class EnForce_ANI(torch.nn.Module):
             e, f = self.ani(numbers, coord)
         elif self.name == "ANI2x":
             e = self.ani((numbers, coord)).energies
-            e = e * hartree2ev  #ANI2x (torch.models.ANI2x()) output energy unit is Hatree;
-                                     #ANI ASE interface unit is eV
+            e = (
+                e * hartree2ev
+            )  # ANI2x (torch.models.ANI2x()) output energy unit is Hatree;
+            # ANI ASE interface unit is eV
             g = torch.autograd.grad([e.sum()], [coord])[0]
             f = -g
         return e, f
 
-#    @torch.jit.script_method
+    #    @torch.jit.script_method
     def forward_batched(self, coord, numbers, charges):
         """Calculate the energies and forces for input molecules.
-        
+
         Arguments:
             coord: coordinates for all input structures. size (B, N, 3), where
                   B is the number of structures in coord, N is the number of
                   atoms in each structure, 3 represents xyz dimensions.
             numbers: the periodic numbers for all atoms. size (B, N)
-            
+
         Returns:
             energies
             forces
@@ -80,7 +83,9 @@ class EnForce_ANI(torch.nn.Module):
         e = []
         f = []
         idx = torch.arange(B, device=coord.device)
-        for batch in idx.split(self.batchsize_atoms // N):  #How was the batchsize_atoms decided?
+        for batch in idx.split(
+            self.batchsize_atoms // N
+        ):  # How was the batchsize_atoms decided?
             _e, _f = self(coord[batch], numbers[batch], charges[batch])
             e.append(_e)
             f.append(_f)
@@ -89,24 +94,37 @@ class EnForce_ANI(torch.nn.Module):
 
 def print_stats(state, patience):
     """Print the optimization status"""
-    numbers = state['numbers']
+    numbers = state["numbers"]
     num_total = numbers.size()[0]
-    num_converged_dropped = torch.sum(state['converged_mask']).to('cpu')
-    oscillating_count = state['oscilating_count'].to('cpu').reshape(-1,) >= patience
+    num_converged_dropped = torch.sum(state["converged_mask"]).to("cpu")
+    oscillating_count = (
+        state["oscilating_count"]
+        .to("cpu")
+        .reshape(
+            -1,
+        )
+        >= patience
+    )
     num_dropped = torch.sum(oscillating_count)
     num_converged = num_converged_dropped - num_dropped
     num_active = num_total - num_converged_dropped
-    print("Total 3D structures: %i  Converged: %i   Dropped(Oscillating): %i    Active: %i" % 
-          (num_total, num_converged, num_dropped, num_active))
-    # logging.info("Total 3D structures: %i  Converged: %i   Dropped(Oscillating): %i    Active: %i" % 
+    print(
+        "Total 3D structures: %i  Converged: %i   Dropped(Oscillating): %i    Active: %i"
+        % (num_total, num_converged, num_dropped, num_active)
+    )
+    # logging.info("Total 3D structures: %i  Converged: %i   Dropped(Oscillating): %i    Active: %i" %
     #       (num_total, num_converged, num_dropped, num_active))
+
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
+
+
 # hartree2eV = 27.211385
 @torch.jit.script
-class FIRE():
-    """a general optimization program """
+class FIRE:
+    """a general optimization program"""
+
     # For a list of documentation for different optimization programs: https://wiki.fysik.dtu.dk/ase/ase/optimize.html
     def __init__(self, coord):
         ## default parameters
@@ -124,12 +142,12 @@ class FIRE():
 
     def __call__(self, coord, forces):
         """Moving atoms based on forces
-        
+
         Arguments:
             coord: coordinates of atoms. Size (Batch, N, 3), where Batch is
                    the number of structures, N is the number of atom in each structure.
             forces: forces on each atom. Size (Batch, N, 3).
-            
+
         Return:
             new coordinates that are moved based on input forces. Size (Batch, N, 3)"""
         vf = (forces * self.v).flatten(-2, -1).sum(-1)
@@ -138,13 +156,27 @@ class FIRE():
             a = self.a.unsqueeze(-1).unsqueeze(-1)
             v = self.v
             f = forces
-            self.v = (1.0 - a) * v + a * v.flatten(-2, -1).norm(p=2, dim=-1).unsqueeze(-1).unsqueeze(-1) * f / f.flatten(-2, -1).norm(p=2, dim=-1).unsqueeze(-1).unsqueeze(-1)
+            self.v = (1.0 - a) * v + a * v.flatten(-2, -1).norm(p=2, dim=-1).unsqueeze(
+                -1
+            ).unsqueeze(-1) * f / f.flatten(-2, -1).norm(p=2, dim=-1).unsqueeze(
+                -1
+            ).unsqueeze(
+                -1
+            )
             self.Nsteps += 1
         elif w_vf.any():
             a = self.a[w_vf].unsqueeze(-1).unsqueeze(-1)
             v = self.v[w_vf]
             f = forces[w_vf]
-            self.v[w_vf] = (1.0 - a) * v + a * v.flatten(-2, -1).norm(p=2, dim=-1).unsqueeze(-1).unsqueeze(-1) * f / f.flatten(-2, -1).norm(p=2, dim=-1).unsqueeze(-1).unsqueeze(-1)
+            self.v[w_vf] = (1.0 - a) * v + a * v.flatten(-2, -1).norm(
+                p=2, dim=-1
+            ).unsqueeze(-1).unsqueeze(-1) * f / f.flatten(-2, -1).norm(
+                p=2, dim=-1
+            ).unsqueeze(
+                -1
+            ).unsqueeze(
+                -1
+            )
 
             w_N = self.Nsteps > self.Nmin
             w_vfN = w_vf & w_N
@@ -180,76 +212,102 @@ class FIRE():
         return True
 
 
-
 def n_steps(state, n, opttol, patience):
-    """Doing n steps optimization for each input. Only converged structures are 
+    """Doing n steps optimization for each input. Only converged structures are
     modified at each step. n_steps does not change input conformer order.
-    
+
     Argument:
         state: an dictionary containing all information about this optimization step
         n: optimization step
-        patience: optimization stops for a conformer if the force does not decrease for a continuous patience steps"""
+        patience: optimization stops for a conformer if the force does not decrease for a continuous patience steps
+    """
     # t0 = perf_counter()
-    numbers = state['numbers']
-    charges = state['charges']
+    numbers = state["numbers"]
+    charges = state["charges"]
     # num_total = numbers.size()[0]
-    coord = state['coord']
+    coord = state["coord"]
     optimizer = FIRE(coord)
     # the following two terms are used to detect oscillating conformers
-    smallest_fmax0 = torch.tensor(np.ones((len(coord), 1)) * 999,
-                                 dtype=torch.float).to(coord.device)
-    oscilating_count0 = torch.tensor(np.zeros((len(coord), 1)),
-                                     dtype=torch.float).to(coord.device)
+    smallest_fmax0 = torch.tensor(np.ones((len(coord), 1)) * 999, dtype=torch.float).to(
+        coord.device
+    )
+    oscilating_count0 = torch.tensor(np.zeros((len(coord), 1)), dtype=torch.float).to(
+        coord.device
+    )
     state["oscilating_count"] = oscilating_count0
-    assert(len(coord.shape) == 3)
-    assert(len(numbers.shape) == 2)
-    assert(len(charges.shape) == 1)
-    assert(len(smallest_fmax0.shape) == 2)
-    assert(len(oscilating_count0.shape) == 2)
+    assert len(coord.shape) == 3
+    assert len(numbers.shape) == 2
+    assert len(charges.shape) == 1
+    assert len(smallest_fmax0.shape) == 2
+    assert len(oscilating_count0.shape) == 2
     # for istep in tqdm(range(1, (n+1), 1)):
-    for istep in range(1, (n+1), 1):
-        not_converged = ~ state['converged_mask']  #Essential tracker handle, size fixed
+    for istep in range(1, (n + 1), 1):
+        not_converged = ~state["converged_mask"]  # Essential tracker handle, size fixed
         # stop optimization if all structures converged.
         if not not_converged.any():
             break
 
-        coord = state['coord'][not_converged]  #Subset coordinates, size=not_converged.
-        numbers = state['numbers'][not_converged]
-        charges = state['charges'][not_converged]
+        coord = state["coord"][not_converged]  # Subset coordinates, size=not_converged.
+        numbers = state["numbers"][not_converged]
+        charges = state["charges"][not_converged]
         smallest_fmax = smallest_fmax0[not_converged]
         oscilating_count = state["oscilating_count"][not_converged]
 
         coord.requires_grad_(True)
-        e, f = state['nn'].forward_batched(coord, numbers, charges)  #Key step to calculate all energies and forces.
+        e, f = state["nn"].forward_batched(
+            coord, numbers, charges
+        )  # Key step to calculate all energies and forces.
         coord.requires_grad_(False)
 
         coord = optimizer(coord, f)
-        fmax = f.norm(dim=-1).max(dim=-1)[0]  #Tensor, Norm is the length of each vector. Here it returns the maximum force length for ecah conformer. Size (100)
-        assert(len(fmax.shape) == 1)
+        fmax = f.norm(dim=-1).max(dim=-1)[
+            0
+        ]  # Tensor, Norm is the length of each vector. Here it returns the maximum force length for ecah conformer. Size (100)
+        assert len(fmax.shape) == 1
         not_converged_post1 = fmax > opttol
 
-        #update smallest_fmax for each molecule
+        # update smallest_fmax for each molecule
         fmax_reduced = fmax.reshape(-1, 1) < smallest_fmax
-        fmax_reduced = fmax_reduced.reshape(-1,)
+        fmax_reduced = fmax_reduced.reshape(
+            -1,
+        )
         smallest_fmax[fmax_reduced] = fmax.reshape(-1, 1)[fmax_reduced]
-        #reduce count to 0 for reducing; raise count for non-reducing
+        # reduce count to 0 for reducing; raise count for non-reducing
         oscilating_count[fmax_reduced] = 0
         fmax_not_reduced = ~fmax_reduced
         oscilating_count += fmax_not_reduced.reshape(-1, 1)
         not_oscilating = oscilating_count < patience
-        not_oscilating = not_oscilating.reshape(-1,)
+        not_oscilating = not_oscilating.reshape(
+            -1,
+        )
         not_converged_post = not_converged_post1 & not_oscilating
 
-        optimizer.clean(not_converged_post)  #Subset v, a in FIRE for next optimization
-        
-        state['converged_mask'][not_converged] = ~ not_converged_post  #Update converged_mask, so that converged structures will not be updated in future steps.
-        state['fmax'][not_converged] = fmax  #Update fmax for conformers that are optimized in this iteration
-        state['energy'][not_converged] = e.detach()  #Update energy for conformers that are optimized in this iteration
-        state['coord'][not_converged] = coord  #Update coordinates for conformers that are optimized in this iteration
-        smallest_fmax0[not_converged] = smallest_fmax  # update smalles_fmax for each conformer
-        state["oscilating_count"][not_converged] = oscilating_count  #update counts for continuous no reduction in fmax
-    
-        if (istep % (n//10)) == 0:
+        optimizer.clean(not_converged_post)  # Subset v, a in FIRE for next optimization
+
+        state["converged_mask"][
+            not_converged
+        ] = (
+            ~not_converged_post
+        )  # Update converged_mask, so that converged structures will not be updated in future steps.
+        state["fmax"][
+            not_converged
+        ] = fmax  # Update fmax for conformers that are optimized in this iteration
+        state["energy"][
+            not_converged
+        ] = (
+            e.detach()
+        )  # Update energy for conformers that are optimized in this iteration
+        state["coord"][
+            not_converged
+        ] = coord  # Update coordinates for conformers that are optimized in this iteration
+        smallest_fmax0[not_converged] = (
+            smallest_fmax  # update smalles_fmax for each conformer
+        )
+        state["oscilating_count"][
+            not_converged
+        ] = oscilating_count  # update counts for continuous no reduction in fmax
+
+        if (istep % (n // 10)) == 0:
             print_stats(state, patience)
     if istep == (n):
         print("Reaching maximum optimization step:   ", end="")
@@ -260,14 +318,9 @@ def n_steps(state, n, opttol, patience):
     print_stats(state, patience)
 
 
-def ensemble_opt(net, 
-                 coord, 
-                 numbers, 
-                 charges, 
-                 param, 
-                 device):
+def ensemble_opt(net, coord, numbers, charges, param, device):
     """Optimizing a group of molecules
-    
+
     Arguments:
     net: an EnForce_ANI object
     coord: coordinates of input molecules (N, m, 3). N is the number of structures
@@ -282,39 +335,47 @@ def ensemble_opt(net,
     numbers = torch.tensor(numbers, dtype=torch.long, device=device)
     charges = torch.tensor(charges, dtype=torch.long, device=device)
     converged_mask = torch.zeros(coord.shape[0], dtype=torch.bool, device=device)
-    fmax = torch.full(coord.shape[:1], 999.0, device=coord.device)  # size=N, a tensored filled with 999.0, representing the current maximum forces at each conformer.
+    fmax = torch.full(
+        coord.shape[:1], 999.0, device=coord.device
+    )  # size=N, a tensored filled with 999.0, representing the current maximum forces at each conformer.
     energy = torch.full(coord.shape[:1], 999.0, dtype=torch.double, device=coord.device)
-    ids = torch.arange(coord.shape[0], device=coord.device)  #Returns a 1D tensor
+    ids = torch.arange(coord.shape[0], device=coord.device)  # Returns a 1D tensor
     # optimizer = FIRE(coord)
 
     state = dict(
         ids=ids,
-        coord=coord, numbers=numbers, converged_mask=converged_mask,
+        coord=coord,
+        numbers=numbers,
+        converged_mask=converged_mask,
         # optimizer=optimizer, nn=net, fmax=fmax, energy=energy,
-        nn=net, fmax=fmax, energy=energy,
-        timing=defaultdict(float), charges=charges,
-        he=list(), close=list()  #!!! he and close?
+        nn=net,
+        fmax=fmax,
+        energy=energy,
+        timing=defaultdict(float),
+        charges=charges,
+        he=list(),
+        close=list(),  #!!! he and close?
     )
 
-    n_steps(state, param['opt_steps'], param['opttol'], param['patience'])
+    n_steps(state, param["opt_steps"], param["opttol"], param["patience"])
 
     return dict(
-        coord=state['coord'].tolist(),
-        ids=state['ids'].tolist(),
-        energy=state['energy'].tolist(),
-        fmax=state['fmax'].tolist(),
-        he=state['he'],
-        close=state['close'],
-        timing=dict(state['timing']),
-        numbers=state['numbers'].tolist()
+        coord=state["coord"].tolist(),
+        ids=state["ids"].tolist(),
+        energy=state["energy"].tolist(),
+        fmax=state["fmax"].tolist(),
+        he=state["he"],
+        close=state["close"],
+        timing=dict(state["timing"]),
+        numbers=state["numbers"].tolist(),
     )
 
 
 def padding_coords(lists, pad_value=0.0):
     lengths = [len(lst) for lst in lists]
     pad_length = [max(lengths) - len(lst) for lst in lists]
-    assert (len(pad_length) == len(lists))
-    
+    assert len(pad_length) == len(lists)
+
     lists_padded = []
     for i in range(len(pad_length)):
         lst_i = lists[i]
@@ -322,15 +383,18 @@ def padding_coords(lists, pad_value=0.0):
         try:
             lst_i_padded = lst_i + pad_i
         except:
-            import pdb;pdb.set_trace()
+            import pdb
+
+            pdb.set_trace()
         lists_padded.append(lst_i_padded)
     return lists_padded
+
 
 def padding_species(lists, pad_value=-1):
     lengths = [len(lst) for lst in lists]
     pad_length = [max(lengths) - len(lst) for lst in lists]
-    assert (len(pad_length) == len(lists))
-    
+    assert len(pad_length) == len(lists)
+
     lists_padded = []
     for i in range(len(pad_length)):
         lst_i = lists[i]
@@ -340,49 +404,56 @@ def padding_species(lists, pad_value=-1):
     return lists_padded
 
 
-class ConformerSearch():
-    
-    def __init__(self,
-                 aimnet_filename: str = 'aimnet2nqed_pc14iall_b97m_sae.jpt',
-                 root: str = '/home/bb596/3DGenMolBenchmark/',
-                 device: str = 'cuda',
-                 ) -> None:
+class ConformerSearch:
+
+    def __init__(
+        self,
+        aimnet_filename: str = "aimnet2nqed_pc14iall_b97m_sae.jpt",
+        root: str = "/home/bb596/3DGenMolBenchmark/",
+        device: str = "cuda",
+    ) -> None:
         self.root = root
         self.aimnet_filename = aimnet_filename
         self.device = device
         self.aimnet_path = os.path.join(root, aimnet_filename)
-        self.ani = torch.jit.load(self.aimnet_path, 
-                                  map_location=device) # Return a ScriptModule object
-    
-    def search(self, 
-               mol: List[Mol],
-               n_confs = 250,
-               output_filename: str = 'test_optimization.sdf',
-               opt_steps = 5000,
-                opt_tol = 0.003,
-                patience = 1000,
-                batchsize_atoms = 1024):
+        self.ani = torch.jit.load(
+            self.aimnet_path, map_location=device
+        )  # Return a ScriptModule object
+
+    def search(
+        self,
+        mol: List[Mol],
+        n_confs=250,
+        output_filename: str = "test_optimization.sdf",
+        opt_steps=5000,
+        opt_tol=0.003,
+        patience=1000,
+        batchsize_atoms=1024,
+    ):
         mol = Mol(mol)
         mol.RemoveAllConformers()
-        AllChem.EmbedMultipleConfs(mol, 
-                                   numConfs=n_confs,
-                                    randomSeed=42, 
-                                    numThreads=4,
-                                    pruneRmsThresh=0.3)
-        
-        with Chem.SDWriter('non_opt.sdf') as writer:
+        AllChem.EmbedMultipleConfs(
+            mol, numConfs=n_confs, randomSeed=42, numThreads=4, pruneRmsThresh=0.3
+        )
+
+        with Chem.SDWriter("non_opt.sdf") as writer:
             for i, conf in enumerate(mol.GetConformers()):
                 writer.write(mol, conf.GetId())
-        
+
         device = torch.device(f"cuda")
-        config = {"opt_steps": opt_steps, 
-                  "opttol": opt_tol, 
-                  "patience": patience, 
-                  "batchsize_atoms": batchsize_atoms}
-        print("Preparing for parallel optimizing... (Max optimization steps: %i)" % opt_steps)
+        config = {
+            "opt_steps": opt_steps,
+            "opttol": opt_tol,
+            "patience": patience,
+            "batchsize_atoms": batchsize_atoms,
+        }
+        print(
+            "Preparing for parallel optimizing... (Max optimization steps: %i)"
+            % opt_steps
+        )
         print(f"Total 3D conformers: {mol.GetNumConformers()}")
         # logging.info(f"Total 3D conformers: {len(mols)}")
-        
+
         mol_charge = Chem.GetFormalCharge(mol)
         mol_numbers = [atom.GetAtomicNum() for atom in mol.GetAtoms()]
         coord = []
@@ -392,36 +463,32 @@ class ConformerSearch():
             coord.append(conf.GetPositions().tolist())
             charges.append(mol_charge)
             numbers.append(mol_numbers)
-        
+
         coord_padded = padding_coords(coord, 0)
         numbers_padded = padding_species(numbers, 0)
 
-        for p in self.ani.parameters():  
+        for p in self.ani.parameters():
             p.requires_grad_(False)
-        ani = EnForce_ANI(ani=self.ani, 
-                          name="AIMNET", 
-                          batchsize_atoms=batchsize_atoms) # Interesting, EnForce_ANI inherites nn.module, bu can still accept a ScriptModule object as the input
+        ani = EnForce_ANI(
+            ani=self.ani, name="AIMNET", batchsize_atoms=batchsize_atoms
+        )  # Interesting, EnForce_ANI inherites nn.module, bu can still accept a ScriptModule object as the input
 
         with torch.jit.optimized_execution(False):
-            optdict = ensemble_opt(ani, 
-                                   coord_padded, 
-                                   numbers_padded, 
-                                   charges,
-                                   config,
-                                   device)  #Magic step
+            optdict = ensemble_opt(
+                ani, coord_padded, numbers_padded, charges, config, device
+            )  # Magic step
 
-        energies = optdict['energy']
-        fmax = optdict['fmax']
-        convergence_mask = list(map(lambda x: (x <= config['opttol']), fmax))
-        
+        energies = optdict["energy"]
+        fmax = optdict["fmax"]
+        convergence_mask = list(map(lambda x: (x <= config["opttol"]), fmax))
+
         output_path = os.path.join(self.root, output_filename)
         with Chem.SDWriter(output_path) as writer:
             for i, conf in enumerate(mol.GetConformers()):
                 conf_id = conf.GetId()
-                mol.SetDoubleProp('E_tot', energies[i])
-                mol.SetUnsignedProp('Converged', convergence_mask[i])
-                coord = optdict['coord'][i]
+                mol.SetDoubleProp("E_tot", energies[i])
+                mol.SetUnsignedProp("Converged", convergence_mask[i])
+                coord = optdict["coord"][i]
                 for i, position in enumerate(coord):
                     conf.SetAtomPosition(i, position)
                 writer.write(mol, conf_id)
-        

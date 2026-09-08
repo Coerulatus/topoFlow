@@ -3,6 +3,7 @@ from topoflow.flow.vector_field_models.allsettransformer import (
     AllSetTransformerVectorField,
 )
 
+
 def check_hypergraph():
     """
     Check the incidence matrix and GAT graph construction for the AllSetTransformerVectorField.
@@ -41,9 +42,13 @@ def check_hypergraph():
     print(f"Cutoffs: Lig-Lig={model.cutoff_lig}A, Lig-Pocket={model.cutoff_cross}A\n")
 
     # 3. Generate Incidence and GAT edges
-    print("Edge LP:", model.create_edge_index(x_lig, x_pocket, batch_lig, batch_pocket)[1])
+    print(
+        "Edge LP:", model.create_edge_index(x_lig, x_pocket, batch_lig, batch_pocket)[1]
+    )
     edge_index_v2e, edge_index_e2v, gat_edge_index, edge_types, final_batch_he = (
-        model.create_incidence_with_types(x_lig, x_pocket, batch_lig, batch_pocket, num_graphs=2)
+        model.create_incidence_with_types(
+            x_lig, x_pocket, batch_lig, batch_pocket, num_graphs=2
+        )
     )
 
     N_lig = x_lig.shape[0]
@@ -66,9 +71,11 @@ def check_hypergraph():
         bad_indices = torch.where(src_batch != dst_batch)[0]
         for idx in bad_indices:
             s, d = src[idx].item(), dst[idx].item()
-            print(f"Bad Edge: {s} (Batch {global_batch[s].item()}) -> {d} (Batch {global_batch[d].item()})")
+            print(
+                f"Bad Edge: {s} (Batch {global_batch[s].item()}) -> {d} (Batch {global_batch[d].item()})"
+            )
     assert cross_batch_gat == 0, f"Found {cross_batch_gat} cross-batch GAT edges!"
-    
+
     # Check if ligand-pocket cross edges exist and are correct (not scrambled)
     lp_edges = 0
     for s, d in zip(src.tolist(), dst.tolist()):
@@ -78,7 +85,7 @@ def check_hypergraph():
         if s >= N_lig and d < N_lig:
             lp_edges += 1
             assert global_batch[s] == global_batch[d], "Cross-batch PL edge!"
-    
+
     print(f"Found {lp_edges} valid ligand-pocket cross edges.")
     assert lp_edges > 0, "No ligand-pocket cross edges found, check your cutoffs!"
 
@@ -90,22 +97,25 @@ def check_hypergraph():
 
     cross_batch_he = 0
     type_map = {0: "Global Ligand", 1: "Global Pocket", 2: "Local Interface"}
-    
+
     for he_idx in range(num_hyperedges):
         nodes = torch.where(dense[:, he_idx] > 0)[0]
         if len(nodes) == 0:
             continue
-        
+
         # Check if all nodes in this hyperedge belong to the same batch
         he_batches = global_batch[nodes]
         if len(torch.unique(he_batches)) > 1:
             cross_batch_he += 1
-            print(f"WARNING: Hyperedge {he_idx} spans multiple batches: {he_batches.tolist()}")
+            print(
+                f"WARNING: Hyperedge {he_idx} spans multiple batches: {he_batches.tolist()}"
+            )
 
     print(f"Number of cross-batch Hyperedges: {cross_batch_he}")
     assert cross_batch_he == 0, f"Found {cross_batch_he} cross-batch hyperedges!"
-    
+
     print("\nAll checks passed successfully!")
+
 
 if __name__ == "__main__":
     check_hypergraph()

@@ -16,7 +16,9 @@ class SchrodingerJob:
         """
 
         self.schrodinger_path = os.environ["SCHRODINGER"]
-        self.license_re = re.compile(r"Users\s+of\s+(.*):.*of\s+(\d+)\s+licenses\s+issued;.*of\s+(\d+)\s+licenses\s+in\s+use")
+        self.license_re = re.compile(
+            r"Users\s+of\s+(.*):.*of\s+(\d+)\s+licenses\s+issued;.*of\s+(\d+)\s+licenses\s+in\s+use"
+        )
 
         if config_file is None:
             self.config = {}
@@ -48,7 +50,9 @@ class SchrodingerJob:
 
         for _ in range(max_attempts):
             try:
-                cmd = str((Path(self.schrodinger_path) / "utilities/prepwizard").resolve())
+                cmd = str(
+                    (Path(self.schrodinger_path) / "utilities/prepwizard").resolve()
+                )
                 cmds = [cmd, "-fillsidechains", "-WAIT", complex_path, output_file]
                 out = sp.run(cmds, capture_output=True)
             except Exception as e:
@@ -80,7 +84,9 @@ class SchrodingerJob:
                 try:
                     os.chdir(tmp_dir)
                     shutil.copy(complex_path, "_complex.mae")
-                    out = sp.run([cmd, "_complex.mae", "_complex.pdb"], capture_output=True)
+                    out = sp.run(
+                        [cmd, "_complex.mae", "_complex.pdb"], capture_output=True
+                    )
                     os.chdir(current_dir)
 
                     returncode = out.returncode
@@ -297,7 +303,7 @@ class SchrodingerJob:
     #             ):
     #                 shutil.copy(os.path.join(tmp_dir, "glide_in.csv"), os.path.join(output_path, "score.csv"))
     #                 shutil.copy(os.path.join(tmp_dir, "glide_in_lib.sdf"),  os.path.join(output_path, "ligand.sdf"))
-                    
+
     #                 return returncode == 0
     #         return False
 

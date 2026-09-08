@@ -14,7 +14,9 @@ LogToPythonLogger()
 logger = logging.getLogger(__name__)
 
 
-def check_identity(mol_pred: Mol, mol_true: Mol, inchi_options: str = "") -> dict[str, Any]:
+def check_identity(
+    mol_pred: Mol, mol_true: Mol, inchi_options: str = ""
+) -> dict[str, Any]:
     """Check two molecules are identical (docking relevant identity).
 
     Args:
@@ -71,7 +73,9 @@ stereo_all_layers = ["stereo_dbond", "stereo_sp3", "stereo_sp3_inverted", "stere
 stereo_tetrahedral_layers = ["stereo_sp3", "stereo_sp3_inverted", "stereo_type"]
 
 
-def _compare_inchis(inchi_true: str, inchi_pred: str, layers: list[str] = standard_layers) -> dict[str, bool]:
+def _compare_inchis(
+    inchi_true: str, inchi_pred: str, layers: list[str] = standard_layers
+) -> dict[str, bool]:
     results = {}
 
     # fast return when overall InChI is the same
@@ -96,7 +100,9 @@ def _compare_inchis(inchi_true: str, inchi_pred: str, layers: list[str] = standa
             results[name] = layers_true[layer] == layers_pred[layer]
 
     # combine stereo layers (pass if not present)
-    results["stereo_tetrahedral"] = all(results.get(name, True) for name in stereo_tetrahedral_layers)
+    results["stereo_tetrahedral"] = all(
+        results.get(name, True) for name in stereo_tetrahedral_layers
+    )
     results["stereo"] = all(results.get(name, True) for name in stereo_all_layers)
 
     return results

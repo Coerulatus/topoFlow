@@ -1,4 +1,5 @@
 """Module to check bond lengths, bond angles, and internal clash of ligand conformations."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -131,7 +132,8 @@ def check_geometry(  # noqa: PLR0913, PLR0915
     df_12 = pd.DataFrame()
     df_12["atom_pair"] = list(zip(*upper_triangle_idcs))  # indices have i1 < i2
     df_12["atom_types"] = [
-        "--".join(tuple(mol.GetAtomWithIdx(int(j)).GetSymbol() for j in i)) for i in df_12["atom_pair"]
+        "--".join(tuple(mol.GetAtomWithIdx(int(j)).GetSymbol() for j in i))
+        for i in df_12["atom_pair"]
     ]
     df_12["angle"] = df_12["atom_pair"].apply(lambda x: angle_set.get(x, None))
     df_12["has_hydrogen"] = [_has_hydrogen(mol, i) for i in df_12["atom_pair"]]
@@ -158,7 +160,9 @@ def check_geometry(  # noqa: PLR0913, PLR0915
     results[col_n_bonds] = len(df_bonds)
     results[col_n_short_bonds] = sum(df_bonds[col_pe] < -threshold_bad_bond_length)
     results[col_n_long_bonds] = sum(df_bonds[col_pe] > threshold_bad_bond_length)
-    results[col_n_good_bonds] = results[col_n_bonds] - results[col_n_short_bonds] - results[col_n_long_bonds]
+    results[col_n_good_bonds] = (
+        results[col_n_bonds] - results[col_n_short_bonds] - results[col_n_long_bonds]
+    )
     results[col_bonds_result] = results[col_n_good_bonds] == results[col_n_bonds]
     results[col_shortest_bond] = (df_bonds["distance"] / df_bonds["lower_bound"]).min()
     results[col_longest_bond] = (df_bonds["distance"] / df_bonds["upper_bound"]).max()
@@ -179,7 +183,10 @@ def check_geometry(  # noqa: PLR0913, PLR0915
     results[col_clash_result] = results[col_n_good_noncov] == results[col_n_noncov]
     results[col_closest_noncov] = (df_clash["distance"] / df_clash["lower_bound"]).min()
 
-    return {"results": results, "details": {"bonds": df_bonds, "clash": df_clash, "angles": df_angles}}
+    return {
+        "results": results,
+        "details": {"bonds": df_bonds, "clash": df_clash, "angles": df_angles},
+    }
 
 
 def _bond_check(df: pd.DataFrame) -> pd.DataFrame:
@@ -230,7 +237,9 @@ def _get_angle_atom_indices(bonds: list[tuple[int, int]]) -> list[tuple[int, int
     return angles
 
 
-def _two_bonds_to_angle(bond1: tuple[int, int], bond2: tuple[int, int]) -> None | tuple[int, int, int]:
+def _two_bonds_to_angle(
+    bond1: tuple[int, int], bond2: tuple[int, int]
+) -> None | tuple[int, int, int]:
     set1 = set(bond1)
     set2 = set(bond2)
     all_atoms = set1 | set2

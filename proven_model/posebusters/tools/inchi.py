@@ -8,10 +8,20 @@ from re import findall
 from rdkit.Chem.inchi import MolFromInchi, MolToInchi
 from rdkit.Chem.MolStandardize.rdMolStandardize import Uncharger
 from rdkit.Chem.rdchem import AtomValenceException, Mol
-from rdkit.Chem.rdmolops import AssignStereochemistryFrom3D, RemoveHs, RemoveStereochemistry, SanitizeMol
+from rdkit.Chem.rdmolops import (
+    AssignStereochemistryFrom3D,
+    RemoveHs,
+    RemoveStereochemistry,
+    SanitizeMol,
+)
 
 from .logging import CaptureLogger
-from .molecules import add_stereo_hydrogens, assert_sanity, neutralize_atoms, remove_isotopic_info
+from .molecules import (
+    add_stereo_hydrogens,
+    assert_sanity,
+    neutralize_atoms,
+    remove_isotopic_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +36,16 @@ def get_inchi(mol: Mol, inchi_strict: bool = False) -> str:
         if MolFromInchi(inchi, sanitize=True) is None:
             warnings = re.split(r"\[.+?\] WARNING: ", log.get("WARNING", ""))[1:]
             errors = re.split(r"\[.+?\] ERROR: ", log.get("ERROR", ""))[1:]
-            message = f"InChI ERRORs: {'; '.join(errors)} WARNINGs: {'; '.join(warnings)}"
+            message = (
+                f"InChI ERRORs: {'; '.join(errors)} WARNINGs: {'; '.join(warnings)}"
+            )
             raise Exception(message)
     return inchi
 
 
-def standardize_and_get_inchi(mol: Mol, options: str = "", log_level=None, warnings_as_errors=False) -> str:
+def standardize_and_get_inchi(
+    mol: Mol, options: str = "", log_level=None, warnings_as_errors=False
+) -> str:
     """Return InChI after standardising molecule and inferring stereo from coordinates."""
     mol = deepcopy(mol)
     mol = assert_sanity(mol)
@@ -48,7 +62,9 @@ def standardize_and_get_inchi(mol: Mol, options: str = "", log_level=None, warni
     try:
         mol = neutralize_atoms(mol)
     except AtomValenceException:
-        logger.warning("Failed to neutralize molecule. Using uncharger. InChI check might fail.")
+        logger.warning(
+            "Failed to neutralize molecule. Using uncharger. InChI check might fail."
+        )
         mol = Uncharger().uncharge(mol)
     mol = add_stereo_hydrogens(mol)
 
@@ -56,7 +72,12 @@ def standardize_and_get_inchi(mol: Mol, options: str = "", log_level=None, warni
         AssignStereochemistryFrom3D(mol, replaceExistingTags=True)
 
     with CaptureLogger():
-        inchi = MolToInchi(mol, options=options, logLevel=log_level, treatWarningAsError=warnings_as_errors)
+        inchi = MolToInchi(
+            mol,
+            options=options,
+            logLevel=log_level,
+            treatWarningAsError=warnings_as_errors,
+        )
 
     return inchi
 

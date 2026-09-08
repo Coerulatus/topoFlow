@@ -1339,7 +1339,9 @@ class LigandPocketCFM(pl.LightningModule):
         self.wasserstein_metrics = None
         if self.train_smiles is not None and train_mols:
             print("Initialising Wasserstein distribution metric...")
-            self.wasserstein_metrics = Metrics.WassersteinDistributionDistance(train_mols)
+            self.wasserstein_metrics = Metrics.WassersteinDistributionDistance(
+                train_mols
+            )
             print("Wasserstein metric complete.")
 
         if pairwise_metrics:
@@ -1587,10 +1589,13 @@ class LigandPocketCFM(pl.LightningModule):
             self.gen_mol_metrics.update(gen_mols)
             if self.gen_dist_metrics is not None:
                 self.gen_dist_metrics.update(gen_mols)
-            
-            pocket_coords_list = [pocket_data["coords"][i][pocket_data["mask"][i].bool()] for i in range(len(gen_mols))]
+
+            pocket_coords_list = [
+                pocket_data["coords"][i][pocket_data["mask"][i].bool()]
+                for i in range(len(gen_mols))
+            ]
             self.gnina_metrics.update(gen_mols, pocket_coords_list)
-            
+
             if self.wasserstein_metrics is not None:
                 self.wasserstein_metrics.update(gen_mols)
 
@@ -1648,17 +1653,29 @@ class LigandPocketCFM(pl.LightningModule):
             self.gen_mol_metrics.reset()
             if self.gen_dist_metrics is not None:
                 self.gen_dist_metrics.reset()
-            
+
             # Compute and log GNINA and Wasserstein
             gnina_results = self.gnina_metrics.compute()
             for k, v in gnina_results.items():
-                self.log(f"val-{k}", v.to(self.device), on_epoch=True, logger=True, sync_dist=True)
+                self.log(
+                    f"val-{k}",
+                    v.to(self.device),
+                    on_epoch=True,
+                    logger=True,
+                    sync_dist=True,
+                )
             self.gnina_metrics.reset()
-            
+
             if self.wasserstein_metrics is not None:
                 wl_results = self.wasserstein_metrics.compute()
                 for k, v in wl_results.items():
-                    self.log(f"val-{k}", v.to(self.device), on_epoch=True, logger=True, sync_dist=True)
+                    self.log(
+                        f"val-{k}",
+                        v.to(self.device),
+                        on_epoch=True,
+                        logger=True,
+                        sync_dist=True,
+                    )
                 self.wasserstein_metrics.reset()
 
             if self.pairwise_metrics:

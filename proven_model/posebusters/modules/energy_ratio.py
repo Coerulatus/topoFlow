@@ -59,32 +59,52 @@ def check_energy_ratio(
         mol_pred = assert_sanity(mol_pred)
         AddHs(mol_pred, addCoords=True)
     except Exception as e:
-        logger.warning(_warning_prefix + "failed because RDKit sanitization failed for molecule: %s", e)
+        logger.warning(
+            _warning_prefix
+            + "failed because RDKit sanitization failed for molecule: %s",
+            e,
+        )
         return _empty_results
 
     try:
         inchi = get_inchi(mol_pred, inchi_strict=inchi_strict)
     except InchiReadWriteError as e:
-        logger.warning(_warning_prefix + "failed because InChI creation failed for molecule: %s", e.args[1])
+        logger.warning(
+            _warning_prefix + "failed because InChI creation failed for molecule: %s",
+            e.args[1],
+        )
         return _empty_results
     except Exception as e:
-        logger.warning(_warning_prefix + "failed because InChI creation failed for molecule: %s", e)
+        logger.warning(
+            _warning_prefix + "failed because InChI creation failed for molecule: %s", e
+        )
         return _empty_results
 
     try:
         conf_energy = get_conf_energy(mol_pred)
     except Exception as e:
-        logger.warning(_warning_prefix + "failed to calculate conformation energy for %s: %s", inchi, e)
+        logger.warning(
+            _warning_prefix + "failed to calculate conformation energy for %s: %s",
+            inchi,
+            e,
+        )
         conf_energy = np.nan
 
     try:
         avg_energy = float(get_average_energy(inchi, ensemble_number_conformations))
     except Exception as e:
-        logger.warning(_warning_prefix + "failed to calculate ensemble conformation energy for %s: %s", inchi, e)
+        logger.warning(
+            _warning_prefix
+            + "failed to calculate ensemble conformation energy for %s: %s",
+            inchi,
+            e,
+        )
         avg_energy = np.nan
 
     if avg_energy == 0:
-        logger.warning(_warning_prefix + "calculated average energy of molecule 0 for %s", inchi)
+        logger.warning(
+            _warning_prefix + "calculated average energy of molecule 0 for %s", inchi
+        )
         avg_energy = np.nan
 
     pred_factor = conf_energy / avg_energy
@@ -108,7 +128,9 @@ def get_average_energy(inchi: str, n_confs: int = 50, num_threads: int = 0) -> M
     return sum(energies) / len(energies)
 
 
-def new_conformation(mol: Mol, n_confs: int = 1, num_threads: int = 0, energy_minimization=True) -> Mol:
+def new_conformation(
+    mol: Mol, n_confs: int = 1, num_threads: int = 0, energy_minimization=True
+) -> Mol:
     """Generate new conformation(s) for a molecule."""
     assert mol is not None
 

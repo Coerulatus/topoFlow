@@ -10,10 +10,23 @@ import numpy as np
 from rdkit import RDLogger
 from rdkit.Chem.AllChem import AssignBondOrdersFromTemplate
 from rdkit.Chem.Lipinski import HAcceptorSmarts, HDonorSmarts
-from rdkit.Chem.rdchem import AtomValenceException, Bond, Conformer, GetPeriodicTable, Mol, RWMol
+from rdkit.Chem.rdchem import (
+    AtomValenceException,
+    Bond,
+    Conformer,
+    GetPeriodicTable,
+    Mol,
+    RWMol,
+)
 from rdkit.Chem.rdMolAlign import GetBestAlignmentTransform
 from rdkit.Chem.rdmolfiles import MolFromSmarts
-from rdkit.Chem.rdmolops import AddHs, RemoveHs, RemoveStereochemistry, RenumberAtoms, SanitizeMol
+from rdkit.Chem.rdmolops import (
+    AddHs,
+    RemoveHs,
+    RemoveStereochemistry,
+    RenumberAtoms,
+    SanitizeMol,
+)
 from rdkit.Chem.rdMolTransforms import TransformConformer
 
 logger = getLogger(__name__)
@@ -81,15 +94,24 @@ def remove_all_charges_and_hydrogens(mol: Mol) -> Mol:
     except AtomValenceException:
         # from rdkit.Chem.MolStandardize.rdMolStandardize import Uncharger
         # mol = Uncharger().uncharge(mol)
-        logger.error("AtomValenceException raised while neutralizing molecule. Continuing with original molecule.")
+        logger.error(
+            "AtomValenceException raised while neutralizing molecule. Continuing with original molecule."
+        )
         return mol
     return mol
 
 
 def add_stereo_hydrogens(mol: Mol) -> Mol:
     """Add all hydrogens but those on primary ketimine."""
-    exclude = {match[1] for match in mol.GetSubstructMatches(MolFromSmarts("[CX3]=[NH1]"))}
-    atoms = [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() != 1 if a.GetIdx() not in exclude]
+    exclude = {
+        match[1] for match in mol.GetSubstructMatches(MolFromSmarts("[CX3]=[NH1]"))
+    }
+    atoms = [
+        a.GetIdx()
+        for a in mol.GetAtoms()
+        if a.GetAtomicNum() != 1
+        if a.GetIdx() not in exclude
+    ]
     mol = AddHs(mol, onlyOnAtoms=atoms, addCoords=True)
     return mol
 
@@ -139,7 +161,9 @@ def delete_atoms(mol: Mol, indices: Iterable[int]) -> Mol:
 
 def _align_and_renumber(mol_true: Mol, mol_pred: Mol) -> Mol:
     """Align mol_pred to mol_true and renumbers atoms in mol_true to match mol_pred."""
-    alignment = GetBestAlignmentTransform(mol_true, mol_pred, symmetrizeConjugatedTerminalGroups=False)
+    alignment = GetBestAlignmentTransform(
+        mol_true, mol_pred, symmetrizeConjugatedTerminalGroups=False
+    )
     # rotate and translate
     TransformConformer(mol_true.GetConformer(0), alignment[1])
     # renumber atoms

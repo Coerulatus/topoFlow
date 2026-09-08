@@ -2337,9 +2337,11 @@ def _get_plif_recovery(
 
     return recovery_rate, tanimoto_sim
 
+
 # =============================================================================
 # Added TopoFlow Metrics
 # =============================================================================
+
 
 def wasserstein_1d(a, b):
     """Calculate the 1D Wasserstein distance between two 1D distributions."""
@@ -2451,7 +2453,9 @@ class LipinskiMetric(GenerativeMetric):
                     logp = Crippen.MolLogP(mol)
                     rule_4 = (logp >= -2) and (logp <= 5)
                     rule_5 = Chem.rdMolDescriptors.CalcNumRotatableBonds(mol) <= 10
-                    score = sum([int(a) for a in [rule_1, rule_2, rule_3, rule_4, rule_5]])
+                    score = sum(
+                        [int(a) for a in [rule_1, rule_2, rule_3, rule_4, rule_5]]
+                    )
                     scores.append(score)
                 except:
                     pass
@@ -2485,15 +2489,17 @@ class MolSizeMetric(GenerativeMetric):
             return torch.tensor(0.0)
         return torch.cat(self.values).float().mean()
 
+
 # GNINA Docker metric
 from topoflow.utils.gnina_path import GNINA_EXECUTABLE
+
 
 class GninaMetrics(GenerativeMetric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_state("vina_values", default=[], dist_reduce_fx="cat")
         self.add_state("cnn_values", default=[], dist_reduce_fx="cat")
-        
+
         # Determine conda prefix if available
         self.env_extra = os.environ.copy()
         conda_prefix = os.environ.get("CONDA_PREFIX")
@@ -2502,87 +2508,114 @@ class GninaMetrics(GenerativeMetric):
             current_ld = self.env_extra.get("LD_LIBRARY_PATH", "")
             self.env_extra["LD_LIBRARY_PATH"] = f"{lib_path}:{current_ld}"
 
-    def update(self, mols: list[Chem.rdchem.Mol], pocket_coords_list: list[torch.Tensor]) -> None:
+    def update(
+        self, mols: list[Chem.rdchem.Mol], pocket_coords_list: list[torch.Tensor]
+    ) -> None:
         # Expected: pocket_coords_list is a list of [N_poc, 3] tensors corresponding to mols
         assert len(mols) == len(pocket_coords_list)
-        
+
         vina_scores = []
         cnn_scores = []
-        
+
         for mol, pocket_coords in zip(mols, pocket_coords_list):
             if mol is None:
                 continue
-                
+
             try:
                 # Need hydrogens for docking
                 mol = Chem.AddHs(mol, addCoords=True)
-                
+
                 with tempfile.TemporaryDirectory() as temp_dir:
                     receptor_path = os.path.join(temp_dir, "receptor.pdb")
                     ligand_path = os.path.join(temp_dir, "ligand.sdf")
                     output_path = os.path.join(temp_dir, "out.sdf")
-                    
+
                     # 1. Save Ligand
                     writer = Chem.SDWriter(ligand_path)
                     writer.write(mol)
                     writer.close()
-                    
+
                     # 2. Save Receptor
                     # We just need it as PDB. We can write a quick PDB file.
                     with open(receptor_path, "w") as f:
                         for i, coord in enumerate(pocket_coords.cpu().numpy()):
                             # Fake ATOM record to satisfy gnina
-                            f.write(f"ATOM  {i+1:5d}  C   UNK A   1    {coord[0]:8.3f}{coord[1]:8.3f}{coord[2]:8.3f}  1.00  0.00           C  \n")
-                    
+                            f.write(
+                                f"ATOM  {i+1:5d}  C   UNK A   1    {coord[0]:8.3f}{coord[1]:8.3f}{coord[2]:8.3f}  1.00  0.00           C  \n"
+                            )
+
                     # 3. Box params
                     conf = mol.GetConformer()
                     pos = conf.GetPositions()
                     center = np.mean(pos, axis=0)
                     max_dist = np.max(np.linalg.norm(pos - center, axis=1))
                     size = (max_dist * 2) + 12.0
-                    
+
                     cmd = [
                         GNINA_EXECUTABLE,
-                        "--receptor", receptor_path,
-                        "--ligand", ligand_path,
-                        "--out", output_path,
-                        "--center_x", f"{center[0]:.3f}",
-                        "--center_y", f"{center[1]:.3f}",
-                        "--center_z", f"{center[2]:.3f}",
-                        "--size_x", f"{size:.3f}",
-                        "--size_y", f"{size:.3f}",
-                        "--size_z", f"{size:.3f}",
-                        "--cpu", "1",
-                        "--seed", "0",
-                        "--num_modes", "1",
-                        "--exhaustiveness", "8",
+                        "--receptor",
+                        receptor_path,
+                        "--ligand",
+                        ligand_path,
+                        "--out",
+                        output_path,
+                        "--center_x",
+                        f"{center[0]:.3f}",
+                        "--center_y",
+                        f"{center[1]:.3f}",
+                        "--center_z",
+                        f"{center[2]:.3f}",
+                        "--size_x",
+                        f"{size:.3f}",
+                        "--size_y",
+                        f"{size:.3f}",
+                        "--size_z",
+                        f"{size:.3f}",
+                        "--cpu",
+                        "1",
+                        "--seed",
+                        "0",
+                        "--num_modes",
+                        "1",
+                        "--exhaustiveness",
+                        "8",
                     ]
-                    
+
                     import subprocess
+
                     subprocess.run(
-                        cmd, capture_output=True, text=True, check=True, env=self.env_extra
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        env=self.env_extra,
                     )
-                    
+
                     vina = 0.0
                     cnn = 0.0
                     if os.path.exists(output_path):
                         with open(output_path, "r") as f:
                             content = f.read()
                             import re
-                            v_match = re.search(r"> <minimizedAffinity>\s+([-\d\.]+)", content)
+
+                            v_match = re.search(
+                                r"> <minimizedAffinity>\s+([-\d\.]+)", content
+                            )
                             if v_match:
                                 vina = float(v_match.group(1))
-                            c_match = re.search(r"> <CNNaffinity>\s+([-\d\.]+)", content)
+                            c_match = re.search(
+                                r"> <CNNaffinity>\s+([-\d\.]+)", content
+                            )
                             if c_match:
                                 cnn = float(c_match.group(1))
-                    
+
                     vina_scores.append(vina)
                     cnn_scores.append(cnn)
-                    
+
             except Exception as e:
                 # GNINA failed for this mol
                 pass
-                
+
         if vina_scores:
             self.vina_values.append(torch.tensor(vina_scores, dtype=torch.float32))
             self.cnn_values.append(torch.tensor(cnn_scores, dtype=torch.float32))
@@ -2590,28 +2623,26 @@ class GninaMetrics(GenerativeMetric):
     def compute(self) -> dict:
         v_mean = torch.tensor(0.0)
         c_mean = torch.tensor(0.0)
-        
+
         if len(self.vina_values) > 0:
             v_mean = torch.cat(self.vina_values).mean()
         if len(self.cnn_values) > 0:
             c_mean = torch.cat(self.cnn_values).mean()
-            
-        return {
-            "vina": v_mean,
-            "cnn_affinity": c_mean
-        }
+
+        return {"vina": v_mean, "cnn_affinity": c_mean}
+
 
 class WassersteinDistributionDistance(GenerativeMetric):
     def __init__(self, ground_truth_mols: list[Chem.rdchem.Mol], **kwargs):
         super().__init__(**kwargs)
-        
+
         # Precompute standard metrics for the ground truth set
         self.gt_qed = []
         self.gt_logp = []
         self.gt_sas = []
         self.gt_lipinski = []
         self.gt_molsize = []
-        
+
         for mol in ground_truth_mols:
             if mol is None:
                 continue
@@ -2620,7 +2651,7 @@ class WassersteinDistributionDistance(GenerativeMetric):
                 self.gt_logp.append(Descriptors.MolLogP(mol))
                 self.gt_sas.append(sascorer.calculateScore(mol))
                 self.gt_molsize.append(mol.GetNumAtoms())
-                
+
                 rule_1 = Descriptors.ExactMolWt(mol) < 500
                 rule_2 = Lipinski.NumHDonors(mol) <= 5
                 rule_3 = Lipinski.NumHAcceptors(mol) <= 10
@@ -2631,26 +2662,26 @@ class WassersteinDistributionDistance(GenerativeMetric):
                 self.gt_lipinski.append(score)
             except:
                 pass
-                
+
         self.gt_qed = torch.tensor(self.gt_qed, dtype=torch.float32)
         self.gt_logp = torch.tensor(self.gt_logp, dtype=torch.float32)
         self.gt_sas = torch.tensor(self.gt_sas, dtype=torch.float32)
         self.gt_lipinski = torch.tensor(self.gt_lipinski, dtype=torch.float32)
         self.gt_molsize = torch.tensor(self.gt_molsize, dtype=torch.float32)
-        
+
         self.add_state("gen_qed", default=[], dist_reduce_fx="cat")
         self.add_state("gen_logp", default=[], dist_reduce_fx="cat")
         self.add_state("gen_sas", default=[], dist_reduce_fx="cat")
         self.add_state("gen_lipinski", default=[], dist_reduce_fx="cat")
         self.add_state("gen_molsize", default=[], dist_reduce_fx="cat")
-        
+
     def update(self, mols: list[Chem.rdchem.Mol]) -> None:
         qeds = []
         logps = []
         sass = []
         lipinskis = []
         molsizes = []
-        
+
         for mol in mols:
             if mol is None:
                 continue
@@ -2659,7 +2690,7 @@ class WassersteinDistributionDistance(GenerativeMetric):
                 logps.append(Descriptors.MolLogP(mol))
                 sass.append(sascorer.calculateScore(mol))
                 molsizes.append(mol.GetNumAtoms())
-                
+
                 rule_1 = Descriptors.ExactMolWt(mol) < 500
                 rule_2 = Lipinski.NumHDonors(mol) <= 5
                 rule_3 = Lipinski.NumHAcceptors(mol) <= 10
@@ -2670,7 +2701,7 @@ class WassersteinDistributionDistance(GenerativeMetric):
                 lipinskis.append(score)
             except:
                 pass
-                
+
         if qeds:
             self.gen_qed.append(torch.tensor(qeds, dtype=torch.float32))
             self.gen_logp.append(torch.tensor(logps, dtype=torch.float32))
@@ -2687,17 +2718,21 @@ class WassersteinDistributionDistance(GenerativeMetric):
                 "wl-lipinski": torch.tensor(0.0),
                 "wl-molsize": torch.tensor(0.0),
             }
-            
+
         gen_qed = torch.cat(self.gen_qed)
         gen_logp = torch.cat(self.gen_logp)
         gen_sas = torch.cat(self.gen_sas)
         gen_lipinski = torch.cat(self.gen_lipinski)
         gen_molsize = torch.cat(self.gen_molsize)
-        
+
         return {
             "wl-qed": wasserstein_1d(self.gt_qed.to(gen_qed.device), gen_qed),
             "wl-logp": wasserstein_1d(self.gt_logp.to(gen_logp.device), gen_logp),
             "wl-sas": wasserstein_1d(self.gt_sas.to(gen_sas.device), gen_sas),
-            "wl-lipinski": wasserstein_1d(self.gt_lipinski.to(gen_lipinski.device), gen_lipinski),
-            "wl-molsize": wasserstein_1d(self.gt_molsize.to(gen_molsize.device), gen_molsize),
+            "wl-lipinski": wasserstein_1d(
+                self.gt_lipinski.to(gen_lipinski.device), gen_lipinski
+            ),
+            "wl-molsize": wasserstein_1d(
+                self.gt_molsize.to(gen_molsize.device), gen_molsize
+            ),
         }

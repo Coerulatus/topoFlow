@@ -6,7 +6,8 @@ from typing import List, Union
 
 import datamol as dm
 import MDAnalysis as mda
-#import openbabel as ob
+
+# import openbabel as ob
 import prolif as plf
 import rdkit.Chem as Chem
 from rdkit import Chem
@@ -14,7 +15,13 @@ import tempfile
 
 from posecheck.utils.chem import remove_radicals
 from posecheck.utils.constants import REDUCE_PATH, SPLIT_PATH
-from posecheck.utils.biopython import load_biopython_structure, save_biopython_structure, ids_scriptly_increasing, reorder_ids, remove_connect_lines
+from posecheck.utils.biopython import (
+    load_biopython_structure,
+    save_biopython_structure,
+    ids_scriptly_increasing,
+    reorder_ids,
+    remove_connect_lines,
+)
 
 
 def load_splits_crossdocked(
@@ -67,11 +74,13 @@ def load_protein_from_pdb(pdb_path: str, reduce_path: str = REDUCE_PATH):
     structure = load_biopython_structure(pdb_path)
     if not ids_scriptly_increasing(structure):
         structure = reorder_ids(structure)
-    save_biopython_structure(structure, tmp_path) # Save reordered structure
+    save_biopython_structure(structure, tmp_path)  # Save reordered structure
 
     # Run Hydrite
     cmd = f"hydride -i {tmp_path} -o {tmp_protonated_path}"
-    out = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out = subprocess.run(
+        cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
 
     # Check if Hydrite failed
     if out.returncode != 0:

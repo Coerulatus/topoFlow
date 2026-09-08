@@ -1,4 +1,5 @@
 """Protein related functions."""
+
 from __future__ import annotations
 
 import logging
@@ -44,7 +45,13 @@ _water_ccd_codes = {
 def get_atom_type_mask(mol: Mol, ignore_types: Iterable[str]) -> list[bool]:
     """Get mask for atoms to keep."""
     ignore_types = set(ignore_types)
-    unsupported = ignore_types - {"hydrogens", "protein", "organic_cofactors", "inorganic_cofactors", "waters"}
+    unsupported = ignore_types - {
+        "hydrogens",
+        "protein",
+        "organic_cofactors",
+        "inorganic_cofactors",
+        "waters",
+    }
     if unsupported:
         raise ValueError(f"Ignore types {unsupported} not supported.")
 
@@ -58,12 +65,20 @@ def get_atom_type_mask(mol: Mol, ignore_types: Iterable[str]) -> list[bool]:
     ignore_water = "waters" in ignore_types
 
     return [
-        _keep_atom(a, ignore_h, ignore_protein, ignore_org_cof, ignore_inorg_cof, ignore_water) for a in mol.GetAtoms()
+        _keep_atom(
+            a, ignore_h, ignore_protein, ignore_org_cof, ignore_inorg_cof, ignore_water
+        )
+        for a in mol.GetAtoms()
     ]
 
 
 def _keep_atom(  # noqa: PLR0913, PLR0911
-    atom: Atom, ignore_h: bool, ignore_protein: bool, ignore_org_cof: bool, ignore_inorg_cof: bool, ignore_water: bool
+    atom: Atom,
+    ignore_h: bool,
+    ignore_protein: bool,
+    ignore_org_cof: bool,
+    ignore_inorg_cof: bool,
+    ignore_water: bool,
 ) -> bool:
     """Whether to keep atom for given ignore flags."""
     symbol = atom.GetSymbol()

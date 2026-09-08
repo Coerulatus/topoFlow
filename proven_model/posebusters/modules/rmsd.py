@@ -1,4 +1,5 @@
 """Module to check RMSD between docked and crystal ligand."""
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +27,11 @@ tautomer_enumerator.SetRemoveSp3Stereo(True)
 
 
 def check_rmsd(
-    mol_pred: Mol, mol_true: Mol, rmsd_threshold: float = 2.0, heavy_only: bool = True, choose_by: str = "rmsd"
+    mol_pred: Mol,
+    mol_true: Mol,
+    rmsd_threshold: float = 2.0,
+    heavy_only: bool = True,
+    choose_by: str = "rmsd",
 ) -> dict[str, dict[str, bool | float]]:
     """Calculate RMSD and related metrics between predicted molecule and closest ground truth molecule.
 
@@ -45,14 +50,23 @@ def check_rmsd(
     assert isinstance(mol_pred, Mol), "Predicted molecule is missing."
     num_conf = mol_true.GetNumConformers()
     assert num_conf > 0, "Crystal ligand needs at least one conformer."
-    assert mol_pred.GetNumConformers() == 1, "Docked ligand should only have one conformer."
+    assert (
+        mol_pred.GetNumConformers() == 1
+    ), "Docked ligand should only have one conformer."
 
-    rmsds = [robust_rmsd(mol_true, mol_pred, conf_id_probe=i, heavy_only=heavy_only) for i in range(num_conf)]
+    rmsds = [
+        robust_rmsd(mol_true, mol_pred, conf_id_probe=i, heavy_only=heavy_only)
+        for i in range(num_conf)
+    ]
     kabsch_rmsds = [
-        robust_rmsd(mol_true, mol_pred, conf_id_probe=i, kabsch=True, heavy_only=heavy_only) for i in range(num_conf)
+        robust_rmsd(
+            mol_true, mol_pred, conf_id_probe=i, kabsch=True, heavy_only=heavy_only
+        )
+        for i in range(num_conf)
     ]
     intercentroids = [
-        intercentroid(mol_true, mol_pred, conf_id_probe=i, heavy_only=heavy_only) for i in range(num_conf)
+        intercentroid(mol_true, mol_pred, conf_id_probe=i, heavy_only=heavy_only)
+        for i in range(num_conf)
     ]
 
     if choose_by == "rmsd":
@@ -62,7 +76,9 @@ def check_rmsd(
     elif choose_by == "centroid_distance":
         i = np.argmin(np.nan_to_num(intercentroids, nan=np.inf))
     else:
-        raise ValueError(f"Invalid value {choose_by} for choose_by. Use 'rmsd', 'kabsch_rmsd', 'centroid_distance'.")
+        raise ValueError(
+            f"Invalid value {choose_by} for choose_by. Use 'rmsd', 'kabsch_rmsd', 'centroid_distance'."
+        )
     rmsd = rmsds[i]
     kabsch_rmsd = kabsch_rmsds[i]
     centroid_dist = intercentroids[i]
@@ -102,7 +118,11 @@ def robust_rmsd(  # noqa: PLR0913
         mol_ref = RemoveHs(mol_ref)
 
     # combine parameters
-    params = dict(symmetrizeConjugatedTerminalGroups=symmetrizeConjugatedTerminalGroups, kabsch=kabsch, **params)
+    params = dict(
+        symmetrizeConjugatedTerminalGroups=symmetrizeConjugatedTerminalGroups,
+        kabsch=kabsch,
+        **params,
+    )
 
     # calculate RMSD
     rmsd = _call_rdkit_rmsd(mol_probe, mol_ref, conf_id_probe, conf_id_ref, **params)
@@ -112,29 +132,43 @@ def robust_rmsd(  # noqa: PLR0913
     # try again but remove charges and hydrogens
     mol_ref_uncharged = remove_all_charges_and_hydrogens(mol_ref)
     mol_probe_uncharged = remove_all_charges_and_hydrogens(mol_probe)
-    rmsd = _call_rdkit_rmsd(mol_probe_uncharged, mol_ref_uncharged, conf_id_probe, conf_id_ref, **params)
+    rmsd = _call_rdkit_rmsd(
+        mol_probe_uncharged, mol_ref_uncharged, conf_id_probe, conf_id_ref, **params
+    )
     if not np.isnan(rmsd):
         return rmsd
 
     # try again but neutralize atoms
     mol_ref_neutralized = neutralize_atoms(mol_ref)
     mol_probe_neutralized = neutralize_atoms(mol_probe)
-    rmsd = _call_rdkit_rmsd(mol_probe_neutralized, mol_ref_neutralized, conf_id_probe, conf_id_ref, **params)
+    rmsd = _call_rdkit_rmsd(
+        mol_probe_neutralized, mol_ref_neutralized, conf_id_probe, conf_id_ref, **params
+    )
     if not np.isnan(rmsd):
         return rmsd
 
     # try again but on canonical tautomers
     mol_ref_canonical = tautomer_enumerator.Canonicalize(mol_ref)
     mol_probe_canonical = tautomer_enumerator.Canonicalize(mol_probe)
-    rmsd = _call_rdkit_rmsd(mol_probe_canonical, mol_ref_canonical, conf_id_probe, conf_id_ref, **params)
+    rmsd = _call_rdkit_rmsd(
+        mol_probe_canonical, mol_ref_canonical, conf_id_probe, conf_id_ref, **params
+    )
     if not np.isnan(rmsd):
         return rmsd
 
     # try again but after neutralizing atoms
-    mol_ref_neutral_canonical = tautomer_enumerator.Canonicalize(neutralize_atoms(mol_ref))
-    mol_probe_neutral_canonical = tautomer_enumerator.Canonicalize(neutralize_atoms(mol_probe))
+    mol_ref_neutral_canonical = tautomer_enumerator.Canonicalize(
+        neutralize_atoms(mol_ref)
+    )
+    mol_probe_neutral_canonical = tautomer_enumerator.Canonicalize(
+        neutralize_atoms(mol_probe)
+    )
     rmsd = _call_rdkit_rmsd(
-        mol_probe_neutral_canonical, mol_ref_neutral_canonical, conf_id_probe, conf_id_ref, **params
+        mol_probe_neutral_canonical,
+        mol_ref_neutral_canonical,
+        conf_id_probe,
+        conf_id_ref,
+        **params,
     )
     if not np.isnan(rmsd):
         return rmsd
@@ -142,7 +176,9 @@ def robust_rmsd(  # noqa: PLR0913
     return np.nan
 
 
-def _call_rdkit_rmsd(mol_probe: Mol, mol_ref: Mol, conf_id_probe: int, conf_id_ref: int, **params):
+def _call_rdkit_rmsd(
+    mol_probe: Mol, mol_ref: Mol, conf_id_probe: int, conf_id_ref: int, **params
+):
     try:
         with CaptureLogger():
             return _rmsd(mol_probe, mol_ref, conf_id_probe, conf_id_ref, **params)
@@ -154,14 +190,37 @@ def _call_rdkit_rmsd(mol_probe: Mol, mol_ref: Mol, conf_id_probe: int, conf_id_r
     return np.nan
 
 
-def _rmsd(mol_probe: Mol, mol_ref: Mol, conf_id_probe: int, conf_id_ref: int, kabsch: bool = False, **params):
+def _rmsd(
+    mol_probe: Mol,
+    mol_ref: Mol,
+    conf_id_probe: int,
+    conf_id_ref: int,
+    kabsch: bool = False,
+    **params,
+):
     if kabsch is True:
-        return GetBestRMS(prbMol=mol_probe, refMol=mol_ref, prbId=conf_id_probe, refId=conf_id_ref, **params)
-    return CalcRMS(prbMol=mol_probe, refMol=mol_ref, prbId=conf_id_probe, refId=conf_id_ref, **params)
+        return GetBestRMS(
+            prbMol=mol_probe,
+            refMol=mol_ref,
+            prbId=conf_id_probe,
+            refId=conf_id_ref,
+            **params,
+        )
+    return CalcRMS(
+        prbMol=mol_probe,
+        refMol=mol_ref,
+        prbId=conf_id_probe,
+        refId=conf_id_ref,
+        **params,
+    )
 
 
 def intercentroid(
-    mol_probe: Mol, mol_ref: Mol, conf_id_probe: int = -1, conf_id_ref: int = -1, heavy_only: bool = True
+    mol_probe: Mol,
+    mol_ref: Mol,
+    conf_id_probe: int = -1,
+    conf_id_ref: int = -1,
+    heavy_only: bool = True,
 ) -> float:
     """Distance between centroids of two molecules."""
     if heavy_only:

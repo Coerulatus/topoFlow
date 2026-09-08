@@ -77,8 +77,12 @@ def check_intermolecular_distance(  # noqa: PLR0913
     violations = relative_distance < 1 / radius_scale
 
     if distances.size > 0:
-        violations[np.unravel_index(distances.argmin(), distances.shape)] = True  # add smallest distances as info
-        violations[np.unravel_index(relative_distance.argmin(), relative_distance.shape)] = True
+        violations[np.unravel_index(distances.argmin(), distances.shape)] = (
+            True  # add smallest distances as info
+        )
+        violations[
+            np.unravel_index(relative_distance.argmin(), relative_distance.shape)
+        ] = True
     violation_ligand, violation_protein = np.where(violations)
     reverse_ligand_idxs = mask_ligand_idxs[violation_ligand]
     reverse_protein_idxs = mask_protein_idxs[violation_protein]
@@ -106,7 +110,10 @@ def check_intermolecular_distance(  # noqa: PLR0913
 
     # add most extreme values to results table
     i = np.argmin(details["relative_distance"]) if len(details) > 0 else None
-    most_extreme = {"most_extreme_" + c: details.loc[i][str(c)] if i is not None else pd.NA for c in details.columns}
+    most_extreme = {
+        "most_extreme_" + c: details.loc[i][str(c)] if i is not None else pd.NA
+        for c in details.columns
+    }
     results = {**results, **most_extreme}
 
     return {"results": results, "details": details}
@@ -122,4 +129,6 @@ def _get_radii(atoms: np.ndarray, radius_type: str) -> np.ndarray:
     elif radius_type == "covalent":
         return np.array([_periodic_table.GetRcovalent(a) for a in atoms])
     else:
-        raise ValueError(f"Unknown radius type {radius_type}. Valid values are 'vdw' and 'covalent'.")
+        raise ValueError(
+            f"Unknown radius type {radius_type}. Valid values are 'vdw' and 'covalent'."
+        )

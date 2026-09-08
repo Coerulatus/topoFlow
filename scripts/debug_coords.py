@@ -4,13 +4,14 @@ import numpy as np
 from topoflow.data.datasets import CrossDocked
 import topoflow.utils.constants as constants
 
+
 def debug_coordinates(data_dir="./data/CrossDocked/", sample_idx=0):
     # 1. Load Normalization Params
     norm_path = os.path.join(data_dir, "processed", "normalization_params.npz")
     if not os.path.exists(norm_path):
         print(f"Normalization params not found at {norm_path}")
         return
-    
+
     norm_data = np.load(norm_path, allow_pickle=True)
     mean = torch.tensor(norm_data["mean"]).float()
     std = torch.tensor(norm_data["std"]).float()
@@ -19,10 +20,10 @@ def debug_coordinates(data_dir="./data/CrossDocked/", sample_idx=0):
     # 2. Load Val Dataset
     dataset = CrossDocked(root=data_dir, split="val")
     data = dataset[sample_idx]
-    
+
     x_lig_norm = data.x_lig
     x_poc_norm = data.x_pocket
-    
+
     # 3. Unnormalize
     # Formula: x_real = (x_norm * std) + mean
     # Note: CrossDocked centers per-sample first, then applies global norm.
@@ -35,7 +36,7 @@ def debug_coordinates(data_dir="./data/CrossDocked/", sample_idx=0):
     min_dist = dist.min().item()
     print(f"\nSample {sample_idx}:")
     print(f"Minimum L-P distance in real space: {min_dist:.4f} Angstroms")
-    
+
     # 5. Save to XYZ
     def save_xyz(coords, filename, atom_types=None):
         num_atoms = coords.size(0)
@@ -44,12 +45,15 @@ def debug_coordinates(data_dir="./data/CrossDocked/", sample_idx=0):
             f.write("Generated for inspection\n")
             for j in range(num_atoms):
                 # Just use 'C' and 'O' for visualization if types are missing
-                symbol = "C" if atom_types is None else "O" 
-                f.write(f"{symbol} {coords[j,0]:.6f} {coords[j,1]:.6f} {coords[j,2]:.6f}\n")
+                symbol = "C" if atom_types is None else "O"
+                f.write(
+                    f"{symbol} {coords[j,0]:.6f} {coords[j,1]:.6f} {coords[j,2]:.6f}\n"
+                )
         print(f"Saved to {filename}")
 
     save_xyz(x_lig_real, "debug_ligand.xyz")
     save_xyz(x_poc_real, "debug_pocket.xyz")
+
 
 if __name__ == "__main__":
     debug_coordinates()

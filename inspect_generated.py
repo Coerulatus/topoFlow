@@ -27,13 +27,14 @@ for i, mol in enumerate(mols):
     conf = mol.GetConformer()
     coords = torch.tensor(conf.GetPositions(), dtype=torch.float32)
     center = coords.mean(dim=0)
-    
+
     # Distance from pocket center
     dist_to_pocket = torch.norm(center - pocket_center).item()
-    
+
     # Closest atom to pocket
     dist_matrix = torch.cdist(coords, pocket_coords)
     closest_dist = dist_matrix.min().item()
-    
-    print(f"Mol {i+1}: {num_atoms} atoms. Center: {center}. Dist to pocket center: {dist_to_pocket:.2f}. Closest pocket atom dist: {closest_dist:.2f}")
 
+    print(
+        f"Mol {i+1}: {num_atoms} atoms. Center: {center}. Dist to pocket center: {dist_to_pocket:.2f}. Closest pocket atom dist: {closest_dist:.2f}"
+    )

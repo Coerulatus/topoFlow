@@ -10,9 +10,13 @@ from tqdm import tqdm
 
 from posecheck.utils.clashes import count_clashes_list
 from posecheck.utils.interactions import generate_interaction_df
-from posecheck.utils.loading import (get_ids_to_pockets, get_pdbqt_mol,
-                               load_mols_from_sdf, load_protein_from_pdb,
-                               read_pdbqt)
+from posecheck.utils.loading import (
+    get_ids_to_pockets,
+    get_pdbqt_mol,
+    load_mols_from_sdf,
+    load_protein_from_pdb,
+    read_pdbqt,
+)
 from posecheck.utils.strain import get_strain_energy
 
 # get directory of this file
@@ -676,14 +680,17 @@ PROTEIN_DATA = torch.load(os.path.join(DATA_DIR, "proteins.pt"))
 
 class RedockedData(BasePosesDataset):
     def __init__(
-        self, name: str,
-                type: str,
-                data_dir: str = DATA_DIR,
-                pdbqt_dir: str = PDBQT_DIR,
-                docking_data=DOCKING_DATA,
-                protein_data=PROTEIN_DATA
+        self,
+        name: str,
+        type: str,
+        data_dir: str = DATA_DIR,
+        pdbqt_dir: str = PDBQT_DIR,
+        docking_data=DOCKING_DATA,
+        protein_data=PROTEIN_DATA,
     ):
-        super().__init__(protein_data=protein_data, data_dir=data_dir, pdbqt_dir=pdbqt_dir)
+        super().__init__(
+            protein_data=protein_data, data_dir=data_dir, pdbqt_dir=pdbqt_dir
+        )
 
         self.name = name
         self.type = type
