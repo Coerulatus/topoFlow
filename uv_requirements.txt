@@ -51,7 +51,6 @@ meeko
 openmm
 pdbfixer
 vina
-xtb
 prody
 pypdb
 datamol
