@@ -34,7 +34,7 @@ tensorboardX
 aim
 plinder==0.2.5
 pandas
-openbabel-wheel==3.1.1.19
+openbabel-wheel
 more-itertools
 requests
 timeout-decorator

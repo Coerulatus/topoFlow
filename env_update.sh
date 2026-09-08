@@ -1,5 +1,5 @@
 #!/bin/bash
-
+set -e
 # --- Mamba Initialization ---
 # This line loads the mamba functions into the current shell
 eval "$(mamba shell hook --shell bash)" 
