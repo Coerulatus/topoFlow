@@ -52,8 +52,6 @@ openmm
 pdbfixer
 vina
 xtb
-openff-toolkit
-openmmforcefields
 prody
 pypdb
 datamol
