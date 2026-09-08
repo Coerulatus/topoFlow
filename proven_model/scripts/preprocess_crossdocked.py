@@ -1,7 +1,10 @@
 import torch
 import os
+import sys
 from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 from tqdm import tqdm
+
 from flowr.util.pocket import PocketComplexBatch
 from flowr.data.preprocess_pdbs import process_complex
 import argparse
