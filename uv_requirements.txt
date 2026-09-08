@@ -48,3 +48,14 @@ submitit
 fcd
 useful_rdkit_utils
 meeko
+openmm
+pdbfixer
+vina
+xtb
+openff-toolkit
+openmmforcefields
+prody
+pypdb
+datamol
+py3dmol
+nglview
