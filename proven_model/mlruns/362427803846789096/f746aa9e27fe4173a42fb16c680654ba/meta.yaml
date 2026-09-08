@@ -1,0 +1,14 @@
+artifact_uri: file:///home/marco/Documents/phd/topoFlow/proven_model/mlruns/362427803846789096/f746aa9e27fe4173a42fb16c680654ba/artifacts
+end_time: 1788872962098
+entry_point_name: ''
+experiment_id: '362427803846789096'
+lifecycle_stage: active
+run_id: f746aa9e27fe4173a42fb16c680654ba
+run_name: capable-auk-759
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1788872961326
+status: 4
+tags: []
+user_id: marco

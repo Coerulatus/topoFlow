@@ -1,0 +1,6 @@
+total_time_seconds: 4.758004903793335
+total_mols_valid: 10
+total_mols_attempted: 10
+total_mols_invalid: 0
+seconds_per_valid_mol: 0.4758004903793335
+seconds_per_attempted_mol: 0.4758004903793335

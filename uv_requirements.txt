@@ -20,3 +20,8 @@ pytest-cov
 xformers
 rdkit
 tabulate
+biotite
+hydride
+MDAnalysis
+prolif
+setuptools==65.6.3

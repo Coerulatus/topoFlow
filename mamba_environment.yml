@@ -9,3 +9,5 @@ dependencies:
   - numpy 
   - openbabel
   - pymol-open-source
+  - conda-forge::pdbfixer
+  - conda-forge::vina
