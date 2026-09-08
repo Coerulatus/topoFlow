@@ -43,7 +43,7 @@ wandb
 pdbinf
 molvs
 biopandas
-torchdata==0.8.0
+torchdata
 submitit
 fcd
 useful_rdkit_utils
