@@ -78,7 +78,11 @@ def process_pdb(
             pdb_file, model=1, extra_fields=extra, include_bonds=add_bonds_to_protein
         )
     except Exception:
-        structure = read_fn(pdb_file, model=1, include_bonds=add_bonds_to_protein)
+        try:
+            structure = read_fn(pdb_file, model=1, include_bonds=add_bonds_to_protein)
+        except Exception:
+            # Fallback to no bonds if Biotite complains about atom IDs for CONECT records
+            structure = read_fn(pdb_file, model=1, include_bonds=False)
 
     if add_hs_to_protein:
         structure, mask = hydride.add_hydrogen(structure)
