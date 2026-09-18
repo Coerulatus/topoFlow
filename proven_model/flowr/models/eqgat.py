@@ -115,7 +115,7 @@ class EqgatLayer(torch.nn.Module):
 
         batch_size, n_nodes, _ = tuple(coords.shape)
 
-        coord_norms = torch.sqrt((coords ** 2).sum(dim=-1) + 1e-8).unsqueeze(-1)
+        coord_norms = torch.sqrt((coords**2).sum(dim=-1) + 1e-8).unsqueeze(-1)
         atom_feats = torch.cat((inv_feats, coord_norms), dim=-1)
 
         node_i = atom_feats.unsqueeze(2).expand(batch_size, n_nodes, n_nodes, -1)
@@ -155,7 +155,7 @@ class EqgatLayer(torch.nn.Module):
 
         # Apply equi feat udpate
         vector_dist = coords.unsqueeze(2) - coords.unsqueeze(1)
-        vector_dist_norm = torch.sqrt((vector_dist ** 2).sum(dim=-1) + 1e-8)
+        vector_dist_norm = torch.sqrt((vector_dist**2).sum(dim=-1) + 1e-8)
         x_ij = vector_dist / (vector_dist_norm.unsqueeze(-1) + self.eps)
 
         n_atoms = atom_mask.sum(dim=-1) + self.eps

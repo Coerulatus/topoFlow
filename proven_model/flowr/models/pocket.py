@@ -366,7 +366,7 @@ class _CoordNorm(nn.Module):
             coord_sets = smolF.zero_com(coord_sets, node_mask)
 
         n_atoms = node_mask.sum(dim=-1).view(-1, 1, 1, 1)
-        lengths = torch.sqrt((coord_sets ** 2).sum(dim=2, keepdim=True) + 1e-8)
+        lengths = torch.sqrt((coord_sets**2).sum(dim=2, keepdim=True) + 1e-8)
         scaled_lengths = lengths.sum(dim=1, keepdim=True) / n_atoms
         coord_sets = (coord_sets * self.set_weights) / (scaled_lengths + self.eps)
         coord_sets = coord_sets * node_mask.unsqueeze(-1).unsqueeze(-1)
@@ -408,7 +408,7 @@ class _EquivariantMLP(nn.Module):
             torch.Tensor: Updated equivariant features, shape [B, N, 3, d_equi]
         """
 
-        lengths = torch.sqrt((equis ** 2).sum(dim=2) + 1e-8)
+        lengths = torch.sqrt((equis**2).sum(dim=2) + 1e-8)
         inv_feats = torch.cat((invs, lengths), dim=-1)
 
         # inv_feats shape [B, N, 1, d_equi]
@@ -498,7 +498,7 @@ class _PairwiseMessages(torch.nn.Module):
 
         if self.include_dists:
             vec_dists = q_equi.unsqueeze(2) - k_equi.unsqueeze(1)
-            dists = torch.sqrt((vec_dists ** 2).sum(dim=3) + 1e-8)
+            dists = torch.sqrt((vec_dists**2).sum(dim=3) + 1e-8)
             pairwise_feats = torch.cat((pairwise_feats, dists), dim=-1)
 
         if rbf_embeds is not None:

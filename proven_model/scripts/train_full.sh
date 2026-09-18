@@ -25,7 +25,7 @@ python -m flowr.train \
     --lr_gamma 0.998 \
     --use_lig_pocket_rbf \
     --remove_hs \
-    --optimal_transport equivariant \
+    # --optimal_transport equivariant \
     --categorical_strategy uniform-sample \
     --batch_cost 2 \
     --val_batch_cost 2 \

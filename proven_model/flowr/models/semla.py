@@ -70,7 +70,7 @@ class CoordNorm(torch.nn.Module):
         coord_sets = coord_sets * node_mask.unsqueeze(-1)
 
         n_atoms = node_mask.sum(dim=-1, keepdim=True)
-        lengths = torch.sqrt((coord_sets ** 2).sum(dim=-1) + 1e-8)
+        lengths = torch.sqrt((coord_sets**2).sum(dim=-1) + 1e-8)
 
         if self.norm == "length":
             scaled_lengths = lengths.sum(dim=2, keepdim=True) / n_atoms
@@ -276,7 +276,7 @@ class CoordAttention(torch.nn.Module):
         # proj_coord_sets shape [B, 3, N, P]
         # norm_dists shape [B, 1, N, N, P]
         vec_dists = proj_coord_sets.unsqueeze(3) - proj_coord_sets.unsqueeze(2)
-        lengths = torch.sqrt((vec_dists ** 2).sum(dim=1, keepdim=True) + 1e-8)
+        lengths = torch.sqrt((vec_dists**2).sum(dim=1, keepdim=True) + 1e-8)
         norm_dists = vec_dists / (lengths + self.eps)
 
         attn_mask = adj_to_attn_mask(adj_matrix)
@@ -321,7 +321,7 @@ class LengthsMLP(torch.nn.Module):
             torch.Tensor: Updated node features, shape [batch_size, n_nodes, d_model]
         """
 
-        lengths = torch.sqrt((coord_sets ** 2).sum(dim=-1) + 1e-8).movedim(1, -1)
+        lengths = torch.sqrt((coord_sets**2).sum(dim=-1) + 1e-8).movedim(1, -1)
         in_feats = torch.cat((node_feats, lengths), dim=2)
         return self.node_ff(in_feats)
 
