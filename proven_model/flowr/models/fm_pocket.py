@@ -1834,7 +1834,7 @@ class LigandPocketCFM(pl.LightningModule):
 
         coord_loss = F.mse_loss(pred_coords, coords, reduction="none")
         n_atoms = mask.unsqueeze(-1).sum(dim=(1, 2))
-        coord_loss = (coord_loss * mask.unsqueeze(-1)).sum(dim=(1, 2)) / n_atoms
+        coord_loss = (coord_loss * mask.unsqueeze(-1)).sum(dim=(1, 2)) / (n_atoms + 1e-3)
         coord_loss = coord_loss.mean()
         type_loss = self._type_loss(data, interpolated, predicted)
         bond_loss = self._bond_loss(data, interpolated, predicted)

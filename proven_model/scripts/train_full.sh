@@ -10,7 +10,7 @@ python -m flowr.train \
     --pocket_n_layers 3 \
     --arch ast \
     --pocket_noise fix \
-    --epochs 200 \
+    --epochs 50 \
     --val_check_epochs 10 \
     --self_condition \
     --max_atoms_pocket 600 \
@@ -29,4 +29,5 @@ python -m flowr.train \
     --categorical_strategy uniform-sample \
     --batch_cost 2 \
     --val_batch_cost 2 \
+    --use_bucket_sampler \
     --acc_batches 16
