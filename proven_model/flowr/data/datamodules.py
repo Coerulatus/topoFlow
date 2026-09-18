@@ -60,7 +60,7 @@ class SmolDM(L.LightningDataModule):
                     "At least one item in test dataset is larger than largest padded size."
                 )
 
-        self._num_workers = 8  # len(os.sched_getaffinity(0))
+        self._num_workers = 4  # Reduced from 8 to prevent OOM
 
         self.vocab = vocab
 

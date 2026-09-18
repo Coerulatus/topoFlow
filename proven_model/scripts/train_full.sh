@@ -27,5 +27,6 @@ python -m flowr.train \
     --remove_hs \
     --optimal_transport equivariant \
     --categorical_strategy uniform-sample \
-    --batch_cost 512 \
-    --val_batch_cost 512
+    --batch_cost 2 \
+    --val_batch_cost 2 \
+    --acc_batches 16
