@@ -1,5 +1,5 @@
 #!/bin/sh
-export PYTHONPATH="$(pwd)"
+export PYTHONPATH="$(pwd):$(pwd)/proven_model"
 
 python -m flowr.train \
     --gpus 1 \
@@ -16,8 +16,8 @@ python -m flowr.train \
     --max_atoms_pocket 600 \
     --dataset "crossdocked" \
     --exp_name "full_training_ast" \
-    --data_path "../data/CrossDocked/processed_flowr" \
-    --save_dir "../experiments/proven_model_logs" \
+    --data_path "data/CrossDocked/processed_flowr" \
+    --save_dir "experiments/proven_model_logs" \
     --use_ema \
     --ema_decay 0.999 \
     --lr 5.0e-4 \
@@ -25,7 +25,7 @@ python -m flowr.train \
     --lr_gamma 0.998 \
     --use_lig_pocket_rbf \
     --remove_hs \
-    # --optimal_transport equivariant \
+    --optimal_transport equivariant \
     --categorical_strategy uniform-sample \
     --batch_cost 2 \
     --val_batch_cost 2 \
