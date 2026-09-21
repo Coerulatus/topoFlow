@@ -4,6 +4,7 @@ import os
 import warnings
 from functools import partial
 from pathlib import Path
+import pickle
 
 import lightning.pytorch as pl
 import torch
@@ -279,9 +280,19 @@ def build_model(
         )
 
     train_steps = util.calc_train_steps(dm, args.epochs, args.acc_batches)
-    train_smiles = (
-        None if args.trial_run else [mols.str_id for mols in dm.train_dataset]
-    )
+    if args.trial_run:
+        train_smiles = None
+    else:
+        train_smiles_path = Path(args.data_path) / "train_smiles.pkl"
+        if train_smiles_path.exists():
+            print("Loading cached train_smiles...")
+            with open(train_smiles_path, "rb") as f:
+                train_smiles = pickle.load(f)
+        else:
+            print("Generating train_smiles (this may take a few minutes)...")
+            train_smiles = [mols.str_id for mols in dm.train_dataset]
+            with open(train_smiles_path, "wb") as f:
+                pickle.dump(train_smiles, f)
 
     print(f"Total training steps {train_steps}")
 
