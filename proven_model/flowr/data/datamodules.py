@@ -60,7 +60,7 @@ class SmolDM(L.LightningDataModule):
                     "At least one item in test dataset is larger than largest padded size."
                 )
 
-        self._num_workers = 4  # Reduced from 8 to prevent OOM
+        self._num_workers = 0  # Set to 0 to prevent copy-on-write OOM crashes
 
         self.vocab = vocab
 
@@ -121,7 +121,7 @@ class SmolDM(L.LightningDataModule):
                 batch_sampler=batch_sampler,
                 num_workers=self._num_workers,
                 pin_memory=True,
-                persistent_workers=True,
+                persistent_workers=False,
                 collate_fn=partial(self._collate, dataset="train"),
             )
         else:
@@ -131,7 +131,7 @@ class SmolDM(L.LightningDataModule):
                 shuffle=True,
                 num_workers=self._num_workers,
                 pin_memory=False,
-                persistent_workers=True,
+                persistent_workers=False,
                 collate_fn=partial(self._collate, dataset="train"),
             )
         return dataloader
@@ -155,7 +155,7 @@ class SmolDM(L.LightningDataModule):
             shuffle=False,
             num_workers=self._num_workers,
             pin_memory=False,
-            persistent_workers=True,
+            persistent_workers=False,
             collate_fn=partial(self._collate, dataset="val"),
         )
         return dataloader
@@ -180,7 +180,7 @@ class SmolDM(L.LightningDataModule):
             shuffle=False,
             num_workers=self._num_workers,
             pin_memory=False,
-            persistent_workers=True,
+            persistent_workers=False,
             collate_fn=partial(self._collate, dataset="test"),
         )
 
