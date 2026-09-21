@@ -1277,12 +1277,15 @@ class PocketComplex:
 
 
 class PocketComplexBatch(Sequence):
-    def __init__(self, systems: list[PocketComplex]):
+    def __init__(self, systems: list, seq_lengths: list[int] = None, remove_hs: bool = False):
         for system in systems:
-            _check_type(system, PocketComplex, "system")
+            if not isinstance(system, bytes):
+                _check_type(system, PocketComplex, "system")
 
         self._systems = systems
         self._device = None
+        self._seq_lengths = seq_lengths
+        self.remove_hs = remove_hs
 
     @property
     def system_id(self) -> list[str]:
@@ -1390,6 +1393,8 @@ class PocketComplexBatch(Sequence):
 
     @property
     def seq_length(self) -> list[int]:
+        if getattr(self, "_seq_lengths", None) is not None:
+            return self._seq_lengths
         return [system.seq_length for system in self._systems]
 
     @property
@@ -1420,7 +1425,10 @@ class PocketComplexBatch(Sequence):
         return self.batch_size
 
     def __getitem__(self, item: int) -> PocketComplex:
-        return self._systems[item]
+        system = self._systems[item]
+        if isinstance(system, bytes):
+            return PocketComplex.from_bytes(system, remove_hs=getattr(self, "remove_hs", False))
+        return system
 
     # *** Helper methods ***
     def remove_hs(self, include_ligand: Optional[bool] = False):
@@ -1471,15 +1479,26 @@ class PocketComplexBatch(Sequence):
                 writer.close()
 
     @staticmethod
-    def from_bytes(data: bytes, remove_hs: bool = False) -> PocketComplexBatch:
-        systems = [
-            PocketComplex.from_bytes(system, remove_hs=remove_hs)
-            for system in tqdm(pickle.loads(data))
-        ]
-        full_len = len(systems)
-        systems = [system for system in systems if system is not None]
-        print(f"Failed to load {full_len-len(systems)} complexes.")
-        return PocketComplexBatch(systems)
+    def from_bytes(data: bytes, remove_hs: bool = False) -> 'PocketComplexBatch':
+        raw_systems = pickle.loads(data)
+        systems = []
+        seq_lengths = []
+        failed_count = 0
+        
+        for system_bytes in tqdm(raw_systems, desc="Parsing lengths lazily"):
+            # We inflate once to get the length, but keep the original bytes in `systems` to save RAM
+            try:
+                system = PocketComplex.from_bytes(system_bytes, remove_hs=remove_hs)
+                if system is not None:
+                    systems.append(system_bytes)
+                    seq_lengths.append(system.seq_length)
+                else:
+                    failed_count += 1
+            except Exception:
+                failed_count += 1
+
+        print(f"Failed to load {failed_count} complexes.")
+        return PocketComplexBatch(systems, seq_lengths=seq_lengths, remove_hs=remove_hs)
 
     @staticmethod
     def from_list(systems: list[PocketComplex]) -> PocketComplexBatch:

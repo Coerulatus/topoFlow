@@ -710,6 +710,8 @@ def build_trainer(args, model=None):
         precision=precision,
         max_epochs=epochs,
         use_distributed_sampler=True,  # not args.use_bucket_sampler,
+        limit_train_batches=args.limit_train_batches,
+        limit_val_batches=args.limit_val_batches,
     )
 
     pl.seed_everything(seed=args.seed, workers=args.gpus > 1)
@@ -959,6 +961,13 @@ if __name__ == "__main__":
         trial_run=False,
         use_ema=True,
         self_condition=True,
+    )
+
+    parser.add_argument(
+        "--limit_train_batches", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--limit_val_batches", type=float, default=1.0
     )
 
     args = parser.parse_args()

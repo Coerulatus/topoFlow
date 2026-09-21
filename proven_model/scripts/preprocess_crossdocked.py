@@ -20,7 +20,7 @@ def main(args):
 
     for split, items in splits.items():
         if args.debug and split == "train":
-            items = items[:100]
+            items = items[:500]
         elif args.debug and split == "test":
             items = items[:20]
 
