@@ -636,6 +636,16 @@ def build_dm(
 
 
 def build_trainer(args, model=None):
+    from lightning.pytorch.profilers import SimpleProfiler, AdvancedProfiler, PyTorchProfiler
+
+    profiler = None
+    if args.profiler == "simple":
+        profiler = SimpleProfiler(dirpath=args.profiler_dir, filename="simple_profiler")
+    elif args.profiler == "advanced":
+        profiler = AdvancedProfiler(dirpath=args.profiler_dir, filename="advanced_profiler")
+    elif args.profiler == "pytorch":
+        profiler = PyTorchProfiler(dirpath=args.profiler_dir, filename="pytorch_profiler")
+
     epochs = 1 if args.trial_run else args.epochs
 
     project_name = f"{util.PROJECT_PREFIX}-{args.dataset}"
@@ -712,6 +722,7 @@ def build_trainer(args, model=None):
         use_distributed_sampler=True,  # not args.use_bucket_sampler,
         limit_train_batches=args.limit_train_batches,
         limit_val_batches=args.limit_val_batches,
+        profiler=profiler,
     )
 
     pl.seed_everything(seed=args.seed, workers=args.gpus > 1)
@@ -963,12 +974,11 @@ if __name__ == "__main__":
         self_condition=True,
     )
 
-    parser.add_argument(
-        "--limit_train_batches", type=float, default=1.0
-    )
-    parser.add_argument(
-        "--limit_val_batches", type=float, default=1.0
-    )
+    parser.add_argument("--limit_train_batches", type=float, default=1.0)
+    parser.add_argument("--limit_val_batches", type=float, default=1.0)
+
+    parser.add_argument("--profiler", type=str, default=None, choices=["simple", "advanced", "pytorch"])
+    parser.add_argument("--profiler_dir", type=str, default="profiler_logs")
 
     args = parser.parse_args()
     main(args)
