@@ -193,6 +193,8 @@ def sample_for_pockets(
                 mols = data_to_rdmol(
                     samples, atom_decoder=atom_decoder, sanitize=True, verbose=False
                 )
+                if not isinstance(mols, list):
+                    mols = [mols]
 
                 for mol in mols:
                     if mol is not None:

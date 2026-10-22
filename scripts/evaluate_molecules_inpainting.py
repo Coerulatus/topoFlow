@@ -141,11 +141,14 @@ def evaluate_folder(
                     # 3. Inherit all pocket properties from the pre-loaded pocket
                     if pocket_data is not None:
                         for key, value in pocket_data:
-                            if "pocket" in key:
+                            if "pocket" in key or key == "pdb_path":
                                 setattr(combined_data, key, value)
 
                     # 4. Score it!
-                    score = scorer_func(combined_data)
+                    atom_decoder = constants.dataset_params["crossdock_full"][
+                        "atom_decoder"
+                    ]
+                    score = scorer_func(combined_data, atom_decoder=atom_decoder)
 
                     # Ignored failed runs returning [0, 0]
                     if score != [0, 0]:
@@ -331,6 +334,11 @@ if __name__ == "__main__":
                 normalization_path=None,
                 force=True,  # Set to True if you need to re-parse the PDB
             )
+            if hasattr(pocket_data, "original_centroid"):
+                pocket_data.x_pocket = (
+                    pocket_data.x_pocket + pocket_data.original_centroid
+                )
+            pocket_data.pdb_path = os.path.abspath(args.pocket_pdb_path)
 
     for item in os.listdir(args.base_dir):
         folder_path = os.path.join(args.base_dir, item)

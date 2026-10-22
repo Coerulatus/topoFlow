@@ -145,6 +145,18 @@ def main():
         default=1,
         help="Number of parallel workers for scoring (tune based on GPU VRAM).",
     )
+    parser.add_argument(
+        "--model_filter",
+        type=str,
+        default=None,
+        help="Optional model folder name (or substring) to evaluate.",
+    )
+    parser.add_argument(
+        "--sample_fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of molecules to evaluate (e.g., 0.05 for 5%%).",
+    )
     args = parser.parse_args()
 
     # Load Normalization Params
@@ -180,11 +192,15 @@ def main():
         test_distribution = None
         ref_size = 0
 
-    model_folders = [
-        d
-        for d in os.listdir(args.output_base_dir)
-        if os.path.isdir(os.path.join(args.output_base_dir, d))
-    ]
+    model_folders = sorted(
+        [
+            d
+            for d in os.listdir(args.output_base_dir)
+            if os.path.isdir(os.path.join(args.output_base_dir, d))
+        ]
+    )
+    if args.model_filter:
+        model_folders = [d for d in model_folders if args.model_filter in d]
 
     print(f"Loading test dataset from {args.data_dir} to resolve pocket mappings...")
     test_dataset = CrossDocked(root=args.data_dir, split="test")
@@ -204,11 +220,20 @@ def main():
         )
         pocket_stem_to_idx[clean_name] = i
 
+    from topoflow.utils.metrics import docker
+
     for model_folder in model_folders:
         folder_path = os.path.join(args.output_base_dir, model_folder)
-        splits_path = os.path.join(folder_path, "pyg_splits.pt")
-        out_path = os.path.join(folder_path, "pyg_scored_flat.pt")
-        result_path = os.path.join(folder_path, f"result_{model_folder}.txt")
+        frac_tag = (
+            f"_frac{args.sample_fraction:g}"
+            if 0.0 < args.sample_fraction < 1.0
+            else ""
+        )
+        splits_path = os.path.join(folder_path, f"pyg_splits{frac_tag}.pt")
+        out_path = os.path.join(folder_path, f"pyg_scored_flat{frac_tag}.pt")
+        result_path = os.path.join(
+            folder_path, f"result_{model_folder}{frac_tag}.txt"
+        )
 
         flat_mols = []
 
@@ -230,7 +255,9 @@ def main():
                     continue
 
                 # Read SDFs directly from the directory, ignoring mapping.txt
-                sdf_files = [f for f in os.listdir(sdfs_dir) if f.endswith(".sdf")]
+                sdf_files = sorted(
+                    [f for f in os.listdir(sdfs_dir) if f.endswith(".sdf")]
+                )
 
                 protein_molecules = {}
                 # Create a directory for individual SDFs to avoid reconstruction issues in scorer
@@ -297,20 +324,53 @@ def main():
                         else:
                             continue
 
+                    try:
+                        pocket_world_pos = docker._get_pdb_coords(actual_pdb_path)
+                        pocket_center = np.mean(pocket_world_pos, axis=0)
+                    except Exception:
+                        pocket_center = None
+
                     mols = load_sdf_molecules_rdkit(sdf_path)
+                    if 0.0 < args.sample_fraction < 1.0 and len(mols) > 0:
+                        n_keep_pocket = max(
+                            1, int(round(len(mols) * args.sample_fraction))
+                        )
+                        mols = mols[:n_keep_pocket]
                     pyg_mols = []
 
                     for idx, mol in enumerate(mols):
                         if mol is None:
                             continue
                         try:
+                            # If the ligand was saved centered at (0,0,0) without recenter=True,
+                            # translate its conformer to the pocket's original centroid.
+                            if pocket_center is not None and mol.GetNumConformers() > 0:
+                                conf = mol.GetConformer()
+                                pos = np.array(conf.GetPositions(), dtype=np.float64)
+                                lig_center = np.mean(pos, axis=0)
+                                if (
+                                    np.linalg.norm(lig_center - pocket_center) > 10.0
+                                    and np.linalg.norm(lig_center) < 10.0
+                                    and np.linalg.norm(pocket_center) > 10.0
+                                ):
+                                    pos = pos + pocket_center
+                                    for atom_idx in range(mol.GetNumAtoms()):
+                                        conf.SetAtomPosition(
+                                            atom_idx,
+                                            (
+                                                float(pos[atom_idx, 0]),
+                                                float(pos[atom_idx, 1]),
+                                                float(pos[atom_idx, 2]),
+                                            ),
+                                        )
+
                             # Save individual molecule to its own SDF file
                             mol_id = f"{raw_stem}_{idx}"
                             indiv_sdf_path = os.path.abspath(
                                 os.path.join(indiv_sdf_dir, f"{mol_id}.sdf")
                             )
 
-                            if not os.path.exists(indiv_sdf_path):
+                            if args.force_rebuild or not os.path.exists(indiv_sdf_path):
                                 writer = Chem.SDWriter(indiv_sdf_path)
                                 writer.write(mol)
                                 writer.close()
@@ -347,8 +407,10 @@ def main():
                 print(
                     f"Successfully converted and saved {len(flat_mols)} PyG molecules to {splits_path}"
                 )
+                already_subsampled = 0.0 < args.sample_fraction < 1.0
 
             else:
+                already_subsampled = False
                 print(f"\nLoading existing splits for model: {model_folder}")
                 data_loaded = torch.load(splits_path, weights_only=False)
                 if len(data_loaded) > 0 and isinstance(data_loaded[0], list):
@@ -363,6 +425,16 @@ def main():
         if len(flat_mols) == 0:
             print(f"No molecules to score for {model_folder}. Skipping scoring phase.")
             continue
+
+        if 0.0 < args.sample_fraction < 1.0 and not locals().get(
+            "already_subsampled", False
+        ):
+            n_keep = max(1, int(round(len(flat_mols) * args.sample_fraction)))
+            indices = np.linspace(0, len(flat_mols) - 1, n_keep, dtype=int)
+            flat_mols = [flat_mols[i] for i in indices]
+            print(
+                f"Subsampled {len(flat_mols)} molecules ({args.sample_fraction:.1%}) for {model_folder}."
+            )
 
         # --- NEW: PARALLEL SCORING PHASE ---
         unscored_indices = [
@@ -553,11 +625,14 @@ def main():
                 pass
 
         df = pd.DataFrame(final_results, columns=["Metric", "Value (mean ± std)"])
+        md_table = df.to_markdown(index=False)
+
+        print(f"\n# Validation Results ({model_folder}{frac_tag})\n\n{md_table}\n")
 
         # Save to result file
         with open(result_path, "w") as f:
             f.write("# Validation Results\n\n")
-            f.write(df.to_markdown(index=False))
+            f.write(md_table)
 
         print(f"Results for {model_folder} saved to {result_path}")
 

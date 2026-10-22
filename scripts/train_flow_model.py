@@ -73,6 +73,10 @@ def train_flow_model(
     previous_checkpoint=None,
     skip_validation=False,
     use_geometric_ast=False,
+    samples_per_epoch=512,
+    check_val_every_n_epoch=5,
+    sample_every=20,
+    save_top_k=-1,
 ):
     """Train a Topological Flow model on the specified dataset."""
     pl.seed_everything(seed)  # For reproducibility
@@ -90,8 +94,13 @@ def train_flow_model(
     else:
         raise ValueError(f"Unsupported dataset: {data_name}")
 
+    train_epoch_length = (
+        samples_per_epoch
+        if (samples_per_epoch is not None and samples_per_epoch > 0)
+        else len(train_dataset)
+    )
     datamodule = MockDatamodule(
-        train_length=len(train_dataset),
+        train_length=train_epoch_length,
         val_length=len(val_dataset),
         batch_size=batch_size,
         test_length=100,
@@ -106,14 +115,23 @@ def train_flow_model(
         alpha_atom = None
         beta_atom = None
 
+    num_Avail_cpus = len(psutil.Process().cpu_affinity())
     p_data = DataLoaderSampleable(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=min(8, len(psutil.Process().cpu_affinity())),
+        num_workers=min(8, num_Avail_cpus),
         persistent_workers=True,
         pin_memory=True,
         prefetch_factor=3,
+    )
+    p_val = DataLoaderSampleable(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=min(2, num_Avail_cpus),
+        persistent_workers=True,
+        pin_memory=True,
     )
     path = GaussianConditionalProbabilityPath(
         p_data=p_data,
@@ -135,17 +153,21 @@ def train_flow_model(
     norm_std = norm_data["std"]
 
     # Load Val Distribution for scoring
-    val_metric_dist_path = os.path.join(data_dir, "processed", "val_distribution.npy")
-    if os.path.exists(val_metric_dist_path):
-        val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
-    else:
-        val_distribution = get_distributions(
-            val_dataset,
-            metrics=["qed", "logp", "sas", "lipinski", "gnina"],
-            atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
-            norm_params=norm_params,
+    val_distribution = None
+    if not skip_validation and sample_every > 0:
+        val_metric_dist_path = os.path.join(
+            data_dir, "processed", "val_distribution.npy"
         )
-        np.save(val_metric_dist_path, val_distribution)
+        if os.path.exists(val_metric_dist_path):
+            val_distribution = np.load(val_metric_dist_path, allow_pickle=True).item()
+        else:
+            val_distribution = get_distributions(
+                val_dataset,
+                metrics=["qed", "logp", "sas", "lipinski", "gnina"],
+                atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
+                norm_params=norm_params,
+            )
+            np.save(val_metric_dist_path, val_distribution)
 
     # ======================================================================
     # Model Initialization
@@ -169,6 +191,7 @@ def train_flow_model(
             num_layers=2,
             dropout=0.1,
             add_time_to="ligand",
+            norm_std=norm_std,
         )
     elif vector_field_model == "ast":
         vector_field = AllSetTransformerVectorField(
@@ -208,13 +231,18 @@ def train_flow_model(
         min_value=min_time_factor,
     )
 
+    run_dir = os.path.join(
+        checkpoint_dir, "run_" + (run_name if run_name else "default")
+    )
+
     flow_model = FlowModel(
         vector_field_model=vector_field,
         path=path,
+        val_p_data=p_val,
         evaluator=evaluator,
         max_batched_samples=batch_size,
         val_distribution=val_distribution,
-        sample_every=1,
+        sample_every=sample_every,
         atom_decoder=constants.dataset_params[data_name]["atom_decoder"],
         norm_path=norm_path,
         device="cuda" if torch.cuda.is_available() else "cpu",
@@ -227,16 +255,18 @@ def train_flow_model(
         w_loss_last_step=w_loss_last_step,
         velocity_scale=velocity_scale,
     )
+    flow_model.current_run_dir = run_dir
 
     # ======================================================================
     # Training Setup
     # ======================================================================
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        dirpath=checkpoint_dir + "/run_" + (run_name if run_name else "default"),
+        dirpath=run_dir,
         filename="topoflow-{epoch:02d}",
-        monitor="train/loss",
+        monitor="val/loss" if not skip_validation else "train/loss",
         mode="min",
-        save_top_k=-1,
+        save_top_k=save_top_k,
+        save_last=True,
     )
     logger = pl.loggers.MLFlowLogger(
         experiment_name=experiment_name,
@@ -251,7 +281,7 @@ def train_flow_model(
         callbacks=[checkpoint_callback],
         logger=logger,
         enable_progress_bar=True,
-        check_val_every_n_epoch=5,
+        check_val_every_n_epoch=check_val_every_n_epoch,
         limit_val_batches=1.0 if not skip_validation else 0.0,
         limit_train_batches=1.0,
         num_sanity_val_steps=1,
@@ -266,12 +296,14 @@ def train_flow_model(
         ckpt_path=previous_checkpoint if previous_checkpoint is not None else None,
     )
 
-    if (
-        hasattr(flow_model.path.p_data, "_iterator")
-        and flow_model.path.p_data._iterator is not None
-    ):
-        flow_model.path.p_data._iterator._shutdown_workers()
-        del flow_model.path.p_data._iterator
+    for loader in (flow_model.path.p_data, flow_model.val_p_data):
+        if (
+            loader is not None
+            and hasattr(loader, "_iterator")
+            and loader._iterator is not None
+        ):
+            loader._iterator._shutdown_workers()
+            del loader._iterator
 
 
 if __name__ == "__main__":
@@ -294,6 +326,12 @@ if __name__ == "__main__":
         type=bool,
         default=True,
         help="Whether to apply data augmentations.",
+    )
+    parser.add_argument(
+        "--no_augment",
+        dest="augment",
+        action="store_false",
+        help="Disable data augmentations.",
     )
     parser.add_argument(
         "--vector_field_model",
@@ -327,27 +365,51 @@ if __name__ == "__main__":
         help="Path to a checkpoint to resume training from.",
     )
     parser.add_argument(
-        "--epochs", type=int, default=200, help="Number of training epochs."
+        "--epochs", type=int, default=1200, help="Number of training epochs."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=4, help="Batch size for training."
+        "--batch_size", type=int, default=8, help="Batch size for training."
+    )
+    parser.add_argument(
+        "--samples_per_epoch",
+        type=int,
+        default=512,
+        help="Number of training samples per epoch streamed from train_dataset (0 = full dataset per epoch).",
+    )
+    parser.add_argument(
+        "--check_val_every_n_epoch",
+        type=int,
+        default=5,
+        help="Run validation every N training epochs.",
+    )
+    parser.add_argument(
+        "--sample_every",
+        type=int,
+        default=20,
+        help="Run full molecule generation/docking every N validation epochs (0 = disable during training).",
+    )
+    parser.add_argument(
+        "--save_top_k",
+        type=int,
+        default=-1,
+        help="Number of best checkpoints to keep (-1 keeps all validation checkpoints).",
     )
     parser.add_argument(
         "--start_lr",
         type=float,
-        default=0.0002,
-        help="Learning rate for the optimizer.",
+        default=0.0005,
+        help="Initial learning rate for the optimizer.",
     )
     parser.add_argument(
         "--max_lr",
         type=float,
-        default=0.0008,
+        default=0.0006,
         help="Maximum learning rate for the optimizer.",
     )
     parser.add_argument(
         "--min_lr",
         type=float,
-        default=0.00004,
+        default=0.0001,
         help="Minimum learning rate for the optimizer.",
     )
     parser.add_argument(
@@ -371,19 +433,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_atom_time",
         type=float,
-        default=1.0,
+        default=0.9,
         help="Maximum time factor for atom type updates in the flow model.",
     )
     parser.add_argument(
         "--w_loss_last_step",
         type=float,
-        default=0.2,
-        help="Weight for the loss at the last time step.",
+        default=0.02,
+        help="Weight for the UFF loss at the last time steps (t > 0.9).",
     )
     parser.add_argument(
         "--velocity_scale",
         type=float,
-        default=1.0,
+        default=0.25,
         help="Scaling factor for the velocity in the loss computation.",
     )
     parser.add_argument(
@@ -414,7 +476,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_geometric_ast",
         action="store_true",
-        help="Whether to use geometric AllSet Transformer.",
+        help="Whether to use geometric (SE(3)-equivariant) AllSet Transformer.",
     )
     args = parser.parse_args()
 
@@ -444,4 +506,8 @@ if __name__ == "__main__":
         previous_checkpoint=args.previous_checkpoint,
         skip_validation=args.skip_validation,
         use_geometric_ast=args.use_geometric_ast,
+        samples_per_epoch=args.samples_per_epoch,
+        check_val_every_n_epoch=args.check_val_every_n_epoch,
+        sample_every=args.sample_every,
+        save_top_k=args.save_top_k,
     )

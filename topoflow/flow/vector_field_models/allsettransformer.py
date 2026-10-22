@@ -1221,11 +1221,14 @@ class AllSetTransformerVectorField(nn.Module):
             self.cutoff_poc /= std_val
             self.cutoff_cross /= std_val
 
+        in_embed_dim = self.atom_dim if self.use_geometric_ast else self.x_dim
+        out_vel_dim = self.atom_dim if self.use_geometric_ast else self.x_dim
+
         self.lig_embed = nn.Sequential(
-            nn.Linear(self.atom_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
+            nn.Linear(in_embed_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
         self.poc_embed = nn.Sequential(
-            nn.Linear(self.atom_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
+            nn.Linear(in_embed_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
         self.time_embed = AdvancedTimeEmbedding(h_dim)
 
@@ -1254,7 +1257,7 @@ class AllSetTransformerVectorField(nn.Module):
             )
 
         self.out_vel = nn.Sequential(
-            nn.LayerNorm(h_dim), nn.Linear(h_dim, self.atom_dim, bias=False)
+            nn.LayerNorm(h_dim), nn.Linear(h_dim, out_vel_dim, bias=False)
         )
 
     def format_diagnostics(self, stats, edge_types):
@@ -1527,8 +1530,12 @@ class AllSetTransformerVectorField(nn.Module):
         lig_feat = x_lig[:, 3:]
         poc_feat = x_pocket[:, 3:]
 
-        lig_h = self.lig_embed(lig_feat)
-        poc_h = self.poc_embed(poc_feat)
+        if self.use_geometric_ast:
+            lig_h = self.lig_embed(lig_feat)
+            poc_h = self.poc_embed(poc_feat)
+        else:
+            lig_h = self.lig_embed(x_lig)
+            poc_h = self.poc_embed(x_pocket)
 
         if not torch.is_tensor(t):
             t = torch.tensor(t, device=device)
@@ -1542,60 +1549,57 @@ class AllSetTransformerVectorField(nn.Module):
             lig_h = lig_h + t_emb[filt_batch_lig, :]
             poc_h = poc_h + t_emb[filt_batch_poc, :]
             layer_t_emb = None
+        elif self.add_time_to == "ligand":
+            lig_h = lig_h + t_emb[filt_batch_lig, :]
+            layer_t_emb = t_emb
         else:
             layer_t_emb = t_emb
 
-        if self.use_geometric_ast:
-            (
-                edge_index_v2e,
-                edge_index_e2v,
-                edge_attr_v2e,
-                gat_edge_index,
-                edge_types,
-                batch_he,
-            ) = self.create_geometric_incidence(
-                x_lig, x_pocket, batch_lig, batch_pocket, B
-            )
-            edge_attr_e2v = torch.cat(
-                [edge_attr_v2e[:, :1], -edge_attr_v2e[:, 1:]], dim=-1
-            )
-        else:
-            (
-                edge_index_v2e,
-                edge_index_e2v,
-                gat_edge_index,
-                edge_types,
-                batch_he,
-            ) = self.create_incidence_with_types(
-                x_lig, x_pocket, batch_lig, batch_pocket, B
-            )
+        (
+            edge_index_v2e,
+            edge_index_e2v,
+            gat_edge_index,
+            edge_types,
+            batch_he,
+        ) = self.create_incidence_with_types(
+            x_lig, x_pocket, batch_lig, batch_pocket, B
+        )
 
         h = torch.cat([lig_h, poc_h], dim=0)
         x = torch.cat([lig_pos, poc_pos], dim=0)
-
-        if self.use_gat:
-            h_gat = self.gat_model(
-                h, gat_edge_index, t_emb=layer_t_emb, batch_all=batch_all
-            )
-            h = h_gat + h
+        N1 = lig_h.size(0)
 
         if self.use_geometric_ast:
+            if self.use_gat:
+                h_gat = self.gat_model(
+                    h, gat_edge_index, t_emb=layer_t_emb, batch_all=batch_all
+                )
+                h = h_gat + h
+
             # Create a mask so only ligand atoms update their coordinates
             num_nodes = x.size(0)
             node_mask = torch.zeros((num_nodes, 1), device=device)
-            N1 = lig_pos.size(0)
             node_mask[:N1] = 1.0
 
             x_out, h_ast = self.model(
-                x, h, edge_index_v2e, edge_index_e2v, node_mask=node_mask
+                x,
+                h,
+                edge_index_v2e,
+                edge_index_e2v,
+                node_mask=node_mask,
+                t_emb=layer_t_emb,
+                batch_all=batch_all,
             )
             num_hyperedges = edge_types.size(0)
             stats = {
                 "entropy": torch.zeros((num_hyperedges, 1), device=device),
                 "cardinality": torch.zeros(num_hyperedges, device=device),
             }
+            h_lig = h_ast[:N1, :]
+            vel_pos = x_out[:N1, :] - x[:N1, :]
+            vel_h = self.out_vel(h_lig)
+            vel_lig = torch.cat([vel_pos, vel_h], dim=-1)
         else:
-            x_out = x
             if return_diagnostics:
                 h_ast, _, stats = self.model(
                     h,
@@ -1616,18 +1620,16 @@ class AllSetTransformerVectorField(nn.Module):
                     batch_he=batch_he,
                 )
 
-        h_final = h_ast
+            if self.use_gat:
+                h_gat = self.gat_model(
+                    h, gat_edge_index, t_emb=layer_t_emb, batch_all=batch_all
+                )
+                h_final = h_gat + h_ast
+            else:
+                h_final = h_ast
 
-        N1 = lig_h.size(0)
-        h_lig = h_final[:N1, :]
-
-        if self.use_geometric_ast:
-            vel_pos = x_out[:N1, :] - x[:N1, :]
-        else:
-            vel_pos = torch.zeros_like(x[:N1, :])
-
-        vel_h = self.out_vel(h_lig)
-        vel_lig = torch.cat([vel_pos, vel_h], dim=-1)
+            h_lig = h_final[:N1, :]
+            vel_lig = self.out_vel(h_lig)
 
         if return_diagnostics:
             return vel_lig, self.format_diagnostics(stats, edge_types)

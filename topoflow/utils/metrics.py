@@ -121,6 +121,27 @@ def mol_size_scorer(mol):
 class GninaDocker:
     """Handles GNINA docking."""
 
+    def _get_pdb_coords(self, pdb_path):
+        """Extract heavy-atom 3D coordinates from a PDB file."""
+        coords = []
+        with open(pdb_path, "r") as f:
+            for line in f:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    atom_name = line[12:16].strip()
+                    element = line[76:78].strip() if len(line) >= 78 else ""
+                    if element == "H" or (not element and atom_name.startswith("H")):
+                        continue
+                    try:
+                        x = float(line[30:38])
+                        y = float(line[38:46])
+                        z = float(line[46:54])
+                        coords.append([x, y, z])
+                    except ValueError:
+                        continue
+        if not coords:
+            raise ValueError(f"No heavy atoms found in {pdb_path}")
+        return np.array(coords, dtype=np.float32)
+
     def _calculate_box(self, data):
         """Calculates dynamic bounding box centered on the pocket."""
         # Get pocket coordinates
@@ -143,21 +164,39 @@ class GninaDocker:
 
     def _run_gnina(self, data, norm_params=None, atom_decoder=None):
         """Runs GNINA and returns [vina_score, cnn_score]."""
+        import sys
+
         env_extra = os.environ.copy()
-        conda_prefix = os.environ.get("CONDA_PREFIX")
+        conda_prefix = os.environ.get("CONDA_PREFIX") or sys.prefix
         if conda_prefix:
             lib_path = os.path.join(conda_prefix, "lib")
             # Update LD_LIBRARY_PATH so the binary finds libcudnn.so.9
             current_ld = env_extra.get("LD_LIBRARY_PATH", "")
             env_extra["LD_LIBRARY_PATH"] = f"{lib_path}:{current_ld}"
 
-        # --- OPTIMIZATION: Use original files if paths are provided ---
-        use_original_files = False
-        if hasattr(data, "pdb_path") and hasattr(data, "ligand_sdf_path"):
-            if os.path.exists(data.pdb_path) and os.path.exists(data.ligand_sdf_path):
-                receptor_path = data.pdb_path
-                ligand_path = data.ligand_sdf_path
-                use_original_files = True
+        has_original_receptor = (
+            hasattr(data, "pdb_path")
+            and data.pdb_path is not None
+            and os.path.exists(data.pdb_path)
+        )
+        has_original_ligand = (
+            hasattr(data, "ligand_sdf_path")
+            and data.ligand_sdf_path is not None
+            and os.path.exists(data.ligand_sdf_path)
+        )
+        use_original_files = has_original_receptor and has_original_ligand
+
+        pocket_pos = None
+        pocket_center = None
+        if has_original_receptor:
+            receptor_path = data.pdb_path
+            try:
+                pocket_pos = self._get_pdb_coords(receptor_path)
+                pocket_center = np.mean(pocket_pos, axis=0)
+            except Exception as e:
+                print(f"Warning: Could not parse receptor PDB {receptor_path}: {e}")
+                has_original_receptor = False
+                use_original_files = False
 
         if not use_original_files:
             # --- UNNORMALIZATION LOGIC (Fallback) ---
@@ -177,18 +216,35 @@ class GninaDocker:
                 except Exception as e:
                     print(f"Warning: Unnormalization failed: {e}")
 
+            if has_original_receptor and pocket_center is not None:
+                lig_np = data_to_save.x_lig.detach().cpu().numpy()
+                lig_center = np.mean(lig_np, axis=0)
+                if (
+                    np.linalg.norm(lig_center - pocket_center) > 10.0
+                    and np.linalg.norm(lig_center) < 10.0
+                    and np.linalg.norm(pocket_center) > 10.0
+                ):
+                    offset = torch.tensor(
+                        pocket_center,
+                        device=data_to_save.x_lig.device,
+                        dtype=data_to_save.x_lig.dtype,
+                    )
+                    data_to_save.x_lig = data_to_save.x_lig + offset
+
         with tempfile.TemporaryDirectory() as temp_dir:
             if not use_original_files:
-                receptor_path = os.path.join(temp_dir, "receptor.pdb")
+                if not has_original_receptor:
+                    receptor_path = os.path.join(temp_dir, "receptor.pdb")
                 ligand_path = os.path.join(temp_dir, "ligand.sdf")
                 # 1. Save Files
                 try:
-                    save_pocket_to_pdb(
-                        data_to_save,
-                        receptor_path,
-                        atom_decoder=atom_decoder,
-                        verbose=False,
-                    )
+                    if not has_original_receptor:
+                        save_pocket_to_pdb(
+                            data_to_save,
+                            receptor_path,
+                            atom_decoder=atom_decoder,
+                            verbose=False,
+                        )
                     save_ligand_to_sdf(
                         data_to_save,
                         ligand_path,
@@ -198,23 +254,67 @@ class GninaDocker:
                 except Exception as e:
                     print(f"Error saving GNINA inputs: {e}")
                     return [0, 0]
+            else:
+                ligand_path = data.ligand_sdf_path
 
             output_path = os.path.join(temp_dir, "out.sdf")
 
-            # 2. Calculate Box
+            # 2. Calculate Box (and recenter (0,0,0)-centered ligand to pocket_center if needed)
             try:
-                if use_original_files:
-                    # Load ligand to center the box
-                    suppl = Chem.SDMolSupplier(ligand_path)
-                    mol = suppl[0]
+                if use_original_files or has_original_receptor:
+                    suppl = Chem.SDMolSupplier(
+                        ligand_path, removeHs=False, sanitize=False
+                    )
+                    mol = suppl[0] if len(suppl) > 0 else None
                     if mol is None:
                         raise ValueError(f"Could not read ligand from {ligand_path}")
 
                     conf = mol.GetConformer()
-                    pos = conf.GetPositions()
-                    center = np.mean(pos, axis=0)
-                    max_dist = np.max(np.linalg.norm(pos - center, axis=1))
-                    size = (max_dist * 2) + 12.0
+                    pos = np.array(conf.GetPositions(), dtype=np.float64)
+                    lig_center = np.mean(pos, axis=0)
+
+                    # If ligand is centered at origin (0,0,0) while receptor pocket is in world coords,
+                    # shift the ligand into the pocket's coordinate frame.
+                    if (
+                        pocket_center is not None
+                        and np.linalg.norm(lig_center - pocket_center) > 10.0
+                        and np.linalg.norm(lig_center) < 10.0
+                        and np.linalg.norm(pocket_center) > 10.0
+                    ):
+                        pos = pos + pocket_center
+                        for atom_idx in range(mol.GetNumAtoms()):
+                            conf.SetAtomPosition(
+                                atom_idx,
+                                (
+                                    float(pos[atom_idx, 0]),
+                                    float(pos[atom_idx, 1]),
+                                    float(pos[atom_idx, 2]),
+                                ),
+                            )
+                        shifted_ligand_path = os.path.join(
+                            temp_dir, "ligand_recentered.sdf"
+                        )
+                        writer = Chem.SDWriter(shifted_ligand_path)
+                        writer.SetKekulize(False)
+                        writer.write(mol)
+                        writer.close()
+                        ligand_path = shifted_ligand_path
+                        lig_center = np.mean(pos, axis=0)
+
+                    max_dist = np.max(np.linalg.norm(pos - lig_center, axis=1))
+                    # If ligand is still far outside the pocket, anchor the box on pocket_center
+                    if (
+                        pocket_center is not None
+                        and np.linalg.norm(lig_center - pocket_center) > 15.0
+                    ):
+                        center = pocket_center
+                        pocket_max_dist = np.max(
+                            np.linalg.norm(pocket_pos - pocket_center, axis=1)
+                        )
+                        size = max((max_dist * 2) + 12.0, (pocket_max_dist * 2) + 4.0)
+                    else:
+                        center = lig_center
+                        size = (max_dist * 2) + 12.0
                 else:
                     center, size = self._calculate_box(data_to_save)
             except Exception as e:
@@ -222,10 +322,6 @@ class GninaDocker:
                 return [0, 0]
 
             # 3. Build Command
-            if use_original_files:
-                print(f"DEBUG: Using ORIGINAL FILES: {receptor_path} | {ligand_path}")
-            else:
-                print(f"DEBUG: Using TEMPORARY FILES: {receptor_path} | {ligand_path}")
 
             cmd = [
                 GNINA_EXECUTABLE,

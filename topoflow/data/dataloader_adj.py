@@ -170,8 +170,14 @@ class DataLoaderSampleable(DataLoader):
 
                     all_f_all.append(f_all)
                     all_batch_all.append(batch_all + current_samples)
-                    all_batch_lig.append(batch_lig + current_samples)
-                    all_batch_pocket.append(batch_pocket + current_samples)
+                    all_batch_lig.append(
+                        torch.where(batch_lig != -1, batch_lig + current_samples, -1)
+                    )
+                    all_batch_pocket.append(
+                        torch.where(
+                            batch_pocket != -1, batch_pocket + current_samples, -1
+                        )
+                    )
                     current_samples = num_samples
                 else:
                     # Take the whole batch
@@ -180,8 +186,14 @@ class DataLoaderSampleable(DataLoader):
                     )
                     all_f_all.append(f_all)
                     all_batch_all.append(batch_all + current_samples)
-                    all_batch_lig.append(batch_lig + current_samples)
-                    all_batch_pocket.append(batch_pocket + current_samples)
+                    all_batch_lig.append(
+                        torch.where(batch_lig != -1, batch_lig + current_samples, -1)
+                    )
+                    all_batch_pocket.append(
+                        torch.where(
+                            batch_pocket != -1, batch_pocket + current_samples, -1
+                        )
+                    )
                     current_samples += batch_size_actual
 
             # Concatenate all collected data

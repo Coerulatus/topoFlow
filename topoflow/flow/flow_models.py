@@ -94,6 +94,7 @@ class FlowModel(pl.LightningModule):
         w_loss_atom=0.02,
         velocity_scale=1.0,
         metrics=["qed", "logp", "sas", "lipinski", "gnina"],
+        val_p_data=None,
     ):
         """Initializes the FlowModel.
 
@@ -122,11 +123,13 @@ class FlowModel(pl.LightningModule):
             w_loss_atom: Weight for the atom type loss component. Defaults to 0.02.
             velocity_scale: Scaling factor for the velocity in the loss computation. Defaults to 1.0.
             metrics: List of metrics to evaluate during validation.
+            val_p_data: Optional validation DataLoaderSampleable for validation steps.
         """
         super().__init__()
-        self.save_hyperparameters(ignore=["path"])
+        self.save_hyperparameters(ignore=["path", "val_p_data"])
         self.vector_field_model = vector_field_model
         self.path = path
+        self.val_p_data = val_p_data
         self.path.device = device
         if hasattr(path.p_data, "unguided_label"):
             self.unguided_label = path.p_data.unguided_label
@@ -190,8 +193,11 @@ class FlowModel(pl.LightningModule):
         """Calculates the loss only on the ligand vector field."""
         time_mask = (t > self.t_last_step).float()
 
-        if x_lig is not None:
-            # Compute loss for EVERYTHING (GPU loves predictable, uniform workloads)
+        if (
+            x_lig is not None
+            and self.w_loss_last_step > 0
+            and bool((t > self.t_last_step).any())
+        ):
             raw_loss_last_step = self.loss_function_last_step(
                 u_t_theta_lig,
                 x_lig,
@@ -199,9 +205,17 @@ class FlowModel(pl.LightningModule):
                 batch_lig,
                 verbose=verbose,
                 mean=torch.tensor(
-                    self.normalization_params["mean"], device=x_lig.device
+                    self.normalization_params["mean"],
+                    device=x_lig.device,
+                    dtype=x_lig.dtype,
                 ),
-                std=torch.tensor(self.normalization_params["std"], device=x_lig.device),
+                std=torch.tensor(
+                    self.normalization_params["std"],
+                    device=x_lig.device,
+                    dtype=x_lig.dtype,
+                ),
+                velocity_scale=self.velocity_scale,
+                t_threshold=self.t_last_step,
             )
 
             loss_last_step = (raw_loss_last_step * time_mask.unsqueeze(-1)).mean(
@@ -230,15 +244,29 @@ class FlowModel(pl.LightningModule):
             "loss_atom": loss_atom.mean() * self.w_loss_atom,
         }
 
-    def _get_data(self, batch):
-        """Extracts data from p_data."""
+    def _get_data(self, batch, use_val=False):
+        """Extracts data from p_data (or val_p_data when use_val=True)."""
         batch_size = batch.shape[0]
-        z, batch_all, batch_lig, batch_pocket, batch_size = (
-            self.path.sample_conditioning_variable(batch_size)
-        )
-        t, t_batched = self.path.sample_time(batch_size, batch_all)
-        x = self.path.sample_conditional_path(z, t_batched)
-        u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
+        orig_p_data = self.path.p_data
+        if use_val and self.val_p_data is not None:
+            self.path.p_data = self.val_p_data
+        try:
+            z, batch_all, batch_lig, batch_pocket, batch_size = (
+                self.path.sample_conditioning_variable(batch_size)
+            )
+            t, t_batched = self.path.sample_time(batch_size, batch_all)
+            x = self.path.sample_conditional_path(z, t_batched)
+            u_t_ref = self.path.conditional_vector_field(x, z, t_batched)
+        finally:
+            self.path.p_data = orig_p_data
+
+        # Keep the conditioning pocket uncorrupted (clean z_pocket) during training,
+        # matching inference where drift_coefficient receives clean z_pocket.
+        is_poc = batch_pocket != -1
+        x = x.clone()
+        u_t_ref = u_t_ref.clone()
+        x[is_poc] = z[is_poc]
+        u_t_ref[is_poc] = 0.0
 
         return {
             "z": z,
@@ -275,15 +303,16 @@ class FlowModel(pl.LightningModule):
         t = batch.get("t")
         t_batched = batch.get("t_batched")
         x = batch.get("x")
+        z = batch.get("z")
         u_t_ref = batch.get("u_t_ref")
-        u_t_ref *= self.velocity_scale
+        u_t_ref = u_t_ref * self.velocity_scale
 
         lig_indices = torch.where(batch_lig != -1)[0]
         pocket_indices = torch.where(batch_pocket != -1)[0]
 
         x_lig = x[lig_indices, :]
         u_t_ref_lig = u_t_ref[lig_indices, :]
-        x_pocket = x[pocket_indices, :]
+        x_pocket = z[pocket_indices, :] if z is not None else x[pocket_indices, :]
 
         diagnostics = None
         num_graphs = batch.get(
@@ -345,7 +374,7 @@ class FlowModel(pl.LightningModule):
         Returns:
             The validation loss for the current step.
         """
-        batch = self._get_data(batch)
+        batch = self._get_data(batch, use_val=True)
         batch_lig = batch["batch_lig"]
         batch_lig = batch_lig[batch_lig != -1]
 
@@ -394,9 +423,14 @@ class FlowModel(pl.LightningModule):
                 prog_bar=False,
             )
 
+        is_sanity = getattr(self, "trainer", None) is not None and getattr(
+            self.trainer, "sanity_checking", False
+        )
         if (
-            self.val_distribution is not None
+            not is_sanity
+            and self.val_distribution is not None
             and batch_idx == 0
+            and self.sample_every > 0
             and self.n_epoch % self.sample_every == 0
         ):
             save_path = None
@@ -431,14 +465,15 @@ class FlowModel(pl.LightningModule):
                     clean_val = 0.0 if (np.isnan(value) or np.isinf(value)) else value
                 self.log(f"val/{metric}", clean_val, on_epoch=True, prog_bar=False)
 
-        self.n_epoch += 1
+        if not is_sanity and batch_idx == 0:
+            self.n_epoch += 1
         return losses["loss"]
 
     @torch.no_grad()
     def test_distribution(
         self,
         test_distribution,
-        metrics=["qed", "logp", "sas", "lipinksi", "gnina"],
+        metrics=["qed", "logp", "sas", "lipinski", "gnina"],
         atom_decoder=None,
         keep_biggest_fragment=False,
         save_path=None,
@@ -479,22 +514,32 @@ class FlowModel(pl.LightningModule):
         # However, we can still benefit from parallelism in the evaluation/docking phase
         # if we want, or just keep sampling sequential and parallelize scoring.
 
-        for i in tqdm(
-            range(n_batches),
-            desc="Sampling molecules",
-            unit="batch",
-            ncols=100,
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
-        ):
-            samples = self.sample(
-                min(
-                    self.max_batched_samples, num_samples - i * self.max_batched_samples
-                ),
-                n_steps=self.sample_steps,
-            )
-            mols += data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
-            pyg_mols += data_to_list(samples)
+        orig_p_data = self.path.p_data
+        if self.val_p_data is not None:
+            self.path.p_data = self.val_p_data
+        try:
+            for i in tqdm(
+                range(n_batches),
+                desc="Sampling molecules",
+                unit="batch",
+                ncols=100,
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+            ):
+                samples = self.sample(
+                    min(
+                        self.max_batched_samples, num_samples - i * self.max_batched_samples
+                    ),
+                    n_steps=self.sample_steps,
+                )
+                rd_mols = data_to_rdmol(samples, atom_decoder=atom_decoder, sanitize=True)
+                if not isinstance(rd_mols, list):
+                    rd_mols = [rd_mols]
+                mols += rd_mols
+                pyg_mols += data_to_list(samples)
+        finally:
+            self.path.p_data = orig_p_data
 
+        mols_all = mols
         connectivity_score, connected_mols, connected_smiles, kept_indices = (
             compute_connectivity(mols)
         )
@@ -586,7 +631,7 @@ class FlowModel(pl.LightningModule):
                             results[metric].append(scorer(mol))
 
         metrics_calculated = list(results.keys())
-        validity_score = min(num_samples / len(mols), 1)
+        validity_score = min(len(connected_mols) / max(len(mols_all), 1), 1.0)
         uniqueness_ratio, connected_smiles_unique = compute_uniqueness(connected_smiles)
 
         res = {}
@@ -670,7 +715,11 @@ class FlowModel(pl.LightningModule):
         x_lig = x[is_lig, :]
         x_pocket = z
         u_t_theta_lig = self.vector_field_model(
-            x_lig, t, x_pocket, batch_lig, batch_pocket
+            x_lig=x_lig,
+            t=t,
+            x_pocket=x_pocket,
+            batch_lig=batch_lig,
+            batch_pocket=batch_pocket,
         )
         guided_vector_field = torch.zeros_like(x)
         guided_vector_field[is_lig, :] = u_t_theta_lig
@@ -704,8 +753,21 @@ class FlowModel(pl.LightningModule):
         """
         simulator = TorchDiffEqSimulator(self, solver="rk4")
         if pocket is not None:
-            z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
-            batch_pocket = pocket.batch_pocket
+            if hasattr(pocket, "batch_pocket"):
+                num_pockets = pocket.batch_pocket.max().item() + 1
+            else:
+                num_pockets = 1
+
+            if num_pockets == 1 and n_samples > 1:
+                z_pocket_single = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+                z_pocket = z_pocket_single.repeat(n_samples, 1)
+                num_atoms_pocket = pocket.x_pocket.shape[0]
+                batch_pocket = torch.arange(
+                    n_samples, device=z_pocket.device
+                ).repeat_interleave(num_atoms_pocket)
+            else:
+                z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+                batch_pocket = pocket.batch_pocket
             z_pocket = z_pocket.to(self.path.device)
             batch_pocket = batch_pocket.to(self.path.device)
         else:
@@ -735,9 +797,12 @@ class FlowModel(pl.LightningModule):
         if recenter and pocket is not None and hasattr(pocket, "original_centroid"):
             # Ensure centroids are on the correct device
             centroids = pocket.original_centroid.to(x_lig.device)
-            # Add the pocket-specific centroid to every atom in that sample
-            x_lig = x_lig + centroids[batch_lig[is_lig]]
-            x_pocket = x_pocket + centroids[batch_pocket[is_poc]]
+            if centroids.shape[0] == 1 and n_samples > 1:
+                x_lig = x_lig + centroids[0]
+                x_pocket = x_pocket + centroids[0]
+            else:
+                x_lig = x_lig + centroids[batch_lig[is_lig]]
+                x_pocket = x_pocket + centroids[batch_pocket[is_poc]]
 
         data = Data(
             x_lig=x_lig,
@@ -778,8 +843,21 @@ class FlowModel(pl.LightningModule):
 
         simulator = TorchDiffEqSimulator(self, solver="rk4")
         if pocket is not None:
-            z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
-            batch_pocket = pocket.batch_pocket
+            if hasattr(pocket, "batch_pocket"):
+                num_pockets = pocket.batch_pocket.max().item() + 1
+            else:
+                num_pockets = 1
+
+            if num_pockets == 1 and n_samples > 1:
+                z_pocket_single = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+                z_pocket = z_pocket_single.repeat(n_samples, 1)
+                num_atoms_pocket = pocket.x_pocket.shape[0]
+                batch_pocket = torch.arange(
+                    n_samples, device=z_pocket.device
+                ).repeat_interleave(num_atoms_pocket)
+            else:
+                z_pocket = torch.cat([pocket.x_pocket, pocket.h_pocket], dim=-1)
+                batch_pocket = pocket.batch_pocket
             z_pocket = z_pocket.to(self.path.device)
             batch_pocket = batch_pocket.to(self.path.device)
         else:
@@ -839,9 +917,12 @@ class FlowModel(pl.LightningModule):
         if recenter and pocket is not None and hasattr(pocket, "original_centroid"):
             # Ensure centroids are on the correct device
             centroids = pocket.original_centroid.to(x_lig.device)
-            # Add the pocket-specific centroid to every atom in that sample
-            x_lig = x_lig + centroids[batch_lig[is_lig]]
-            x_pocket = x_pocket + centroids[batch_pocket[is_poc]]
+            if centroids.shape[0] == 1 and n_samples > 1:
+                x_lig = x_lig + centroids[0]
+                x_pocket = x_pocket + centroids[0]
+            else:
+                x_lig = x_lig + centroids[batch_lig[is_lig]]
+                x_pocket = x_pocket + centroids[batch_pocket[is_poc]]
 
         data = Data(
             x_lig=x_lig,
@@ -1210,6 +1291,7 @@ class FlowModel(pl.LightningModule):
                 mask=mask,
                 end_points=end_points,
                 force_scaffold=force_scaffold,
+                ts_inverse=t_eval_inverse.flip(0),
             )
         else:
             # If no scaffold is provided, just run regular forward simulation

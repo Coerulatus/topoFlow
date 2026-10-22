@@ -93,8 +93,10 @@ def validate_flow_model(
     flow_model = FlowModel.load_from_checkpoint(
         checkpoint_path,
         path=path,
+        val_p_data=p_data,
         norm_path=norm_path,
         val_distribution=val_distribution,
+        sample_every=1,
     )
     flow_model.eval()
     flow_model.num_workers = 1

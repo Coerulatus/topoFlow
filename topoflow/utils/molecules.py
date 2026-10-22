@@ -216,6 +216,8 @@ def data_to_rdmol(
                     rd_mols.append(None)
                     continue
             rd_mols.append(rdmol)
+        else:
+            rd_mols.append(None)
 
     if len(rd_mols) == 1:
         return rd_mols[0]

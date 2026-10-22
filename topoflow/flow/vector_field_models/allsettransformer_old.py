@@ -990,6 +990,7 @@ class AllSetTransformerVectorField(nn.Module):
         dropout=0.0,
         add_time_to="ligand",  # "ligand", "both", or "none"
         use_gat=True,
+        norm_std=None,
     ):
         """Ligand-only prediction with self-attention inside each ligand and cross-attention to pocket atoms."""
         super().__init__()
@@ -999,9 +1000,18 @@ class AllSetTransformerVectorField(nn.Module):
         self.h_dim = h_dim
         self.add_time_to = add_time_to
 
-        self.cutoff_lig = 10.0
-        self.cutoff_poc = 1.0
-        self.cutoff_cross = 1.5
+        if norm_std is not None:
+            if isinstance(norm_std, (float, int)):
+                avg_std = float(norm_std)
+            else:
+                avg_std = float(norm_std.mean())
+            self.cutoff_lig = 10.0 / avg_std
+            self.cutoff_poc = 3.0 / avg_std
+            self.cutoff_cross = 5.0 / avg_std
+        else:
+            self.cutoff_lig = 10.0
+            self.cutoff_poc = 1.0
+            self.cutoff_cross = 1.5
 
         self.lig_embed = nn.Sequential(
             nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
@@ -1141,11 +1151,22 @@ class AllSetTransformerVectorField(nn.Module):
         return incidence1.coalesce(), edge_index
 
     def forward(
-        self, x_lig, t, x_pocket, batch_lig, batch_pocket, return_diagnostics=False
+        self,
+        x_lig,
+        t,
+        x_pocket,
+        batch_lig,
+        batch_pocket,
+        return_diagnostics=False,
+        num_graphs=None,
     ):
         """Forward pass."""
         device = x_lig.device
-        B = int(torch.max(batch_lig) + 1)
+        B = (
+            num_graphs
+            if num_graphs is not None
+            else int(torch.max(batch_lig).item() + 1)
+        )
 
         is_lig = batch_lig != -1
         is_poc = batch_pocket != -1

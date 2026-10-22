@@ -36,6 +36,7 @@ class GATVectorField(nn.Module):
         num_layers=4,
         dropout=0.0,
         add_time_to="ligand",  # "ligand", "both", or "none"
+        norm_std=None,
     ):
         """Ligand-only prediction with self-attention inside each ligand and cross-attention to pocket atoms."""
         super().__init__()
@@ -45,9 +46,17 @@ class GATVectorField(nn.Module):
         self.h_dim = h_dim
         self.add_time_to = add_time_to
 
-        self.cutoff_lig = 10.0
-        self.cutoff_poc = 3.0
-        self.cutoff_cross = 3.0
+        if norm_std is not None:
+            if isinstance(norm_std, (float, int)):
+                avg_std = float(norm_std)
+            else:
+                avg_std = float(norm_std.mean())
+        else:
+            avg_std = 1.0
+
+        self.cutoff_lig = 10.0 / avg_std
+        self.cutoff_poc = 3.0 / avg_std
+        self.cutoff_cross = 3.0 / avg_std
 
         self.lig_embed = nn.Sequential(
             nn.Linear(self.x_dim, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
@@ -79,11 +88,19 @@ class GATVectorField(nn.Module):
         N1, N2 = lig_pos.size(0), poc_pos.size(0)
 
         edge_ll = radius_graph(
-            lig_pos, r=self.cutoff_lig, batch=batch_lig, loop=False
+            lig_pos,
+            r=self.cutoff_lig,
+            batch=batch_lig,
+            loop=False,
+            max_num_neighbors=512,
         )  # [2, E_ll]
         # Intra-pocket edges
         edge_pp = radius_graph(
-            poc_pos, r=self.cutoff_poc, batch=batch_pocket, loop=False
+            poc_pos,
+            r=self.cutoff_poc,
+            batch=batch_pocket,
+            loop=False,
+            max_num_neighbors=512,
         )  # [2, E_pp]
 
         # Cross edges using bipartite radius:
@@ -94,6 +111,7 @@ class GATVectorField(nn.Module):
             r=self.cutoff_cross,
             batch_x=batch_pocket,
             batch_y=batch_lig,
+            max_num_neighbors=512,
         )  # [2, E_lp] with row in [0..N1-1], col in [0..N2-1]
 
         # Offset pocket node ids by N1 to form one homogeneous graph:
@@ -110,10 +128,14 @@ class GATVectorField(nn.Module):
 
         return edge_index
 
-    def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket):
+    def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket, num_graphs=None):
         """Forward pass."""
         device = x_lig.device
-        B = int(torch.max(batch_lig) + 1)
+        B = (
+            num_graphs
+            if num_graphs is not None
+            else int(torch.max(batch_lig).item() + 1)
+        )
 
         is_lig = batch_lig != -1
         is_poc = batch_pocket != -1

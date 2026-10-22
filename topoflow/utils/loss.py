@@ -73,17 +73,46 @@ class UFFBoundGuidance(InterpolantGuidance):
         return torch.from_numpy(bounds).to(dtype=torch.float32)
 
     def __call__(
-        self, u_t_theta_lig, lig, t, batch_lig, verbose=True, mean=None, std=None
+        self,
+        u_t_theta_lig,
+        lig,
+        t,
+        batch_lig,
+        verbose=True,
+        mean=None,
+        std=None,
+        velocity_scale: float = 1.0,
+        t_threshold: float = None,
     ):
-        """Return a steered version of `x_t` after `n_steps` bound-guided updates."""
-        endpoint = lig + u_t_theta_lig * (1 - t)
+        """Return distance-bound loss on predicted endpoint coordinates."""
+        if t_threshold is not None and t is not None:
+            t_flat = t.view(-1)
+            active_mask = t_flat > t_threshold
+            if not active_mask.any():
+                return torch.tensor(
+                    0.0, device=lig.device, dtype=lig.dtype, requires_grad=True
+                )
+            lig = lig[active_mask]
+            u_t_theta_lig = u_t_theta_lig[active_mask]
+            t = t[active_mask]
+            batch_lig = batch_lig[active_mask]
+            _, batch_lig = torch.unique(batch_lig, sorted=True, return_inverse=True)
+
+        scale = velocity_scale if velocity_scale and velocity_scale != 0.0 else 1.0
+        endpoint = lig + (u_t_theta_lig / scale) * (1 - t)
         if mean is not None and std is not None:
-            endpoint[:, :3] = endpoint[:, :3] * std + mean
-        data = Data(x_lig=lig[:, :3], h_lig=lig[:, 3:], batch_lig=batch_lig)
+            endpoint_pos = endpoint[:, :3] * std + mean
+            endpoint = torch.cat([endpoint_pos, endpoint[:, 3:]], dim=-1)
+
+        data = Data(
+            x_lig=endpoint[:, :3].detach(),
+            h_lig=endpoint[:, 3:].detach(),
+            batch_lig=batch_lig,
+        )
         endpoint_mols = data_to_rdmol(
             data, atom_decoder=self.atom_decoder, sanitize=True, verbose=verbose
         )
-        if type(endpoint_mols) is not list:
+        if not isinstance(endpoint_mols, list):
             endpoint_mols = [endpoint_mols]
         endpoint_bounds = [self._get_uff_bounds(mol) for mol in endpoint_mols]
 
@@ -127,6 +156,8 @@ class UFFBoundGuidance(InterpolantGuidance):
         bounds = bounds.to(device=pairwise_dist.device)
 
         num_atoms = pairwise_dist.shape[0]
+        if num_atoms < 2:
+            return torch.tensor(0.0, device=tensor_repr.device, requires_grad=True)
 
         ub_matrix = torch.triu(bounds, diagonal=0)
         lb_matrix = torch.tril(bounds, diagonal=0).transpose(0, 1)
@@ -153,7 +184,7 @@ class UFFBoundGuidance(InterpolantGuidance):
                 2
             ).sum()
 
-        num_pairs = num_atoms * (num_atoms - 1) / 2
+        num_pairs = max(1.0, num_atoms * (num_atoms - 1) / 2)
 
         return vectorized_loss / num_pairs
 
@@ -162,12 +193,14 @@ class UFFBoundGuidance(InterpolantGuidance):
         len_valid_bounds = sum(1 for bound in bounds if bound is not None)
         if len_valid_bounds == 0:
             return torch.tensor(0.0, device=pred.device, requires_grad=True)
-        batch_ids = torch.unique(batch)
-        loss_sum = 0
+        batch_ids = torch.unique(batch, sorted=True)
+        loss_sum = torch.tensor(0.0, device=pred.device)
         for i, tensor_bound in enumerate(bounds):
-            if tensor_bound is None:
+            if tensor_bound is None or i >= len(batch_ids):
                 continue
-            loss_sum += self.loss_from_bounds(pred[batch == batch_ids[i]], tensor_bound)
+            loss_sum = loss_sum + self.loss_from_bounds(
+                pred[batch == batch_ids[i]], tensor_bound
+            )
         loss = loss_sum / len_valid_bounds
 
         return loss

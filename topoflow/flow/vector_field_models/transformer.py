@@ -93,19 +93,39 @@ class TransformerVectorField(nn.Module):
             nn.Linear(h_dim, atom_dim),
         )
 
-    def forward(self, x, t, u_t_ref_pocket, batch_lig, batch_pocket):
+    def forward(
+        self,
+        x_lig=None,
+        t=None,
+        x_pocket=None,
+        batch_lig=None,
+        batch_pocket=None,
+        u_t_ref_pocket=None,
+        x=None,
+        num_graphs=None,
+    ):
         """Forward pass of the vector field model with pocket velocity conditioning."""
+        lig_only = False
+        if x is None and x_lig is not None:
+            lig_only = True
+            n_lig = x_lig.shape[0]
+            x = torch.cat([x_lig, x_pocket], dim=0)
+
         device = x.device
 
-        batch_x = torch.cat([batch_lig, batch_pocket], dim=0)
+        is_lig = batch_lig != -1
+        is_poc = batch_pocket != -1
+        b_lig = batch_lig[is_lig]
+        b_poc = batch_pocket[is_poc]
+        batch_x = torch.cat([b_lig, b_poc], dim=0)
 
         # Build type labels: 1 for ligand, 0 for pocket
         type_labels = torch.cat(
             [
-                torch.ones(len(batch_lig), dtype=torch.long),
-                torch.zeros(len(batch_pocket), dtype=torch.long),
+                torch.ones(len(b_lig), dtype=torch.long, device=device),
+                torch.zeros(len(b_poc), dtype=torch.long, device=device),
             ]
-        ).to(device)
+        )
 
         # Get learned type embedding
         type_embed = self.type_embed(type_labels)  # [num_x, h_dim]
@@ -114,7 +134,13 @@ class TransformerVectorField(nn.Module):
         x_embed = self.x_embed(x)  # [num_x, h_dim]
 
         # Time embedding
-        num_samples = torch.max(batch_pocket) + 1
+        num_samples = (
+            num_graphs
+            if num_graphs is not None
+            else int(torch.max(b_poc).item() + 1)
+        )
+        if not torch.is_tensor(t):
+            t = torch.tensor(t, device=device)
         if len(t.shape) == 0:
             t = t.repeat(num_samples, 1)  # Ensure t is a column vector
         time_embed = self.time_embed(t)  # [batch_size, h_dim]
@@ -122,7 +148,9 @@ class TransformerVectorField(nn.Module):
         t_per_x = time_embed[batch_x]  # [num_x, h_dim]
 
         # Create a zero tensor for the ligand velocities
-        u_t_ref_lig = torch.zeros([len(batch_lig), self.x_dim], device=device)
+        u_t_ref_lig = torch.zeros([len(b_lig), self.x_dim], device=device)
+        if u_t_ref_pocket is None:
+            u_t_ref_pocket = torch.zeros([len(b_poc), self.x_dim], device=device)
         # Combine the ligand zeros with the pocket velocities
         u_t_ref = torch.cat([u_t_ref_lig, u_t_ref_pocket], dim=0)
         # Embed the reference velocities
@@ -147,4 +175,5 @@ class TransformerVectorField(nn.Module):
         coords_out = self.out_coord_linear(x_encoded)  # [num_x, spatial_dim]
         atom_type_out = self.out_atom_type_linear(x_encoded)  # [num_x, atom_dim]
 
-        return torch.cat([coords_out, atom_type_out], dim=-1)
+        out = torch.cat([coords_out, atom_type_out], dim=-1)
+        return out[:n_lig] if lig_only else out

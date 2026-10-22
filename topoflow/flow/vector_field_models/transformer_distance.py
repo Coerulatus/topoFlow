@@ -83,14 +83,13 @@ class TransformerDistanceVectorField(nn.Module):
             nn.Linear(h_dim, spatial_dim, bias=True),
         )
 
-    def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket):
+    def forward(self, x_lig, t, x_pocket, batch_lig, batch_pocket, num_graphs=None):
         """Forward pass of the TransformerDistanceVectorField."""
         device = x_lig.device
 
         is_lig = batch_lig != -1
         is_poc = batch_pocket != -1
-        batch_all = batch_lig.clone()
-        batch_all[is_poc] = batch_pocket[is_poc]
+        batch_all = torch.cat([batch_lig[is_lig], batch_pocket[is_poc]], dim=0)
 
         # x_lig is [N, 14] -> Split into [N, 3] (coords) and [N, 11] (types)
         lig_coords = x_lig[:, : self.spatial_dim]
@@ -107,7 +106,11 @@ class TransformerDistanceVectorField(nn.Module):
         if not torch.is_tensor(t):
             t = torch.tensor(t, device=device)
         if t.ndim == 0:
-            B = int(batch_all.max().item() + 1)
+            B = (
+                num_graphs
+                if num_graphs is not None
+                else int(batch_all.max().item() + 1)
+            )
             t = t.repeat(B)
         t_emb = self.time_embed(t)
 

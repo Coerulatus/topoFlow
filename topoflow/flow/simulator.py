@@ -156,6 +156,7 @@ class TorchDiffEqSimulator:
         mask,
         end_points=None,
         force_scaffold=False,
+        ts_inverse=None,
     ):
         """Generate molecule with inpainting using the inverse trajectory.
 
@@ -185,16 +186,25 @@ class TorchDiffEqSimulator:
             Ground truth data for the scaffold. [batch_size, *dims]
         force_scaffold : bool, optional
             If True, fixes the scaffold atoms to end_points throughout the simulation.
+        ts_inverse : torch.Tensor, optional
+            Time grid corresponding to inverse_traj.
 
         Returns:
             torch.Tensor: Inpainted states at each time step.
         """
+        ref_ts = (
+            ts_inverse
+            if ts_inverse is not None
+            else torch.linspace(
+                0, t_max_inpaint, inverse_traj.shape[1], device=ts.device
+            )
+        )
 
         def ode_func(t, x):
             if force_scaffold and end_points is not None:
                 x[mask] = end_points[mask]
             elif t <= t_max_inpaint:
-                t_idx = (ts - t).abs().argmin()
+                t_idx = (ref_ts - t).abs().argmin()
                 inverse_state = inverse_traj[:, t_idx]
                 x[mask] = inverse_state[mask]
             return self.ode.drift_coefficient(

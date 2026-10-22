@@ -40,15 +40,30 @@ class EquivariantAllSetTransformerLayer(nn.Module):
         self.node_update = nn.Sequential(
             nn.Linear(h_dim * 2, h_dim), nn.SiLU(), nn.Linear(h_dim, h_dim)
         )
+        self.time_proj = nn.Linear(h_dim, h_dim)
 
-    def forward(self, x, h, edge_index_v2e, edge_index_e2v, node_mask=None):
+    def forward(
+        self,
+        x,
+        h,
+        edge_index_v2e,
+        edge_index_e2v,
+        node_mask=None,
+        t_emb=None,
+        batch_all=None,
+    ):
         """Forward pass of the equivariant AllSet layer.
 
         x: [N, 3]
         h: [N, h_dim]
         edge_index_v2e: [2, E] (row 0: hyperedge, row 1: node)
         node_mask: [N, 1] boolean or float mask indicating which nodes can move (e.g. ligand)
+        t_emb: Optional [B, h_dim] time embedding.
+        batch_all: Optional [N] batch index per node.
         """
+        if t_emb is not None and batch_all is not None:
+            h = h + self.time_proj(t_emb)[batch_all]
+
         num_nodes = h.size(0)
         num_hyperedges = (
             edge_index_v2e[0].max().item() + 1 if edge_index_v2e.numel() > 0 else 0
@@ -144,8 +159,25 @@ class EquivariantAllSetTransformer(nn.Module):
             [EquivariantAllSetTransformerLayer(h_dim) for _ in range(num_layers)]
         )
 
-    def forward(self, x, h, edge_index_v2e, edge_index_e2v, node_mask=None):
+    def forward(
+        self,
+        x,
+        h,
+        edge_index_v2e,
+        edge_index_e2v,
+        node_mask=None,
+        t_emb=None,
+        batch_all=None,
+    ):
         """Forward pass for the network."""
         for layer in self.layers:
-            x, h = layer(x, h, edge_index_v2e, edge_index_e2v, node_mask=node_mask)
+            x, h = layer(
+                x,
+                h,
+                edge_index_v2e,
+                edge_index_e2v,
+                node_mask=node_mask,
+                t_emb=t_emb,
+                batch_all=batch_all,
+            )
         return x, h

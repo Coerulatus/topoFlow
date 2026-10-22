@@ -216,8 +216,17 @@ class DistributionNodes:
 
     def __init__(self, histogram):
         """Initialize the distribution of number of nodes."""
-        histogram = torch.tensor(histogram).float()
-        histogram = histogram + 1e-3  # for numerical stability
+        raw_hist = torch.tensor(histogram).float()
+        if raw_hist.shape[0] > 0:
+            raw_hist[0, :] = 0.0
+        if raw_hist.shape[1] > 0:
+            raw_hist[:, 0] = 0.0
+
+        histogram = raw_hist.clone() + 1e-3  # for numerical stability
+        if histogram.shape[0] > 0:
+            histogram[0, :] = 0.0
+        if histogram.shape[1] > 0:
+            histogram[:, 0] = 0.0
 
         prob = histogram / histogram.sum()
 
@@ -232,16 +241,35 @@ class DistributionNodes:
         self.prob = prob
         self.m = torch.distributions.Categorical(self.prob.view(-1), validate_args=True)
 
-        self.n1_given_n2 = [
-            torch.distributions.Categorical(prob[:, j], validate_args=True)
-            for j in range(prob.shape[1])
-        ]
-        self.n2_given_n1 = [
-            torch.distributions.Categorical(prob[i, :], validate_args=True)
-            for i in range(prob.shape[0])
-        ]
+        marginal_n1 = raw_hist.sum(dim=1)
+        if marginal_n1.sum() <= 0:
+            marginal_n1 = prob.sum(dim=1)
+        marginal_n2 = raw_hist.sum(dim=0)
+        if marginal_n2.sum() <= 0:
+            marginal_n2 = prob.sum(dim=0)
 
-        # entropy = -torch.sum(self.prob.view(-1) * torch.log(self.prob.view(-1) + 1e-30))
+        self.n1_given_n2 = []
+        for j in range(prob.shape[1]):
+            col = raw_hist[:, j]
+            if col.sum() <= 0:
+                # Try a local window around pocket size j before falling back to marginal
+                w_start = max(1, j - 5)
+                w_end = min(prob.shape[1], j + 6)
+                window_col = raw_hist[:, w_start:w_end].sum(dim=1)
+                col = window_col if window_col.sum() > 0 else marginal_n1
+            self.n1_given_n2.append(
+                torch.distributions.Categorical(col / col.sum(), validate_args=True)
+            )
+
+        self.n2_given_n1 = []
+        for i in range(prob.shape[0]):
+            row = raw_hist[i, :]
+            if row.sum() <= 0:
+                row = marginal_n2
+            self.n2_given_n1.append(
+                torch.distributions.Categorical(row / row.sum(), validate_args=True)
+            )
+
         entropy = self.m.entropy()
 
     def sample(self, n_samples=1):

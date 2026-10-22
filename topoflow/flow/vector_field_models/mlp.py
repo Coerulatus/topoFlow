@@ -91,23 +91,52 @@ class MLPVectorField(torch.nn.Module):
             raise ValueError("additional_features must be 'concat' or 'add'")
         self.layer_norm = torch.nn.LayerNorm(input_dim)
 
-    def forward(self, x, t, batch_lig, batch_pocket):
+    def forward(
+        self,
+        x_lig=None,
+        t=None,
+        x_pocket=None,
+        batch_lig=None,
+        batch_pocket=None,
+        x=None,
+        num_graphs=None,
+    ):
         """Forward pass of the vector field model.
 
         Args:
-            x: [num_x, x_dim] — node features (ligand + pocket)
+            x_lig: [num_lig, x_dim] — ligand node features
             t: scalar or [batch_size] — time step
+            x_pocket: [num_pocket, x_dim] — pocket node features
             batch_lig: [num_lig] — ligand graph index
             batch_pocket: [num_pocket] — pocket graph index
+            x: [num_x, x_dim] — node features (ligand + pocket), or None if x_lig/x_pocket provided
+            num_graphs: optional number of graphs in batch
         Returns:
-            [num_x, x_dim] — vector field
+            [num_lig, x_dim] or [num_x, x_dim] — vector field
         """
+        lig_only = False
+        if x is None and x_lig is not None:
+            lig_only = True
+            n_lig = x_lig.shape[0]
+            x = (
+                torch.cat([x_lig, x_pocket], dim=0)
+                if x_pocket is not None
+                else x_lig
+            )
+
         x = self.layer_norm(x)
+
+        is_lig = batch_lig != -1 if batch_lig is not None else None
+        is_poc = batch_pocket != -1 if batch_pocket is not None else None
 
         if t.ndim == 0:
             t = t.unsqueeze(0).unsqueeze(-1).repeat(x.shape[0], 1)
         elif t.ndim == 1:
-            t = t.unsqueeze(-1)
+            if t.shape[0] != x.shape[0] and is_lig is not None and is_poc is not None:
+                batch_all = torch.cat([batch_lig[is_lig], batch_pocket[is_poc]], dim=0)
+                t = t[batch_all].unsqueeze(-1)
+            else:
+                t = t.unsqueeze(-1)
 
         if self.additional_features == "add":
             t_emb = self.t_embedder(t)
@@ -116,4 +145,5 @@ class MLPVectorField(torch.nn.Module):
         else:
             xt = torch.cat([x, t], dim=-1)
 
-        return self.mlp(xt)
+        out = self.mlp(xt)
+        return out[:n_lig] if lig_only else out

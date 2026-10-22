@@ -132,10 +132,13 @@ class ConditionalProbabilityPath(torch.nn.Module, ABC):
                 _, num_nodes_pocket = self.size_distribution.sample(batch_size)
         elif hasattr(self, "size_distribution") and self.size_distribution is not None:
             if batch_pocket is not None:
-                num_nodes_lig, _ = self.size_distribution.sample(batch_size)
                 num_nodes_pocket = torch.tensor(
                     [torch.sum(batch_pocket == i).item() for i in range(batch_size)],
+                    device=self.device,
                 )
+                num_nodes_lig = self.size_distribution.sample_conditional(
+                    n1=None, n2=num_nodes_pocket
+                ).to(self.device)
             else:
                 num_nodes_lig, num_nodes_pocket = self.size_distribution.sample(
                     batch_size
